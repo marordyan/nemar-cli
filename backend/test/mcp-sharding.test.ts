@@ -1,5 +1,5 @@
 /**
- * Pure tests for `backend/src/mcp/sharding.ts` (epic #1065 phase 4, issue
+ * Pure tests for `shared/zarr/sharding.ts` (epic #1065 phase 4, issue
  * #1296). No I/O -- these are footer arithmetic, footer parsing, and window
  * planning only.
  *
@@ -43,7 +43,7 @@ import {
   shardEntriesFromPairs,
   shardEntriesToPairs,
   shardsForWindow,
-} from "../src/mcp/sharding.js";
+} from "../../shared/zarr/sharding.js";
 
 describe("footerByteLength", () => {
   test("n_inner * 16 + 4", () => {

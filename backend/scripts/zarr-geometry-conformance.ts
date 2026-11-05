@@ -8,7 +8,7 @@
  * tests, the synthetic fixture, and five independent reviewers -- validated
  * against that prose instead of against the format. The prose was wrong, so
  * everything agreed with everything else and disagreed with production. See
- * `backend/src/mcp/sharding.ts`'s module doc for the measured evidence.
+ * `shared/zarr/sharding.ts`'s module doc for the measured evidence.
  *
  * The lesson is not "write more careful prose". It is that a claim about a real
  * on-disk format has to be EXECUTABLE, so it can be re-checked whenever the
@@ -20,7 +20,7 @@
  * WHAT IT ASSERTS, and where the code depends on it:
  *
  *  1. `shard_samples % chunk_samples == 0`. `nInnerForShard`
- *     (`backend/src/mcp/sharding.ts`) THROWS otherwise, so a single violating
+ *     (`shared/zarr/sharding.ts`) THROWS otherwise, so a single violating
  *     group anywhere in the archive is a hard failure of `read_window` for that
  *     dataset. This is the invariant that replaced the extent-derived entry
  *     count, so it is the one most worth watching.

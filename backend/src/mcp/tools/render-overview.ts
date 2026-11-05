@@ -33,7 +33,7 @@ import {
   renderOverviewOutputSchema,
 } from "../../../../shared/contract/mcp.js";
 import type { RecordingGroupSummary } from "../../../../shared/contract/mcp.js";
-import { decodeBloscZstdInt16 } from "../../services/blosc-decode.js";
+import { decodeBloscZstdInt16 } from "../../../../shared/zarr/codecs/blosc.js";
 import {
   type PublicDatasetRow,
   datasetNotFoundResult,

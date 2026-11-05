@@ -2,7 +2,7 @@
  * `decodeBloscZstdInt16` against the real committed chunk fixture (epic
  * #1065 phase 2, issue #1294) -- promoted from the phase 1 spike's
  * `decode_chunk` verification, but now driving the production module
- * (`backend/src/services/blosc-decode.ts`) directly rather than the spike's
+ * (`shared/zarr/codecs/blosc.ts`) directly rather than the spike's
  * MCP tool wrapper.
  *
  * `chunk.bin` is one real inner chunk of nm000329's level-0 array (see
@@ -15,7 +15,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { decodeBloscZstdInt16 } from "../src/services/blosc-decode";
+import { decodeBloscZstdInt16 } from "../../shared/zarr/codecs/blosc";
 
 const FIXTURE_DIR = join(import.meta.dir, "fixtures/blosc");
 

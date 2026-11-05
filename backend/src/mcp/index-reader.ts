@@ -237,8 +237,3 @@ export async function readZarrIndex(
     bytes,
   };
 }
-
-/** Narrows a parsed index document to the v3 shape. */
-export function isV3Index(index: ZarrIndexDocument): index is ZarrIndex {
-  return index.format_version === 3;
-}

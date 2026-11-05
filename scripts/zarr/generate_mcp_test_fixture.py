@@ -18,7 +18,7 @@ instead, encoded with the SAME codec configuration biosigIO's real
 `ZarrExporter` uses for a view chunk (`numcodecs.Blosc`, `cname="zstd"`,
 `clevel=5`, byte shuffle, one block per chunk) -- so the bytes this script
 produces decode through the exact same path
-(`backend/src/services/blosc-decode.ts`'s `decodeBloscZstdInt16`) a real
+(`shared/zarr/codecs/blosc.ts`'s `decodeBloscZstdInt16`) a real
 store's chunk would.
 
 GEOMETRY (single-chunk MEG fixture). 8 channels, 132 columns, one chunk
@@ -586,7 +586,7 @@ def main() -> None:
     # below: numcodecs infers the blosc2 frame's typesize from the buffer's
     # own itemsize, and a raw bytes object has itemsize 1 -- exactly the
     # "typesize 1" mismatch this decoder deliberately refuses to
-    # reinterpret (`blosc-decode.ts`'s own int16-only invariant), caught by
+    # reinterpret (`shared/zarr/codecs/blosc.ts`'s own int16-only invariant), caught by
     # decoding every fixture back in Bun before trusting it.
     data = build_minmax_envelope()
     encoded = codec.encode(data)

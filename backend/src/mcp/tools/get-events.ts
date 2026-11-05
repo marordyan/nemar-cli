@@ -32,13 +32,13 @@
  * WASM module synchronously -- `WebAssembly.Module(): Wasm code generation
  * disallowed by embedder`, reproduced under real workerd via `bunx wrangler
  * dev --local` against `mcp-smoke-entry.ts`, the SAME failure class
- * `blosc-decode.ts`'s module doc documents for `numcodecs`. This crashes the
+ * `shared/zarr/codecs/blosc.ts`'s module doc documents for `numcodecs`. This crashes the
  * WHOLE bundle at isolate startup, for every request, not just a
  * `get_events` call -- unacceptable regardless of whether any dataset's
  * parquet ever uses SNAPPY (none does today: every column in the live
  * nm000329 fixture is ZSTD). So `hyparquet-compressors` was removed from
  * `package.json`, and this file builds the one-entry `compressors` map
- * itself, straight from `fzstd` (the same pure-JS decoder `blosc-decode.ts`
+ * itself, straight from `fzstd` (the same pure-JS decoder `shared/zarr/codecs/blosc.ts`
  * already uses) -- functionally identical to what the package would have
  * supplied for ZSTD, with none of its SNAPPY baggage. A dataset whose
  * parquet ever used a codec other than ZSTD would throw here (hyparquet's

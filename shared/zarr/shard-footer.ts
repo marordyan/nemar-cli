@@ -32,8 +32,10 @@ export interface ShardFooterLoaded {
 /**
  * Load one shard's footer: from `cache` when a valid entry with exactly
  * `nInner` pairs is there, else one `Range` read of the shard's last
- * `footerByteLength(nInner)` bytes, written back to `cache`. Never throws:
- * every failure is `{ error }`, for the caller to turn into its own text.
+ * `footerByteLength(nInner)` bytes, written back to `cache`. A fetch or footer-parse failure is a typed
+ * `{ error }`, for the caller to turn into its own text; reading the response
+ * body and a `JsonCache` that throws synchronously are not caught and can
+ * still throw, as before this code moved.
  *
  * `key` carries the dataset identity; the projection string
  * (`shardidx/<zarr>/<group>/0/<shard>`) is added here. Its `convertedAt` is
@@ -75,7 +77,7 @@ export async function loadShardFooter(opts: {
       // "local index N has no footer entry" out of a path that otherwise produces
       // only typed tool errors.
       return {
-        entries: shardEntriesFromPairs(parsed.data as Array<[number, number]>),
+        entries: shardEntriesFromPairs(parsed.data),
         cacheStatus: "hit",
         bytes: 0,
       };

@@ -17,7 +17,10 @@ export interface CacheKey {
   projection: string;
 }
 
-/** JSON values only. get returns undefined on a miss or an unreadable entry, and put never throws. */
+/** JSON values only. An implementation should answer `get` with undefined on a
+ *  miss or an unreadable entry, and make `put` best-effort (a failed write is
+ *  its own to log, not the caller's to handle). The core does not guard against
+ *  an implementation that throws. */
 export interface JsonCache {
   get(key: CacheKey): Promise<unknown | undefined>;
   put(key: CacheKey, value: unknown): void;

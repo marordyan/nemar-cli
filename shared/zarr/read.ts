@@ -124,8 +124,11 @@ async function fetchAndDecodeRangeRead(opts: {
  * Read every inner chunk of level 0 that `[startSample, endSampleExclusive)`
  * touches: per shard the footer (cached through `cache`), the read plan, and
  * one fetch-and-decode per coalesced range. Absent chunks become `data: null`
- * segments. Never throws: a failure is `{ ok: false, stage, detail }`, for
- * the caller to turn into its own text. Request order is the footer, then
+ * segments. A fetch, footer-parse, decode or plan failure is a typed
+ * `{ ok: false, stage, detail }`, for the caller to turn into its own text;
+ * what is not caught (reading a response body, the window helpers, a
+ * `JsonCache` that throws synchronously) can still throw, as it did before
+ * this code moved. Request order is the footer, then
  * that shard's chunks, shard by shard.
  */
 export async function readLevel0Window(opts: {

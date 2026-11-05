@@ -33,7 +33,7 @@ import { zarrIndexSchema } from "../shared/contract/zarr-index.js";
 import protocolSchema from "../shared/zarr-engine-protocol.schema.json";
 import indexFixture from "./fixtures/zarr-index-v3.json";
 
-const ajv = new Ajv2020({ strict: false, allErrors: true });
+const ajv = new Ajv2020({ strict: true, allErrors: true });
 const validateJson = ajv.compile(protocolSchema as object);
 
 /** A real recipe, built the way the MCP builds one from the checked-in index fixture. */
@@ -376,7 +376,7 @@ function both(doc: unknown) {
 
 describe("protocol schema: Ajv and zod agree", () => {
   test("the JSON Schema compiles as draft 2020-12", () => {
-    expect(() => new Ajv2020({ strict: false }).compile(protocolSchema as object)).not.toThrow();
+    expect(() => new Ajv2020({ strict: true }).compile(protocolSchema as object)).not.toThrow();
   });
 
   for (const c of CASES) {
@@ -493,7 +493,7 @@ describe("protocol schema: coverage", () => {
 
   test("every case validates against the def it names", () => {
     for (const c of CASES) {
-      const one = new Ajv2020({ strict: false }).compile({
+      const one = new Ajv2020({ strict: true }).compile({
         ...protocolSchema,
         oneOf: undefined,
         $ref: `#/$defs/${c.def}`,

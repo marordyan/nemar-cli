@@ -1014,12 +1014,16 @@ describe("read_window (route)", () => {
   describe("read_window golden (G1)", () => {
     const GOLDEN_PATH = join(import.meta.dir, "fixtures/mcp/nm099500-read-window-golden.json");
 
-    // Capture only when asked AND the file is absent: never an overwrite.
+    // Capture only when asked AND the file is absent: never an overwrite. A
+    // capture run always fails (see below), and writes nothing unless every
+    // case was captured, so a partial or unverified baseline cannot go green.
     const capture = process.env.NEMAR_WRITE_GOLDEN === "1" && !existsSync(GOLDEN_PATH);
     const captured: Record<string, unknown> = {};
 
     afterAll(() => {
-      if (capture) writeFileSync(GOLDEN_PATH, `${JSON.stringify(captured, null, 2)}\n`);
+      if (capture && Object.keys(captured).length === GOLDEN_CASES.length) {
+        writeFileSync(GOLDEN_PATH, `${JSON.stringify(captured, null, 2)}\n`);
+      }
     });
 
     const GOLDEN_CASES: Array<{ name: string; args: Record<string, unknown> }> = [
@@ -1099,7 +1103,9 @@ describe("read_window (route)", () => {
 
         if (capture) {
           captured[name] = actual;
-          return;
+          throw new Error(
+            `golden captured for ${name}; re-run without NEMAR_WRITE_GOLDEN to verify it`,
+          );
         }
 
         const golden = JSON.parse(readFileSync(GOLDEN_PATH, "utf8")) as Record<string, unknown>;

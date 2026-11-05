@@ -15,10 +15,14 @@
  *
  * Versioned in the PATH, not by content negotiation: a schema is a contract, and
  * a client that pinned v3 must keep getting v3 when v4 exists. A new format
- * version adds a route; it never edits this one in place.
+ * version adds a route; it never edits this one in place. The one exception is
+ * `zarr-engine-protocol-v0.json`: v0 is unstable and may change in place.
  */
 
 import { Hono } from "hono";
+import zarrEngineProtocolSchema from "../../../shared/zarr-engine-protocol.schema.json" with {
+  type: "json",
+};
 import zarrIndexSchema from "../../../shared/zarr-index.schema.json" with { type: "json" };
 import zarrManifestSchema from "../../../shared/zarr-manifest.schema.json" with { type: "json" };
 import type { Bindings } from "../types/bindings";
@@ -34,6 +38,7 @@ const CACHE_CONTROL = "public, max-age=86400";
 const SCHEMAS: Record<string, unknown> = {
   "zarr-index-v3.json": zarrIndexSchema,
   "zarr-manifest-v1.json": zarrManifestSchema,
+  "zarr-engine-protocol-v0.json": zarrEngineProtocolSchema,
 };
 
 export const schemaRoutes = new Hono<{ Bindings: Bindings }>();

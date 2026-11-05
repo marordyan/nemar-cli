@@ -43,7 +43,7 @@ import {
   shardEntriesFromPairs,
   shardEntriesToPairs,
   shardsForWindow,
-} from "../src/mcp/sharding.js";
+} from "../../shared/zarr/sharding.js";
 
 describe("footerByteLength", () => {
   test("n_inner * 16 + 4", () => {

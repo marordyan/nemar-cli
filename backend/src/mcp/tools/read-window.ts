@@ -87,18 +87,6 @@ import {
   readWindowOutputSchema,
 } from "../../../../shared/contract/mcp.js";
 import type { ZarrGroup, ZarrIndex, ZarrStore } from "../../../../shared/contract/zarr-index.js";
-import { decodeBloscZstdInt16 } from "../../services/blosc-decode.js";
-import { type Level0ArrayMetadata, loadLevel0ArrayMetadata } from "../array-metadata.js";
-import {
-  type PublicDatasetRow,
-  datasetNotFoundResult,
-  isZarrReady,
-  loadPublicDatasetRow,
-  zarrNotReadyResult,
-} from "../catalog-row.js";
-import { type EnvelopeIndexFacts, buildEnvelopeForStore } from "../envelope.js";
-import { isV3Index, readZarrIndex } from "../index-reader.js";
-import { projectionUrl, readJsonProjection, writeJsonProjection } from "../projection-cache.js";
 import {
   type ChunkRead,
   type ShardIndexEntry,
@@ -111,7 +99,19 @@ import {
   shardEntriesFromPairs,
   shardEntriesToPairs,
   shardsForWindow,
-} from "../sharding.js";
+} from "../../../../shared/zarr/sharding.js";
+import { decodeBloscZstdInt16 } from "../../services/blosc-decode.js";
+import { type Level0ArrayMetadata, loadLevel0ArrayMetadata } from "../array-metadata.js";
+import {
+  type PublicDatasetRow,
+  datasetNotFoundResult,
+  isZarrReady,
+  loadPublicDatasetRow,
+  zarrNotReadyResult,
+} from "../catalog-row.js";
+import { type EnvelopeIndexFacts, buildEnvelopeForStore } from "../envelope.js";
+import { isV3Index, readZarrIndex } from "../index-reader.js";
+import { projectionUrl, readJsonProjection, writeJsonProjection } from "../projection-cache.js";
 import {
   type DecodedSegment,
   type FilledRange,

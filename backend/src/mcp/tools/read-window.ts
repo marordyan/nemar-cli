@@ -87,6 +87,7 @@ import {
   readWindowOutputSchema,
 } from "../../../../shared/contract/mcp.js";
 import type { ZarrGroup, ZarrIndex, ZarrStore } from "../../../../shared/contract/zarr-index.js";
+import { decodeBloscZstdInt16 } from "../../../../shared/zarr/codecs/blosc.js";
 import {
   type ChunkRead,
   type ShardIndexEntry,
@@ -100,7 +101,6 @@ import {
   shardEntriesToPairs,
   shardsForWindow,
 } from "../../../../shared/zarr/sharding.js";
-import { decodeBloscZstdInt16 } from "../../services/blosc-decode.js";
 import { type Level0ArrayMetadata, loadLevel0ArrayMetadata } from "../array-metadata.js";
 import {
   type PublicDatasetRow,

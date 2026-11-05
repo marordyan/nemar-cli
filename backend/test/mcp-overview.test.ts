@@ -21,6 +21,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { readFileSync } from "node:fs";
 import { decode as decodePng } from "fast-png";
 import type { Hono } from "hono";
+import { decodeBloscZstdInt16 } from "../../shared/zarr/codecs/blosc.js";
 import on003392MegSssSliceRaw from "../../test/fixtures/zarr-index-on003392-meg-sss-slice.json";
 import {
   buildChunkPlan,
@@ -32,7 +33,6 @@ import {
 } from "../src/mcp/overview.js";
 import { type McpRoutesDeps, createMcpRoutes } from "../src/routes/mcp.js";
 import { createZarrDataRoutes } from "../src/routes/zarr-data.js";
-import { decodeBloscZstdInt16 } from "../src/services/blosc-decode.js";
 import type { Bindings } from "../src/types/bindings.js";
 import nm000111IndexV1Raw from "./fixtures/mcp/nm000111-index-v1.json";
 import nm000329IndexRaw from "./fixtures/mcp/nm000329-index.json";

@@ -15,7 +15,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { decodeBloscZstdInt16 } from "../src/services/blosc-decode";
+import { decodeBloscZstdInt16 } from "../../shared/zarr/codecs/blosc";
 
 const FIXTURE_DIR = join(import.meta.dir, "fixtures/blosc");
 

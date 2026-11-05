@@ -88,6 +88,7 @@ import {
 } from "../../../../shared/contract/mcp.js";
 import type { ZarrGroup, ZarrIndex, ZarrStore } from "../../../../shared/contract/zarr-index.js";
 import { decodeBloscZstdInt16 } from "../../../../shared/zarr/codecs/blosc.js";
+import { isV3Index } from "../../../../shared/zarr/index.js";
 import {
   type ChunkRead,
   type ShardIndexEntry,
@@ -110,7 +111,7 @@ import {
   zarrNotReadyResult,
 } from "../catalog-row.js";
 import { type EnvelopeIndexFacts, buildEnvelopeForStore } from "../envelope.js";
-import { isV3Index, readZarrIndex } from "../index-reader.js";
+import { readZarrIndex } from "../index-reader.js";
 import { projectionUrl, readJsonProjection, writeJsonProjection } from "../projection-cache.js";
 import {
   type DecodedSegment,

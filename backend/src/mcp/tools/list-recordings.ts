@@ -39,6 +39,7 @@ import {
   recordingSummarySchema,
 } from "../../../../shared/contract/mcp.js";
 import { SOURCE_COMMIT_RE, type ZarrGroup } from "../../../../shared/contract/zarr-index.js";
+import { isV3Index } from "../../../../shared/zarr/index.js";
 import {
   type PublicDatasetRow,
   datasetNotFoundResult,
@@ -53,7 +54,7 @@ import {
   buildEnvelopeForStore,
   isLegacyNonRawPath,
 } from "../envelope.js";
-import { type ZarrIndexDocument, isV3Index, readZarrIndex } from "../index-reader.js";
+import { type ZarrIndexDocument, readZarrIndex } from "../index-reader.js";
 import { projectionUrl, readJsonProjection, writeJsonProjection } from "../projection-cache.js";
 import type { RecordingToolDeps, ToolOutcome } from "../tool-types.js";
 

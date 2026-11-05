@@ -586,8 +586,9 @@ def main() -> None:
     # below: numcodecs infers the blosc2 frame's typesize from the buffer's
     # own itemsize, and a raw bytes object has itemsize 1 -- exactly the
     # "typesize 1" mismatch this decoder deliberately refuses to
-    # reinterpret (`shared/zarr/codecs/blosc.ts`'s own int16-only invariant), caught by
-    # decoding every fixture back in Bun before trusting it.
+    # reinterpret (`shared/zarr/codecs/blosc.ts`'s own int16-only
+    # invariant), caught by decoding every fixture back in Bun before
+    # trusting it.
     data = build_minmax_envelope()
     encoded = codec.encode(data)
     OUT_PATH.write_bytes(encoded)

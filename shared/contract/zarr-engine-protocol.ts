@@ -74,6 +74,8 @@ export const helloResponseSchema = z
     type: z.literal("hello"),
     protocol: z.literal(ENGINE_PROTOCOL_VERSION),
     engine: nonEmpty,
+    /** The largest payload the engine will send; a window past it is `too_large`. Engine policy. */
+    max_payload_bytes: z.number().int().min(1),
     payload_bytes: payloadBytesZero,
   })
   .passthrough();
@@ -100,9 +102,18 @@ export const openedSchema = z
     n_channels: z.number().int().min(1),
     sample_rate_hz: z.number().gt(0),
     n_samples: z.number().int().min(0),
+    /** physical = digital * scale[c] + offset[c], per store channel c. */
+    scale: z.array(z.number()),
+    offset: z.array(z.number()),
     payload_bytes: payloadBytesZero,
   })
-  .passthrough();
+  .passthrough()
+  // Zod-only, like the window payload_bytes arithmetic: JSON Schema cannot
+  // compare an array length to another field.
+  .refine((m) => m.scale.length === m.n_channels && m.offset.length === m.n_channels, {
+    message: "scale and offset must each have n_channels entries",
+    path: ["scale"],
+  });
 
 export const readWindowRequestSchema = z
   .object({

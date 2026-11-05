@@ -63,6 +63,20 @@ const set =
   (key: string, value: unknown) =>
   (d: Doc): Doc => ({ ...d, [key]: value });
 
+const OPENED = {
+  id: 2,
+  type: "opened",
+  handle: "h1",
+  dataset_id: "nm099500",
+  recording: "sub-synth/eeg/rec",
+  group: "eeg_250hz",
+  n_channels: 4,
+  sample_rate_hz: 250,
+  n_samples: 5000,
+  scale: [0.5, 0.5, 0.25, 1],
+  offset: [0, 0, -1.5, 0],
+};
+
 const CASES: Case[] = [
   {
     def: "HelloRequest",
@@ -81,7 +95,13 @@ const CASES: Case[] = [
   {
     def: "HelloResponse",
     label: "hello response",
-    doc: { id: 1, type: "hello", protocol: "0.1", engine: "0.10.28" },
+    doc: {
+      id: 1,
+      type: "hello",
+      protocol: "0.1",
+      engine: "0.10.28",
+      max_payload_bytes: 67108864,
+    },
     mutate: without("engine"),
     mutation: "engine removed",
   },
@@ -118,6 +138,8 @@ const CASES: Case[] = [
       n_channels: 4,
       sample_rate_hz: 250,
       n_samples: 5000,
+      scale: [0.5, 0.5, 0.25, 1],
+      offset: [0, 0, -1.5, 0],
     },
     mutate: set("n_channels", 0),
     mutation: "n_channels 0",
@@ -236,6 +258,22 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
   { label: "an unknown message type", doc: { id: 1, type: "ping" } },
   { label: "no type at all", doc: { id: 1 } },
   { label: "a request without an id", doc: { type: "release", handle: "h1" } },
+  {
+    label: "hello response without max_payload_bytes",
+    doc: { id: 1, type: "hello", protocol: "0.1", engine: "e" },
+  },
+  {
+    label: "hello response with max_payload_bytes 0",
+    doc: { id: 1, type: "hello", protocol: "0.1", engine: "e", max_payload_bytes: 0 },
+  },
+  {
+    label: "hello response with a fractional max_payload_bytes",
+    doc: { id: 1, type: "hello", protocol: "0.1", engine: "e", max_payload_bytes: 1.5 },
+  },
+  { label: "opened without scale", doc: { ...OPENED, scale: undefined } },
+  { label: "opened without offset", doc: { ...OPENED, offset: undefined } },
+  { label: "opened with a string in scale", doc: { ...OPENED, scale: ["0.5", 1, 1, 1] } },
+  { label: "opened with offset not an array", doc: { ...OPENED, offset: 0 } },
   { label: "an error with id 0", doc: { id: 0, type: "error", code: "internal", message: "m" } },
   {
     label: "an error with a string id",
@@ -252,7 +290,7 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
   { label: "release request with a null id", doc: { id: null, type: "release", handle: "h" } },
   {
     label: "hello response with a null id",
-    doc: { id: null, type: "hello", protocol: "0.1", engine: "e" },
+    doc: { id: null, type: "hello", protocol: "0.1", engine: "e", max_payload_bytes: 1 },
   },
   { label: "released with a null id", doc: { id: null, type: "released" } },
   {
@@ -455,6 +493,22 @@ describe("protocol schema: gaps owned by one side", () => {
     );
     // An empty window carries no payload.
     expect(windowSchema.safeParse(window({ n_samples: 0, payload_bytes: 0 })).success).toBe(true);
+  });
+
+  test("opened scale and offset must have n_channels entries (zod)", () => {
+    expect(engineMessageSchema.safeParse(OPENED).success).toBe(true);
+    expect(engineMessageSchema.safeParse({ ...OPENED, scale: [1, 1, 1] }).success).toBe(false);
+    expect(engineMessageSchema.safeParse({ ...OPENED, offset: [0, 0, 0, 0, 0] }).success).toBe(
+      false,
+    );
+    expect(engineMessageSchema.safeParse({ ...OPENED, scale: [], offset: [] }).success).toBe(false);
+  });
+
+  test("the JSON Schema cannot check that length and says so; Ajv accepts the mismatch", () => {
+    const desc = protocolSchema.$defs.Opened.properties.scale.description;
+    expect(desc).toContain("length equals n_channels");
+    expect(desc).toContain("physical = digital * scale[c] + offset[c]");
+    expect(validateJson({ ...OPENED, scale: [1, 1, 1] })).toBe(true);
   });
 
   test("the JSON Schema documents the arithmetic it cannot enforce", () => {

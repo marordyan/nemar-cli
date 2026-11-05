@@ -131,7 +131,8 @@
         "id",
         "type",
         "protocol",
-        "engine"
+        "engine",
+        "max_payload_bytes"
       ],
       "properties": {
         "id": {
@@ -149,6 +150,11 @@
         },
         "payload_bytes": {
           "$ref": "#/$defs/PayloadBytesZero"
+        },
+        "max_payload_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The largest payload, in bytes, the engine will send in one window. A read_window whose window would exceed it is answered with too_large. The value is engine policy."
         }
       }
     },
@@ -195,7 +201,9 @@
         "group",
         "n_channels",
         "sample_rate_hz",
-        "n_samples"
+        "n_samples",
+        "scale",
+        "offset"
       ],
       "properties": {
         "id": {
@@ -232,6 +240,20 @@
         },
         "payload_bytes": {
           "$ref": "#/$defs/PayloadBytesZero"
+        },
+        "scale": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Per store channel, one entry per channel (length equals n_channels; JSON Schema cannot check this, the zod mirror does and clients must). physical = digital * scale[c] + offset[c] for store channel c. This is what a client reading units \"digital\" needs to convert. Channel names are deferred and not in v0."
+        },
+        "offset": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Per store channel, one entry per channel (length equals n_channels; not checkable in JSON Schema). See scale: physical = digital * scale[c] + offset[c]."
         }
       }
     },

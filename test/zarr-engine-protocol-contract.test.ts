@@ -273,8 +273,10 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
   { label: "a fractional id", doc: { id: 1.5, type: "released" } },
   { label: "a string id", doc: { id: "1", type: "released" } },
   {
-    label: "hello with both client and engine",
-    doc: { id: 1, type: "hello", protocol: "0.1", client: "c", engine: "e" },
+    // With open responses, {client, engine} is a valid hello RESPONSE carrying an
+    // unknown field, so the old "both" row is gone; neither is still invalid.
+    label: "hello with neither client nor engine",
+    doc: { id: 1, type: "hello", protocol: "0.1" },
   },
   {
     label: "a negative start_s",
@@ -318,13 +320,45 @@ describe("protocol schema: Ajv and zod agree", () => {
     });
   }
 
+  // Requests are closed, responses are open (ADR 0118): the engine rejects an
+  // unknown field in a request, a client ignores one in a response.
   for (const c of CASES) {
-    test(`${c.label}: an unknown extra field is rejected by both`, () => {
-      const { jsonOk, zod } = both(addUnknown(c.doc));
-      expect(jsonOk).toBe(false);
-      expect(zod.success).toBe(false);
-    });
+    const isRequest = c.def.endsWith("Request");
+    if (isRequest) {
+      test(`${c.label}: an unknown extra field is rejected by both (request)`, () => {
+        const { jsonOk, zod } = both(addUnknown(c.doc));
+        expect(jsonOk).toBe(false);
+        expect(zod.success).toBe(false);
+      });
+    } else {
+      test(`${c.label}: an unknown extra field is accepted by both and kept (response)`, () => {
+        const doc = addUnknown(c.doc);
+        const { jsonOk, zod } = both(doc);
+        expect(jsonOk, JSON.stringify(validateJson.errors)).toBe(true);
+        expect(zod.success).toBe(true);
+        if (zod.success) expect(zod.data).toEqual(doc);
+      });
+    }
   }
+
+  test("an unknown field inside a filled range is accepted by both and kept (it is part of a response)", () => {
+    const doc = {
+      id: 4,
+      type: "window",
+      start_sample: 0,
+      n_samples: 4,
+      channels: [0],
+      dtype: "int16",
+      layout: "channel-major",
+      byte_order: "little",
+      filled_ranges: [{ start_sample: 2, end_sample: 4, reason: "fetch_failed" }],
+      payload_bytes: 8,
+    };
+    const { jsonOk, zod } = both(doc);
+    expect(jsonOk).toBe(true);
+    expect(zod.success).toBe(true);
+    if (zod.success) expect(zod.data).toEqual(doc);
+  });
 
   for (const r of REJECTED_BY_BOTH) {
     test(`${r.label}: rejected by both`, () => {

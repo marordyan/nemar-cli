@@ -8,7 +8,10 @@
  * which runs one table of cases through both and compares verdicts and parsed
  * values (the same approach as `backend/test/mcp-schema-parity.test.ts`).
  *
- * Every message object is `.strict()`, matching `additionalProperties: false`.
+ * Compatibility: request objects are `.strict()` (the engine rejects an unknown
+ * field), response objects are `.passthrough()` (a client ignores an unknown
+ * field, and keeps it in the parsed value, exactly as Ajv leaves the document
+ * alone). `FilledRange` is part of a response and so is open too.
  * Two things the JSON Schema cannot express live only here: the `window`
  * `payload_bytes` arithmetic, and the full shape of a `recipe` response (the
  * schema types it as a bare object in v0; this mirror reuses the MCP's
@@ -53,7 +56,7 @@ export const filledRangeSchema = z
     start_sample: z.number().int().min(0),
     end_sample: z.number().int().min(0),
   })
-  .strict();
+  .passthrough();
 
 export const helloRequestSchema = z
   .object({
@@ -73,7 +76,7 @@ export const helloResponseSchema = z
     engine: nonEmpty,
     payload_bytes: payloadBytesZero,
   })
-  .strict();
+  .passthrough();
 
 export const openRequestSchema = z
   .object({
@@ -99,7 +102,7 @@ export const openedSchema = z
     n_samples: z.number().int().min(0),
     payload_bytes: payloadBytesZero,
   })
-  .strict();
+  .passthrough();
 
 export const readWindowRequestSchema = z
   .object({
@@ -127,7 +130,7 @@ export const windowSchema = z
     filled_ranges: z.array(filledRangeSchema),
     payload_bytes: z.number().int().min(0),
   })
-  .strict()
+  .passthrough()
   .refine(
     (m) => m.payload_bytes === m.channels.length * m.n_samples * ENGINE_DTYPE_BYTES[m.dtype],
     {
@@ -155,7 +158,7 @@ export const recipeResponseSchema = z
     recipe: readRecipeSchema,
     payload_bytes: payloadBytesZero,
   })
-  .strict();
+  .passthrough();
 
 export const releaseRequestSchema = z
   .object({
@@ -172,7 +175,7 @@ export const releasedSchema = z
     type: z.literal("released"),
     payload_bytes: payloadBytesZero,
   })
-  .strict();
+  .passthrough();
 
 export const engineErrorSchema = z
   .object({
@@ -183,7 +186,7 @@ export const engineErrorSchema = z
     message: nonEmpty,
     payload_bytes: payloadBytesZero,
   })
-  .strict();
+  .passthrough();
 
 /** Requests a client sends. */
 export const engineRequestSchema = z.union([

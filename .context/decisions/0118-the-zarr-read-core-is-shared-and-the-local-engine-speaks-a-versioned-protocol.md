@@ -33,13 +33,17 @@ It is not known yet whether the engine ships inside the CLI (plan A) or as a sep
    A request carries a client-chosen integer `id` of at least 1 and the response echoes it; an `error` reply carries `id: null` when the request's id could not be read (an unparseable frame, invalid JSON, a missing or non-integer id), and no other message may; v0 handles one request at a time.
    `payload_bytes` is 0 on every message except `window`, where it equals `channels.length * n_samples` times 8 (`float64`) or 2 (`int16`); the JSON Schema documents that arithmetic and the zod mirror enforces it.
    `units: "digital"` returns the raw int16 with no scale or offset applied.
-5. **Versioning.**
+5. **Compatibility.**
+   Requests are closed: the engine MUST reject a request with an unknown field (`invalid_message`).
+   Responses are open: a client MUST ignore unknown fields in a response, so from v1 a minor version may add response fields.
+   The `filled_ranges` items belong to a response and are open too.
+6. **Versioning.**
    `hello` carries the protocol version.
    In v0 it must match exactly (`"0.1"`), because v0 is unstable; from v1 a minor mismatch is accepted and only the major must match.
    v0 is published at `https://api.nemar.org/schemas/zarr-engine-protocol-v0.json` and is the one published schema that may change in place; every version after it is immutable like the index schema.
-6. **Missing data is never zeros.**
+7. **Missing data is never zeros.**
    A `window` reports what could not be read in `filled_ranges` (ADR 0005).
-7. **Still open:** plan A versus plan B for shipping the engine; private-dataset access, where ADR 0114's credential helper is the likely route; and a Unix-domain socket, which would add a transport and not change the messages.
+8. **Still open:** plan A versus plan B for shipping the engine; private-dataset access, where ADR 0114's credential helper is the likely route; and a Unix-domain socket, which would add a transport and not change the messages.
 
 ## Consequences
 

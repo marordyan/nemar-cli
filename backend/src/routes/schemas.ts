@@ -29,9 +29,11 @@ import type { Bindings } from "../types/bindings";
 
 /**
  * Immutable-ish: a published schema version's content does not change, so a long
- * TTL is safe and keeps this off the Worker's critical path. Not `immutable`,
- * because a clarification to a `description` is a legitimate republish and a
- * day-long window is short enough to make that reachable.
+ * TTL is safe and keeps this off the Worker's critical path. The documented
+ * exception is `zarr-engine-protocol-v0.json`, which is unstable and may change
+ * in place: a client can see the previous v0 for up to a day after a change.
+ * Not `immutable`, because a clarification to a `description` is a legitimate
+ * republish and a day-long window is short enough to make that reachable.
  */
 const CACHE_CONTROL = "public, max-age=86400";
 

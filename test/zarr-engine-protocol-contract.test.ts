@@ -18,6 +18,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { Ajv2020 } from "ajv/dist/2020";
 import { buildReadRecipe } from "../shared/contract/mcp.js";
 import {
@@ -274,6 +275,43 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
   { label: "opened without offset", doc: { ...OPENED, offset: undefined } },
   { label: "opened with a string in scale", doc: { ...OPENED, scale: ["0.5", 1, 1, 1] } },
   { label: "opened with offset not an array", doc: { ...OPENED, offset: 0 } },
+  {
+    label: "read_window request with a repeated channel",
+    doc: { id: 3, type: "read_window", handle: "h", start_s: 0, duration_s: 1, channels: [1, 1] },
+  },
+  {
+    label: "recipe request with a repeated channel",
+    doc: { id: 3, type: "recipe", handle: "h", start_s: 0, duration_s: 1, channels: [0, 2, 0] },
+  },
+  {
+    label: "window with a repeated channel",
+    doc: {
+      id: 3,
+      type: "window",
+      start_sample: 0,
+      n_samples: 1,
+      channels: [1, 1],
+      dtype: "int16",
+      layout: "channel-major",
+      byte_order: "little",
+      filled_ranges: [],
+      payload_bytes: 4,
+    },
+  },
+  {
+    label: "window without payload_bytes",
+    doc: {
+      id: 3,
+      type: "window",
+      start_sample: 0,
+      n_samples: 0,
+      channels: [0],
+      dtype: "int16",
+      layout: "channel-major",
+      byte_order: "little",
+      filled_ranges: [],
+    },
+  },
   { label: "an error with id 0", doc: { id: 0, type: "error", code: "internal", message: "m" } },
   {
     label: "an error with a string id",
@@ -522,5 +560,41 @@ describe("protocol schema: gaps owned by one side", () => {
     const doc = { id: 5, type: "recipe", recipe: {} };
     expect(validateJson(doc)).toBe(true);
     expect(engineMessageSchema.safeParse(doc).success).toBe(false);
+  });
+});
+
+describe("protocol schema: documented semantics", () => {
+  const defs = protocolSchema.$defs as Record<string, { description?: string }>;
+
+  test("the time rule and out_of_range are stated on both window-addressed requests", () => {
+    for (const name of ["ReadWindowRequest", "RecipeRequest"]) {
+      const d = defs[name].description ?? "";
+      expect(d, name).toContain("floor(start_s * sample_rate_hz + 0.5)");
+      expect(d, name).toContain("floor(duration_s * sample_rate_hz + 0.5)");
+      expect(d, name).toContain("out_of_range");
+      expect(d, name).toContain("never returns a truncated window");
+    }
+  });
+
+  test("the time rule is the MCP read_window rule", () => {
+    const source = readFileSync(
+      new URL("../backend/src/mcp/tools/read-window.ts", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain("Math.floor(args.start_s * rate + 0.5)");
+    expect(source).toContain("Math.floor(args.duration_s * rate + 0.5)");
+  });
+
+  test("filled_ranges, channels and the version check are described", () => {
+    const window = protocolSchema.$defs.Window.properties.filled_ranges.description;
+    for (const word of ["end-exclusive", "sorted ascending", "non-overlapping", "fill value"]) {
+      expect(window, word).toContain(word);
+    }
+    expect(defs.ChannelIndices.description).toContain("all store channels in ascending order");
+    expect(defs.ChannelIndices.description).toContain("payload row i is channels[i]");
+    expect(protocolSchema.description).toContain("unsupported_version");
+    expect(protocolSchema.description).toContain("must check them itself");
+    expect(protocolSchema.description).toContain("MUST ignore unknown fields in a response");
+    expect(protocolSchema.description).toContain("MUST reject a request with an unknown field");
   });
 });

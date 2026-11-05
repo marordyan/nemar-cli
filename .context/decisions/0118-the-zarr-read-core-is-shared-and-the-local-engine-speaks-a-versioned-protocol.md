@@ -34,6 +34,11 @@ It is not known yet whether the engine ships inside the CLI (plan A) or as a sep
    `payload_bytes` is 0 on every message except `window`, where it equals `channels.length * n_samples` times 8 (`float64`) or 2 (`int16`); the JSON Schema documents that arithmetic and the zod mirror enforces it.
    `units: "digital"` returns the raw int16 with no scale or offset applied; `opened` carries `scale` and `offset`, one entry per store channel (the zod mirror checks that their length is `n_channels`; JSON Schema cannot), with physical = digital * scale[c] + offset[c], so a digital client can convert.
    Channel names are deferred.
+   A window is addressed in time by the MCP's own rule: `start_sample = floor(start_s * sample_rate_hz + 0.5)` and `n_samples = floor(duration_s * sample_rate_hz + 0.5)`, ties rounding up; if `n_samples < 1`, or `start_sample` is at or past the recording's `n_samples`, or `start_sample + n_samples` exceeds it, the engine answers `out_of_range` and never returns a truncated window.
+   An omitted `channels` means all store channels in ascending order, payload row i is `channels[i]`, and channels must not repeat.
+   `filled_ranges` are absolute sample indices, end-exclusive, sorted, non-overlapping and inside the window; the payload inside one is the array's fill value (0 for these stores) converted like any other value, so for `physical` it is `offset[c]`.
+   The engine checks the `hello` `protocol` field before validating anything else, so another version is `unsupported_version`, not `invalid_message`.
+   JSON Schema cannot check the `payload_bytes` arithmetic or the `scale` and `offset` lengths; clients in other languages must.
    The `hello` response carries `max_payload_bytes`, the largest payload the engine will send; a `read_window` whose window would exceed it is `too_large`, and the value itself is engine policy.
 5. **Compatibility.**
    Requests are closed: the engine MUST reject a request with an unknown field (`invalid_message`).

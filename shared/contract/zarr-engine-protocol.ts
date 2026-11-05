@@ -47,7 +47,12 @@ const id = z.number().int().min(1);
 const handle = z.string().min(1);
 const datasetId = z.string().regex(/^[a-z]{2}[0-9]{6}$/);
 const nonEmpty = z.string().min(1);
-const channelIndices = z.array(z.number().int().min(0)).min(1);
+/** Store channel indices; omitted in a request means all, ascending. Row i of a
+ *  window payload is `channels[i]`. They must not repeat. */
+const channelIndices = z
+  .array(z.number().int().min(0))
+  .min(1)
+  .refine((a) => new Set(a).size === a.length, { message: "channels must not repeat" });
 /** Omitted means 0; on every message except `window` it must be 0. */
 const payloadBytesZero = z.literal(0).optional();
 

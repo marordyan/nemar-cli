@@ -38,3 +38,87 @@ export interface FilledRange {
   start: number;
   end: number;
 }
+
+export interface AssembleWindowInput {
+  /** The requested output channels, in the ORDER requested -- each is an
+   *  index into the store's full channel axis (and into `scale`/`offset`). */
+  channels: number[];
+  /** Window start, global sample index (inclusive). */
+  startSample: number;
+  /** Window length in samples. */
+  nSamples: number;
+  /** Every segment touching `[startSample, startSample + nSamples)`, in
+   *  ascending order, covering it with no gaps (segments may extend past
+   *  either edge -- this function computes the overlap). */
+  segments: DecodedSegment[];
+  /** Per-FULL-STORE-channel scale/offset (`physical = digital * scale +
+   *  offset`), each at least as long as the store's channel count. */
+  scale: number[];
+  offset: number[];
+  /** The digital fill value for an absent chunk (always `0` today, per the
+   *  Zarr `fill_value` every served level-0 array declares). */
+  fillValue: number;
+}
+
+export interface AssembleWindowResult {
+  /** One `Float64Array` per requested channel, `nSamples` long, physical
+   *  units at FULL float64 precision (rounding is the caller's choice). */
+  values: Float64Array[];
+  /** GLOBAL sample ranges (clipped to the requested window) that were
+   *  fill-substituted, ascending, adjacent ranges merged into one. */
+  filledRanges: FilledRange[];
+}
+
+/**
+ * Assemble `channels.length` rows of `nSamples` physical values each, plus
+ * the fill-substituted ranges within the window. Throws if `segments` does
+ * not fully cover `[startSample, startSample + nSamples)` -- a caller bug
+ * (an incomplete chunk plan), not a data condition to degrade around
+ * silently.
+ */
+export function assembleWindow(input: AssembleWindowInput): AssembleWindowResult {
+  const { channels, startSample, nSamples, segments, scale, offset, fillValue } = input;
+
+  const endSample = startSample + nSamples;
+  const out: Float64Array[] = channels.map(() => new Float64Array(nSamples));
+  const covered = new Uint8Array(nSamples);
+  const filledRanges: FilledRange[] = [];
+
+  for (const segment of segments) {
+    const overlapStart = Math.max(segment.start, startSample);
+    const overlapEnd = Math.min(segment.end, endSample);
+    if (overlapEnd <= overlapStart) continue;
+
+    if (!segment.data) {
+      const last = filledRanges[filledRanges.length - 1];
+      if (last && last.end === overlapStart) {
+        last.end = overlapEnd;
+      } else {
+        filledRanges.push({ start: overlapStart, end: overlapEnd });
+      }
+    }
+
+    for (let outIdx = 0; outIdx < channels.length; outIdx++) {
+      const ch = channels[outIdx];
+      const chScale = scale[ch];
+      const chOffset = offset[ch];
+      for (let globalSample = overlapStart; globalSample < overlapEnd; globalSample++) {
+        const digital = segment.data
+          ? segment.data[ch * segment.stride + (globalSample - segment.start)]
+          : fillValue;
+        out[outIdx][globalSample - startSample] = digital * chScale + chOffset;
+      }
+    }
+    for (let s = overlapStart; s < overlapEnd; s++) covered[s - startSample] = 1;
+  }
+
+  for (let i = 0; i < nSamples; i++) {
+    if (!covered[i]) {
+      throw new Error(
+        `assembleWindow: sample ${startSample + i} (window [${startSample}, ${endSample})) is not covered by any segment`,
+      );
+    }
+  }
+
+  return { values: out, filledRanges };
+}

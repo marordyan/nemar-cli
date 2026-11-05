@@ -6,7 +6,11 @@
  * and converts what it is handed.
  */
 
-import type { DecodedSegment, FilledRange } from "../../../shared/zarr/assemble.js";
+import {
+  type DecodedSegment,
+  type FilledRange,
+  assembleWindow,
+} from "../../../shared/zarr/assemble.js";
 
 export type { DecodedSegment, FilledRange };
 
@@ -63,63 +67,22 @@ export interface AssembleTasteValuesResult {
  * silently.
  */
 export function assembleTasteValues(input: AssembleTasteValuesInput): AssembleTasteValuesResult {
-  const {
-    channels,
-    startSample,
-    nSamples,
-    segments,
-    scale,
-    offset,
-    fillValue,
-    significantDigits = TASTE_SIGNIFICANT_DIGITS,
-  } = input;
-
-  const endSample = startSample + nSamples;
-  const out: number[][] = channels.map(() => new Array<number>(nSamples));
-  const covered = new Uint8Array(nSamples);
-  const filledRanges: FilledRange[] = [];
-
-  for (const segment of segments) {
-    const overlapStart = Math.max(segment.start, startSample);
-    const overlapEnd = Math.min(segment.end, endSample);
-    if (overlapEnd <= overlapStart) continue;
-
-    if (!segment.data) {
-      const last = filledRanges[filledRanges.length - 1];
-      if (last && last.end === overlapStart) {
-        last.end = overlapEnd;
-      } else {
-        filledRanges.push({ start: overlapStart, end: overlapEnd });
-      }
+  const { significantDigits = TASTE_SIGNIFICANT_DIGITS, ...rest } = input;
+  let assembled: ReturnType<typeof assembleWindow>;
+  try {
+    assembled = assembleWindow(rest);
+  } catch (err) {
+    // Keep the tool's pinned error text: the core names itself, this tool names
+    // its own entry point.
+    if (err instanceof Error) {
+      err.message = err.message.replace(/^assembleWindow:/, "assembleTasteValues:");
     }
-
-    for (let outIdx = 0; outIdx < channels.length; outIdx++) {
-      const ch = channels[outIdx];
-      const chScale = scale[ch];
-      const chOffset = offset[ch];
-      for (let globalSample = overlapStart; globalSample < overlapEnd; globalSample++) {
-        const digital = segment.data
-          ? segment.data[ch * segment.stride + (globalSample - segment.start)]
-          : fillValue;
-        const physical = digital * chScale + chOffset;
-        out[outIdx][globalSample - startSample] = roundToSignificantDigits(
-          physical,
-          significantDigits,
-        );
-      }
-    }
-    for (let s = overlapStart; s < overlapEnd; s++) covered[s - startSample] = 1;
+    throw err;
   }
-
-  for (let i = 0; i < nSamples; i++) {
-    if (!covered[i]) {
-      throw new Error(
-        `assembleTasteValues: sample ${startSample + i} (window [${startSample}, ${endSample})) is not covered by any segment`,
-      );
-    }
-  }
-
-  return { values: out, filledRanges };
+  const values = assembled.values.map((row) =>
+    Array.from(row, (physical) => roundToSignificantDigits(physical, significantDigits)),
+  );
+  return { values, filledRanges: assembled.filledRanges };
 }
 
 /** Whether `channelCount x windowSamples` exceeds `cap` -- `read_window`'s

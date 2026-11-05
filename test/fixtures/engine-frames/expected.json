@@ -91,5 +91,15 @@
       "message": "no such handle: h9"
     },
     "payload": null
+  },
+  {
+    "file": "error-null-id.bin",
+    "header": {
+      "id": null,
+      "type": "error",
+      "code": "invalid_message",
+      "message": "header is not valid JSON"
+    },
+    "payload": null
   }
 ]

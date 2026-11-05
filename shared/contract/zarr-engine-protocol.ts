@@ -176,7 +176,8 @@ export const releasedSchema = z
 
 export const engineErrorSchema = z
   .object({
-    id,
+    /** null only when the request's id could not be read (JSON-RPC convention). */
+    id: id.nullable(),
     type: z.literal("error"),
     code: z.enum(ENGINE_ERROR_CODES),
     message: nonEmpty,

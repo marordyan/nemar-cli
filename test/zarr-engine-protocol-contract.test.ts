@@ -217,6 +217,13 @@ const CASES: Case[] = [
   },
   {
     def: "Error",
+    label: "error with a null id (the request id could not be read)",
+    doc: { id: null, type: "error", code: "invalid_message", message: "header is not valid JSON" },
+    mutate: set("id", 0),
+    mutation: "id 0 (null is the only non-integer allowed)",
+  },
+  {
+    def: "Error",
     label: "error, a different code",
     doc: { id: 8, type: "error", code: "out_of_range", message: "start_s beyond the recording" },
     mutate: set("code", "oops"),
@@ -229,6 +236,40 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
   { label: "an unknown message type", doc: { id: 1, type: "ping" } },
   { label: "no type at all", doc: { id: 1 } },
   { label: "a request without an id", doc: { type: "release", handle: "h1" } },
+  { label: "an error with id 0", doc: { id: 0, type: "error", code: "internal", message: "m" } },
+  {
+    label: "an error with a string id",
+    doc: { id: "1", type: "error", code: "internal", message: "m" },
+  },
+  {
+    label: "hello request with a null id",
+    doc: { id: null, type: "hello", protocol: "0.1", client: "c" },
+  },
+  {
+    label: "read_window request with a null id",
+    doc: { id: null, type: "read_window", handle: "h", start_s: 0, duration_s: 1 },
+  },
+  { label: "release request with a null id", doc: { id: null, type: "release", handle: "h" } },
+  {
+    label: "hello response with a null id",
+    doc: { id: null, type: "hello", protocol: "0.1", engine: "e" },
+  },
+  { label: "released with a null id", doc: { id: null, type: "released" } },
+  {
+    label: "window with a null id",
+    doc: {
+      id: null,
+      type: "window",
+      start_sample: 0,
+      n_samples: 0,
+      channels: [0],
+      dtype: "float64",
+      layout: "channel-major",
+      byte_order: "little",
+      filled_ranges: [],
+      payload_bytes: 0,
+    },
+  },
   { label: "a fractional id", doc: { id: 1.5, type: "released" } },
   { label: "a string id", doc: { id: "1", type: "released" } },
   {

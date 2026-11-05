@@ -30,7 +30,7 @@ It is not known yet whether the engine ships inside the CLI (plan A) or as a sep
    The payload limit is the engine's policy and is not in the schema.
    `shared/zarr/protocol-frame.ts` is the TypeScript codec; `scripts/zarr/engine_frame_fixtures.py` is an independent Python implementation, and `test/zarr-engine-frame.test.ts` requires the two to produce identical bytes.
 4. **The messages** are `hello`, `open`, `read_window`, `recipe` and `release`, answered by `hello`, `opened`, `window`, `recipe` and `released`, or by `error` with one of ten codes.
-   A request carries a client-chosen integer `id` of at least 1 and the response echoes it; v0 handles one request at a time.
+   A request carries a client-chosen integer `id` of at least 1 and the response echoes it; an `error` reply carries `id: null` when the request's id could not be read (an unparseable frame, invalid JSON, a missing or non-integer id), and no other message may; v0 handles one request at a time.
    `payload_bytes` is 0 on every message except `window`, where it equals `channels.length * n_samples` times 8 (`float64`) or 2 (`int16`); the JSON Schema documents that arithmetic and the zod mirror enforces it.
    `units: "digital"` returns the raw int16 with no scale or offset applied.
 5. **Versioning.**

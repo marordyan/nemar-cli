@@ -109,6 +109,16 @@ FIXTURES = [
         },
         None,
     ),
+    (
+        "error-null-id.bin",
+        {
+            "id": None,
+            "type": "error",
+            "code": "invalid_message",
+            "message": "header is not valid JSON",
+        },
+        None,
+    ),
 ]
 
 

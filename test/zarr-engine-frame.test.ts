@@ -79,6 +79,7 @@ function expectFrameError(kind: FrameErrorKind, fn: () => unknown) {
 describe("golden frames written by Python", () => {
   test("the fixture set covers hello, both window dtypes and an error", () => {
     expect(expected.map((e) => e.file).sort()).toEqual([
+      "error-null-id.bin",
       "error.bin",
       "hello-request.bin",
       "window-float64.bin",

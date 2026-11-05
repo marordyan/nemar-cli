@@ -453,7 +453,9 @@
       ],
       "properties": {
         "id": {
-          "$ref": "#/$defs/Id"
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "The id of the request this answers. null only when the request's id could not be read (unparseable frame, invalid JSON, missing or non-integer id); every other message, and every request, carries an integer id of at least 1."
         },
         "type": {
           "const": "error"

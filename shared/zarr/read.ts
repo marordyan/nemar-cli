@@ -128,8 +128,8 @@ async function fetchAndDecodeRangeRead(opts: {
  * `{ ok: false, stage, detail }`, for the caller to turn into its own text;
  * what is not caught (reading a response body, the window helpers, a
  * `JsonCache` that throws synchronously) can still throw, as it did before
- * this code moved. Request order is the footer, then
- * that shard's chunks, shard by shard.
+ * this code moved. Request order is the footer, then that shard's chunks,
+ * shard by shard.
  */
 export async function readLevel0Window(opts: {
   fetcher: Fetcher;

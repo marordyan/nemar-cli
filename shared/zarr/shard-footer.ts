@@ -32,10 +32,10 @@ export interface ShardFooterLoaded {
 /**
  * Load one shard's footer: from `cache` when a valid entry with exactly
  * `nInner` pairs is there, else one `Range` read of the shard's last
- * `footerByteLength(nInner)` bytes, written back to `cache`. A fetch or footer-parse failure is a typed
- * `{ error }`, for the caller to turn into its own text; reading the response
- * body and a `JsonCache` that throws synchronously are not caught and can
- * still throw, as before this code moved.
+ * `footerByteLength(nInner)` bytes, written back to `cache`. A fetch or
+ * footer-parse failure is a typed `{ error }`, for the caller to turn into its
+ * own text; reading the response body and a `JsonCache` that throws
+ * synchronously are not caught and can still throw, as before this code moved.
  *
  * `key` carries the dataset identity; the projection string
  * (`shardidx/<zarr>/<group>/0/<shard>`) is added here. Its `convertedAt` is

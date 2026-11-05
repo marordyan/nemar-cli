@@ -103,11 +103,12 @@ export function parseLevel0ArrayMetadata(
  * Fetch (or read from cache) the level-0 array's `zarr.json` for one store
  * group. `dataBase` is the index's own `data_base` (never `contract_base` --
  * this goes straight to the origin the same way `render_overview`'s chunk
- * fetches do, not through the zarr sub-app). Never throws: every failure
- * mode (network error, non-2xx, invalid JSON, a document that fails
- * `zarrArrayMetadataSchema`, or `attributes` missing a usable `scale[]`/
- * `offset[]`) is a typed `{ ok: false, detail }`, for the caller to turn into
- * its own tool error text.
+ * fetches do, not through the zarr sub-app). Every failure of the read itself
+ * (network error, non-2xx, unreadable body, invalid JSON, a document that
+ * fails `zarrArrayMetadataSchema`, or `attributes` missing a usable
+ * `scale[]`/`offset[]`) is a typed `{ ok: false, detail }`, for the caller to
+ * turn into its own tool error text. A `JsonCache` that throws is not caught
+ * and can still throw, as before this code moved.
  */
 export async function loadLevel0ArrayMetadata(opts: {
   fetcher: Fetcher;

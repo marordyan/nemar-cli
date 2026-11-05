@@ -88,6 +88,7 @@ import {
 } from "../../../../shared/contract/mcp.js";
 import type { ZarrGroup, ZarrIndex, ZarrStore } from "../../../../shared/contract/zarr-index.js";
 import { decodeBloscZstdInt16 } from "../../../../shared/zarr/codecs/blosc.js";
+import { fetchRangeBytes } from "../../../../shared/zarr/fetch-range.js";
 import { isV3Index } from "../../../../shared/zarr/index.js";
 import {
   type ChunkRead,
@@ -292,44 +293,6 @@ interface ShardFooterLoaded {
   bytes: number;
 }
 
-/**
- * Fetch and validate ONE `Range` response -- the single call site both
- * {@link loadShardFooter} and {@link fetchAndDecodeRangeRead} go through, so
- * they cannot drift apart on what "a valid Range response" means. A
- * compliant origin ALWAYS answers `206` to a `Range` request; a bare `200`
- * means the origin ignored `Range` and returned the whole object, which
- * would silently misalign every downstream byte offset (see the module
- * doc). The body length is asserted against `expectedLength` too -- a `206`
- * with the wrong slice is just as wrong as a `200`.
- */
-async function fetchRangeBytes(
-  deps: RecordingToolDeps,
-  url: string,
-  rangeHeader: string,
-  expectedLength: number,
-): Promise<{ buf: Uint8Array } | { error: string }> {
-  let response: Response;
-  try {
-    response = await deps.fetch(url, { headers: { Range: rangeHeader } });
-  } catch (err) {
-    return {
-      error: `network error fetching ${url}: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-  if (response.status !== 206) {
-    return {
-      error: `HTTP ${response.status} fetching ${url} with Range ${rangeHeader} (expected 206; a bare 200 means the origin ignored Range and would misalign every byte offset)`,
-    };
-  }
-  const buf = new Uint8Array(await response.arrayBuffer());
-  if (buf.length !== expectedLength) {
-    return {
-      error: `${url} (Range ${rangeHeader}) returned ${buf.length} bytes, expected exactly ${expectedLength}`,
-    };
-  }
-  return { buf };
-}
-
 async function loadShardFooter(
   deps: RecordingToolDeps,
   datasetId: string,
@@ -373,7 +336,7 @@ async function loadShardFooter(
 
   const footerLen = footerByteLength(nInner);
   const url = `${dataBase}${zarr}/${groupName}/0/c/0/${shardIndex}`;
-  const fetched = await fetchRangeBytes(deps, url, `bytes=-${footerLen}`, footerLen);
+  const fetched = await fetchRangeBytes(deps.fetch, url, `bytes=-${footerLen}`, footerLen);
   if ("error" in fetched) {
     return { error: fetched.error };
   }
@@ -431,7 +394,7 @@ async function fetchAndDecodeRangeRead(opts: {
   const url = `${dataBase}${zarr}/${groupName}/0/c/0/${shardIndex}`;
   const expectedLength = read.end - read.start + 1;
   const fetched = await fetchRangeBytes(
-    deps,
+    deps.fetch,
     url,
     `bytes=${read.start}-${read.end}`,
     expectedLength,

@@ -18,7 +18,8 @@
 
 import type { Database } from "bun:sqlite";
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Hono } from "hono";
 import type { ReadWindowOutput } from "../../shared/contract/mcp.js";
 import { READ_WINDOW_TASTE_MAX_CHANNEL_SAMPLES } from "../../shared/contract/mcp.js";
@@ -1001,6 +1002,111 @@ describe("read_window (route)", () => {
         fixtureServer.ignoreRangeForKeys.delete(key);
       }
     });
+  });
+
+  // ---------------------------------------------------------------------
+  // Golden (G1): the whole tools/call result and the fixture-server request
+  // log, pinned before the read path moves into shared/zarr/. The file is
+  // written once (NEMAR_WRITE_GOLDEN=1, only if absent) on the unmodified
+  // code and never overwritten, so it cannot be re-baselined.
+  // ---------------------------------------------------------------------
+
+  describe("read_window golden (G1)", () => {
+    const GOLDEN_PATH = join(import.meta.dir, "fixtures/mcp/nm099500-read-window-golden.json");
+
+    // Capture only when asked AND the file is absent: never an overwrite.
+    const capture = process.env.NEMAR_WRITE_GOLDEN === "1" && !existsSync(GOLDEN_PATH);
+    const captured: Record<string, unknown> = {};
+
+    afterAll(() => {
+      if (capture) writeFileSync(GOLDEN_PATH, `${JSON.stringify(captured, null, 2)}\n`);
+    });
+
+    const GOLDEN_CASES: Array<{ name: string; args: Record<string, unknown> }> = [
+      {
+        name: "recipe",
+        args: { dataset_id: SHARD_ID, recording: SHARD_ZARR, start_s: 0, duration_s: 26 },
+      },
+      {
+        name: "one-chunk",
+        args: {
+          dataset_id: SHARD_ID,
+          recording: SHARD_ZARR,
+          start_s: 1,
+          duration_s: 2,
+          channels: [0, 1, 2, 3],
+          taste: true,
+        },
+      },
+      {
+        name: "absent",
+        args: {
+          dataset_id: SHARD_ID,
+          recording: SHARD_ZARR,
+          start_s: 6,
+          duration_s: 8,
+          channels: [0, 1, 2, 3],
+          taste: true,
+        },
+      },
+      {
+        name: "boundary",
+        args: {
+          dataset_id: SHARD_ID,
+          recording: SHARD_ZARR,
+          start_s: 14,
+          duration_s: 4,
+          channels: [1, 3],
+          taste: true,
+        },
+      },
+      {
+        name: "tail",
+        args: {
+          dataset_id: SHARD_ID,
+          recording: SHARD_ZARR,
+          start_s: 24,
+          duration_s: 2,
+          channels: [0, 1, 2, 3],
+          taste: true,
+        },
+      },
+      {
+        name: "refusal",
+        args: {
+          dataset_id: SHARD_ID,
+          recording: SHARD_ZARR,
+          start_s: 0,
+          duration_s: 61,
+          channels: [0, 1, 2, 3],
+          taste: true,
+        },
+      },
+    ];
+
+    for (const { name, args } of GOLDEN_CASES) {
+      test(`${name}: result and requests match the committed golden`, async () => {
+        const { body } = await callTool(app, env(db), 1, "read_window", args);
+        const actual = {
+          args,
+          result: body.result,
+          requests: fixtureServer.requestLog.map((r) => ({
+            method: r.method,
+            url: r.url,
+            range: r.range,
+          })),
+        };
+
+        if (capture) {
+          captured[name] = actual;
+          return;
+        }
+
+        const golden = JSON.parse(readFileSync(GOLDEN_PATH, "utf8")) as Record<string, unknown>;
+        expect(actual).toEqual(golden[name] as typeof actual);
+        expect(JSON.stringify(actual)).toBe(JSON.stringify(golden[name]));
+      });
+    }
   });
 });
 

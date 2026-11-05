@@ -133,8 +133,9 @@ export type ProjectionReadResult<T> = { status: "hit"; value: T } | { status: "m
 /** The minimal Standard-Schema-shaped validator every payload schema this
  *  file accepts must implement -- zod's own `.safeParse` already is one, so
  *  callers pass a real zod schema (`recordingsProjectionSchema`,
- *  `eventRowsProjectionSchema`, `shardIndexProjectionSchema`) with no
- *  adapter. */
+ *  `eventRowsProjectionSchema`) with no adapter. (The shard-footer and
+ *  level-0 array schemas moved into `shared/zarr/`, which validates the
+ *  values the `JsonCache` adapter hands back.) */
 export interface ProjectionPayloadSchema<T> {
   safeParse: (input: unknown) => { success: boolean; data?: T };
 }

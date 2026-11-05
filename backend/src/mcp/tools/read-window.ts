@@ -48,7 +48,7 @@
  * cached -- a taste is an inline decode of a specific window on demand.
  *
  * **Every `Range` fetch is validated, not just trusted.** `fetchRangeBytes`
- * is the ONE call site both the footer read and the chunk read go through:
+ * (`shared/zarr/fetch-range.ts`) is the ONE call site both the footer read and the chunk read go through:
  * a response to a `Range` request MUST be `206` (a compliant origin never
  * answers `200` to one), and its body length must equal exactly what was
  * asked for. An origin that silently ignores `Range` and returns the whole

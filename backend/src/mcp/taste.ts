@@ -1,9 +1,10 @@
 /**
  * Pure assembly for `read_window` taste mode (epic #1065 phase 4, issue
  * #1296): turn decoded (or fill-valued) inner-chunk segments into a
- * `[channel][sample]` physical-unit array. No I/O -- `read-window.ts` does
- * the fetching, footer parsing, and blosc decode; this file only assembles
- * and converts what it is handed.
+ * `[channel][sample]` physical-unit array. No I/O -- `shared/zarr/read.ts`
+ * does the fetching, footer parsing, and blosc decode, and
+ * `shared/zarr/assemble.ts` the assembly; this file only rounds what it is
+ * handed and holds the taste caps.
  */
 
 import {

@@ -53,12 +53,16 @@ export interface DecodedFrame {
 }
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8", { fatal: true });
+// ignoreBOM keeps a leading U+FEFF in the decoded text, so JSON.parse rejects it;
+// by default the decoder would strip it silently and a BOM-prefixed header would
+// be accepted. Invalid UTF-8 throws (fatal) and becomes a bad_header.
+const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 /** The `payload_bytes` a header declares: absent means 0. */
 function declaredPayloadBytes(header: Record<string, unknown>): number {
   const n = header.payload_bytes;
   if (n === undefined) return 0;
+  // The typeof is for the type checker; Number.isInteger alone rejects every non-number.
   if (typeof n !== "number" || !Number.isInteger(n) || n < 0) {
     throw new FrameError("bad_header", "payload_bytes must be a non-negative integer");
   }
@@ -67,9 +71,11 @@ function declaredPayloadBytes(header: Record<string, unknown>): number {
 
 /**
  * Encode one frame. The header is serialized with `JSON.stringify` in the
- * object's own key order (compact, no spaces), so a caller that builds headers
- * with a fixed key order gets identical bytes from any language. Throws a
- * `FrameError` if `payload_bytes` disagrees with `payload`.
+ * object's own key order (compact, no spaces). Decoders must accept any valid
+ * JSON header; byte-identical output across languages is only claimed for the
+ * fixtures' headers (integers, ASCII strings, a fixed key order), not for
+ * arbitrary JSON (float formatting and non-ASCII escaping differ by language).
+ * Throws a `FrameError` if `payload_bytes` disagrees with `payload`.
  */
 export function encodeFrame(header: Record<string, unknown>, payload?: Uint8Array): Uint8Array {
   const body = payload ?? new Uint8Array(0);

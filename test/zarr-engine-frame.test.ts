@@ -228,6 +228,62 @@ describe("malformed frames fail with a typed error", () => {
   });
 });
 
+/** A frame built by hand: `headerBytes` padded with spaces to an 8-byte boundary, then `payload`. */
+function rawFrame(headerBytes: Uint8Array, payload = new Uint8Array(0)): Uint8Array {
+  const pad = (8 - ((8 + headerBytes.length) % 8)) % 8;
+  const headerLen = headerBytes.length + pad;
+  const out = new Uint8Array(8 + headerLen + payload.length);
+  out.set(new TextEncoder().encode("NZE0"));
+  new DataView(out.buffer).setUint32(4, headerLen, true);
+  out.set(headerBytes, 8);
+  out.fill(0x20, 8 + headerBytes.length, 8 + headerLen);
+  out.set(payload, 8 + headerLen);
+  return out;
+}
+const text = (t: string) => new TextEncoder().encode(t);
+
+describe("hand-built hostile frames", () => {
+  const BAD_PAYLOAD_BYTES: [string, string][] = [
+    ["negative", '{"id":1,"type":"released","payload_bytes":-1}'],
+    ["fractional", '{"id":1,"type":"released","payload_bytes":1.5}'],
+    ["null", '{"id":1,"type":"released","payload_bytes":null}'],
+    ["a string", '{"id":1,"type":"released","payload_bytes":"0"}'],
+  ];
+  for (const [what, json] of BAD_PAYLOAD_BYTES) {
+    test(`payload_bytes ${what} is a bad_header`, () => {
+      expectFrameError("bad_header", () => decodeFrame(rawFrame(text(json))));
+    });
+  }
+
+  test("the same header with a valid payload_bytes decodes (the rows above test that value)", () => {
+    const ok = decodeFrame(rawFrame(text('{"id":1,"type":"released","payload_bytes":0}')));
+    expect(ok.header.payload_bytes).toBe(0);
+  });
+
+  test("header_len 0xFFFFFFFF is header_too_large", () => {
+    const bad = rawFrame(text('{"id":1,"type":"released"}'));
+    new DataView(bad.buffer).setUint32(4, 0xffffffff, true);
+    expectFrameError("header_too_large", () => decodeFrame(bad));
+  });
+
+  test("invalid UTF-8 in the header is a bad_header", () => {
+    const json = text('{"id":1,"type":"released","message":"_"}');
+    const at = json.indexOf(0x5f);
+    json[at] = 0xff; // never valid in UTF-8
+    expectFrameError("bad_header", () => decodeFrame(rawFrame(json)));
+  });
+
+  test("a UTF-8 BOM before the header is rejected, not skipped", () => {
+    const json = text('{"id":1,"type":"released"}');
+    const withBom = new Uint8Array(3 + json.length);
+    withBom.set([0xef, 0xbb, 0xbf]);
+    withBom.set(json, 3);
+    expectFrameError("bad_header", () => decodeFrame(rawFrame(withBom)));
+    // Without the BOM the same header is fine.
+    expect(decodeFrame(rawFrame(json)).header).toEqual({ id: 1, type: "released" });
+  });
+});
+
 describe("frame layout, pinned independently of the fixtures", () => {
   test("a frame with no payload_bytes: magic, LE length, padded header, nothing after", () => {
     const out = encodeFrame({ id: 1, type: "released" });

@@ -22,6 +22,7 @@
 
 import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { Hono } from "hono";
 import v3Fixture from "../../test/fixtures/zarr-index-v3.json";
 import {
@@ -778,6 +779,24 @@ describe("GET /schemas/:name serves the published contracts", () => {
     );
   });
 
+  test("serves the engine protocol schema, v0, under its own $id", async () => {
+    const res = await app.request("/schemas/zarr-engine-protocol-v0.json");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/schema+json");
+    const schema = (await res.json()) as { $id: string; $schema: string; description: string };
+    expect(schema.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
+    expect(schema.$id).toBe("https://api.nemar.org/schemas/zarr-engine-protocol-v0.json");
+    // The served bytes are the committed file, and v0 says it is unstable.
+    const onDisk = JSON.parse(
+      readFileSync(
+        new URL("../../shared/zarr-engine-protocol.schema.json", import.meta.url),
+        "utf8",
+      ),
+    );
+    expect(schema).toEqual(onDisk);
+    expect(schema.description).toContain("UNSTABLE");
+  });
+
   test("it is reachable on the REAL app, at the real path", async () => {
     /**
      * The mount, not just the sub-app. A route that works in isolation and was
@@ -812,5 +831,6 @@ describe("GET /schemas/:name serves the published contracts", () => {
     const body = (await res.json()) as { available: string[] };
     expect(body.available).toEqual(SCHEMA_NAMES);
     expect(body.available).toContain("zarr-index-v3.json");
+    expect(body.available).toContain("zarr-engine-protocol-v0.json");
   });
 });

@@ -1,0 +1,498 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api.nemar.org/schemas/zarr-engine-protocol-v0.json",
+  "title": "NEMAR Zarr engine protocol (v0, unstable)",
+  "description": "The header of one frame of the local protocol the NEMAR CLI engine speaks over stdin/stdout (frame: magic NZE0, u32 LE header_len, UTF-8 JSON header padded with spaces to an 8-byte boundary, then payload_bytes of binary samples; see ADR 0118). v0 is UNSTABLE and may change in place; the published versions that follow will not. hello must match protocol \"0.1\" exactly in v0; from v1 only the major must match. Missing data is never zeros: it is reported in filled_ranges (ADR 0005). Compatibility rule: REQUESTS are closed (additionalProperties false) and the engine MUST reject a request with an unknown field as invalid_message; RESPONSES are open and a client MUST ignore unknown fields in a response, so that from v1 a minor version may add response fields.  JSON Schema alone cannot check the window payload_bytes arithmetic or that opened scale and offset have n_channels entries; the zod mirror does, and a client in another language must check them itself. The engine checks the hello protocol field before validating the rest of a request, so a different version gets unsupported_version. Each message is one object, discriminated by type (and, for hello and recipe, by which of request or response fields it carries).",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/HelloRequest"
+    },
+    {
+      "$ref": "#/$defs/HelloResponse"
+    },
+    {
+      "$ref": "#/$defs/OpenRequest"
+    },
+    {
+      "$ref": "#/$defs/Opened"
+    },
+    {
+      "$ref": "#/$defs/ReadWindowRequest"
+    },
+    {
+      "$ref": "#/$defs/Window"
+    },
+    {
+      "$ref": "#/$defs/RecipeRequest"
+    },
+    {
+      "$ref": "#/$defs/RecipeResponse"
+    },
+    {
+      "$ref": "#/$defs/ReleaseRequest"
+    },
+    {
+      "$ref": "#/$defs/Released"
+    },
+    {
+      "$ref": "#/$defs/Error"
+    }
+  ],
+  "$defs": {
+    "Id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Client-chosen request id; a response echoes the id of the request it answers."
+    },
+    "PayloadBytesZero": {
+      "const": 0,
+      "description": "payload_bytes is 0 on every message except window, and may be omitted (omitted means 0)."
+    },
+    "DatasetId": {
+      "type": "string",
+      "pattern": "^[a-z]{2}[0-9]{6}$"
+    },
+    "Handle": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Opaque engine-chosen token naming an opened recording."
+    },
+    "ChannelIndices": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "description": "Zero-based store channel indices. In a request, omitting channels means all store channels in ascending order. In a window response, payload row i is channels[i]. Indices must not repeat.",
+      "uniqueItems": true
+    },
+    "ErrorCode": {
+      "enum": [
+        "invalid_message",
+        "unsupported_version",
+        "not_found",
+        "not_ready",
+        "unknown_handle",
+        "out_of_range",
+        "too_large",
+        "upstream_error",
+        "decode_error",
+        "internal"
+      ]
+    },
+    "FilledRange": {
+      "type": "object",
+      "required": [
+        "start_sample",
+        "end_sample"
+      ],
+      "properties": {
+        "start_sample": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end_sample": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "HelloRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "protocol",
+        "client"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "hello"
+        },
+        "protocol": {
+          "const": "0.1"
+        },
+        "client": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload_bytes": {
+          "$ref": "#/$defs/PayloadBytesZero"
+        }
+      },
+      "description": "The client's opening message. The engine checks protocol before validating anything else, so a different version is answered with unsupported_version, not invalid_message."
+    },
+    "HelloResponse": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "protocol",
+        "engine",
+        "max_payload_bytes"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "hello"
+        },
+        "protocol": {
+          "const": "0.1"
+        },
+        "engine": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload_bytes": {
+          "$ref": "#/$defs/PayloadBytesZero"
+        },
+        "max_payload_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The largest payload, in bytes, the engine will send in one window. A read_window whose window would exceed it is answered with too_large. The value is engine policy."
+        }
+      }
+    },
+    "OpenRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "dataset_id",
+        "recording"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "open"
+        },
+        "dataset_id": {
+          "$ref": "#/$defs/DatasetId"
+        },
+        "recording": {
+          "type": "string",
+          "minLength": 1
+        },
+        "group": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload_bytes": {
+          "$ref": "#/$defs/PayloadBytesZero"
+        }
+      }
+    },
+    "Opened": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "handle",
+        "dataset_id",
+        "recording",
+        "group",
+        "n_channels",
+        "sample_rate_hz",
+        "n_samples",
+        "scale",
+        "offset"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "opened"
+        },
+        "handle": {
+          "$ref": "#/$defs/Handle"
+        },
+        "dataset_id": {
+          "$ref": "#/$defs/DatasetId"
+        },
+        "recording": {
+          "type": "string",
+          "minLength": 1
+        },
+        "group": {
+          "type": "string",
+          "minLength": 1
+        },
+        "n_channels": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sample_rate_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "n_samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "payload_bytes": {
+          "$ref": "#/$defs/PayloadBytesZero"
+        },
+        "scale": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Per store channel, one entry per channel (length equals n_channels; JSON Schema cannot check this, the zod mirror does and clients must). physical = digital * scale[c] + offset[c] for store channel c. This is what a client reading units \"digital\" needs to convert. Channel names are deferred and not in v0."
+        },
+        "offset": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Per store channel, one entry per channel (length equals n_channels; not checkable in JSON Schema). See scale: physical = digital * scale[c] + offset[c]."
+        }
+      }
+    },
+    "ReadWindowRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "handle",
+        "start_s",
+        "duration_s"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "read_window"
+        },
+        "handle": {
+          "$ref": "#/$defs/Handle"
+        },
+        "start_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "duration_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "channels": {
+          "$ref": "#/$defs/ChannelIndices"
+        },
+        "units": {
+          "enum": [
+            "physical",
+            "digital"
+          ],
+          "description": "Default physical (float64). digital is the raw int16 with no scale or offset applied."
+        },
+        "payload_bytes": {
+          "$ref": "#/$defs/PayloadBytesZero"
+        }
+      },
+      "description": "Asks for a window of a recording opened by handle. Time rule, identical to the MCP read_window tool: start_sample = floor(start_s * sample_rate_hz + 0.5) and n_samples = floor(duration_s * sample_rate_hz + 0.5), with ties rounding up. If n_samples < 1, or start_sample >= the recording's n_samples, or start_sample + n_samples > the recording's n_samples, the engine answers out_of_range; it never returns a truncated window."
+    },
+    "Window": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "start_sample",
+        "n_samples",
+        "channels",
+        "dtype",
+        "layout",
+        "byte_order",
+        "filled_ranges",
+        "payload_bytes"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "window"
+        },
+        "start_sample": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "n_samples": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "channels": {
+          "$ref": "#/$defs/ChannelIndices"
+        },
+        "dtype": {
+          "enum": [
+            "float64",
+            "int16"
+          ]
+        },
+        "layout": {
+          "const": "channel-major"
+        },
+        "byte_order": {
+          "const": "little"
+        },
+        "filled_ranges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FilledRange"
+          },
+          "description": "Sample ranges that could not be read: absolute sample indices of the recording (not offsets into the window), end-exclusive, sorted ascending, non-overlapping, each inside [start_sample, start_sample + n_samples) of this window, with start_sample < end_sample. The payload values inside a filled range are the array's fill value (0 for these stores) converted like any other value, so for units \"physical\" they are offset[c], not zero; they are placeholders, never data (ADR 0005). Order, containment and start < end are guaranteed by the engine and are checked by neither schema copy."
+        },
+        "payload_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Required on window, even when 0. Must equal channels.length * n_samples * (8 for float64, 2 for int16). JSON Schema cannot express this arithmetic; the zod mirror and decodeFrame enforce it."
+        }
+      }
+    },
+    "RecipeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "handle",
+        "start_s",
+        "duration_s"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "recipe"
+        },
+        "handle": {
+          "$ref": "#/$defs/Handle"
+        },
+        "start_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "duration_s": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "channels": {
+          "$ref": "#/$defs/ChannelIndices"
+        },
+        "payload_bytes": {
+          "$ref": "#/$defs/PayloadBytesZero"
+        }
+      },
+      "description": "Asks for a window of a recording opened by handle. Time rule, identical to the MCP read_window tool: start_sample = floor(start_s * sample_rate_hz + 0.5) and n_samples = floor(duration_s * sample_rate_hz + 0.5), with ties rounding up. If n_samples < 1, or start_sample >= the recording's n_samples, or start_sample + n_samples > the recording's n_samples, the engine answers out_of_range; it never returns a truncated window."
+    },
+    "RecipeResponse": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "recipe"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "recipe"
+        },
+        "recipe": {
+          "type": "object",
+          "description": "The MCP read-recipe object (shared/contract/mcp.ts readRecipeSchema), typed loosely in v0. A full language-neutral recipe schema is deferred to v1."
+        },
+        "payload_bytes": {
+          "$ref": "#/$defs/PayloadBytesZero"
+        }
+      }
+    },
+    "ReleaseRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type",
+        "handle"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "release"
+        },
+        "handle": {
+          "$ref": "#/$defs/Handle"
+        },
+        "payload_bytes": {
+          "$ref": "#/$defs/PayloadBytesZero"
+        }
+      }
+    },
+    "Released": {
+      "type": "object",
+      "required": [
+        "id",
+        "type"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Id"
+        },
+        "type": {
+          "const": "released"
+        },
+        "payload_bytes": {
+          "$ref": "#/$defs/PayloadBytesZero"
+        }
+      }
+    },
+    "Error": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "code",
+        "message"
+      ],
+      "properties": {
+        "id": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "The id of the request this answers. null only when the request's id could not be read (unparseable frame, invalid JSON, missing or non-integer id); every other message, and every request, carries an integer id of at least 1."
+        },
+        "type": {
+          "const": "error"
+        },
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "payload_bytes": {
+          "$ref": "#/$defs/PayloadBytesZero"
+        }
+      }
+    }
+  }
+}

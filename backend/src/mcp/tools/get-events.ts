@@ -41,10 +41,9 @@
  * itself, straight from `fzstd` (the same pure-JS decoder
  * `shared/zarr/codecs/blosc.ts` already uses) -- functionally identical to
  * what the package would have supplied for ZSTD, with none of its SNAPPY
- * baggage. A dataset whose
- * parquet ever used a codec other than ZSTD would throw here (hyparquet's
- * own error for a missing compressor entry), which is preferable to a
- * bundle that cannot start at all.
+ * baggage. A dataset whose parquet ever used a codec other than ZSTD would
+ * throw here (hyparquet's own error for a missing compressor entry), which
+ * is preferable to a bundle that cannot start at all.
  *
  * Deliberately reads every column the parquet file has (no `columns` filter
  * on `parquetReadObjects`) rather than restricting to the eight named

@@ -60,7 +60,9 @@
  * never as a request failure.
  */
 
+import type { CacheKey, JsonCache } from "../../../shared/zarr/interfaces.js";
 import type { CacheLike } from "../routes/zarr-data.js";
+import type { RecordingToolDeps } from "./tool-types.js";
 
 /** 7 days: sound because the key carries a conversion identity (see module
  *  doc), not because a commit is immutable -- it is not. */
@@ -131,8 +133,9 @@ export type ProjectionReadResult<T> = { status: "hit"; value: T } | { status: "m
 /** The minimal Standard-Schema-shaped validator every payload schema this
  *  file accepts must implement -- zod's own `.safeParse` already is one, so
  *  callers pass a real zod schema (`recordingsProjectionSchema`,
- *  `eventRowsProjectionSchema`, `shardIndexProjectionSchema`) with no
- *  adapter. */
+ *  `eventRowsProjectionSchema`) with no adapter. (The shard-footer and
+ *  level-0 array schemas moved into `shared/zarr/`, which validates the
+ *  values the `JsonCache` adapter hands back.) */
 export interface ProjectionPayloadSchema<T> {
   safeParse: (input: unknown) => { success: boolean; data?: T };
 }
@@ -183,6 +186,31 @@ export function writeJsonProjection(
     headers: { "Content-Type": "application/json", "Cache-Control": PROJECTION_CACHE_CONTROL },
   });
   executionCtx.waitUntil(safeCachePutEntry(cache, url, entry));
+}
+
+/** The Worker's {@link JsonCache} for the shared Zarr read core: keys go
+ *  through {@link projectionUrl} (so cache URLs are exactly what the tools
+ *  wrote before the core existed) and entries through the Cache API. Values
+ *  come back UNVALIDATED -- the core owns the schemas and treats an invalid
+ *  entry as a miss. */
+export function mcpJsonCache(deps: RecordingToolDeps): JsonCache {
+  return {
+    async get(key: CacheKey): Promise<unknown | undefined> {
+      const url = projectionUrl({ env: deps.env, ...key });
+      const hit = await safeCacheMatch(deps.cache(), url);
+      if (!hit) return undefined;
+      try {
+        return await hit.json();
+      } catch (err) {
+        console.error("[mcp] projection cache hit did not parse as JSON", { url }, err);
+        return undefined;
+      }
+    },
+    put(key: CacheKey, value: unknown): void {
+      const url = projectionUrl({ env: deps.env, ...key });
+      writeJsonProjection(deps.executionCtx, deps.cache(), url, value);
+    },
+  };
 }
 
 export type BinaryProjectionReadResult =

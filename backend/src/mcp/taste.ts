@@ -1,40 +1,19 @@
 /**
  * Pure assembly for `read_window` taste mode (epic #1065 phase 4, issue
  * #1296): turn decoded (or fill-valued) inner-chunk segments into a
- * `[channel][sample]` physical-unit array. No I/O -- `read-window.ts` does
- * the fetching, footer parsing, and blosc decode; this file only assembles
- * and converts what it is handed.
+ * `[channel][sample]` physical-unit array. No I/O -- `shared/zarr/read.ts`
+ * does the fetching, footer parsing, and blosc decode, and
+ * `shared/zarr/assemble.ts` the assembly; this file only rounds what it is
+ * handed and holds the taste caps.
  */
 
-/** One inner chunk's contribution to the requested window, in GLOBAL sample
- *  coordinates. Two DELIBERATELY SEPARATE quantities live here, never
- *  conflated (a real production bug, caught against nm000329's live shard 1:
- *  a boundary chunk decodes to a FULL `chunk_samples`-wide buffer, fill-
- *  padded past the array's real extent -- Zarr never emits a narrower
- *  chunk, even for an array's final boundary chunk):
- *
- *   - `start`/`end`: the chunk's VALID sample span -- how much of it is
- *     real, in-array data, truncated at the array's `n_samples` for a
- *     boundary chunk. This is what {@link assembleTasteValues} uses to
- *     decide which GLOBAL sample positions this segment actually answers
- *     for.
- *   - `stride`: the decoded buffer's actual per-channel COLUMN COUNT --
- *     always the group's nominal `chunk_samples` for a present chunk,
- *     regardless of how much of that is "valid" per `start`/`end`. This is
- *     what indexes INTO `data` (`data[ch * stride + localCol]`). Using
- *     `end - start` (the valid width) as the stride instead is exactly the
- *     bug: it works by coincidence for channel 0 (offset 0 either way) and
- *     silently reads every other channel's samples from the wrong byte
- *     offset.
- *
- *  `data` is `null` for an absent (fill-value) chunk -- `stride` is still
- *  set (to `chunk_samples`) for shape symmetry, but unused. */
-export interface DecodedSegment {
-  start: number;
-  end: number;
-  stride: number;
-  data: Int16Array | null;
-}
+import {
+  type DecodedSegment,
+  type FilledRange,
+  assembleWindow,
+} from "../../../shared/zarr/assemble.js";
+
+export type { DecodedSegment, FilledRange };
 
 /** Round `value` to `digits` significant figures. `0` stays `0` (no
  *  `log10(0)`); everything else uses the standard
@@ -50,17 +29,6 @@ export function roundToSignificantDigits(value: number, digits: number): number 
 }
 
 export const TASTE_SIGNIFICANT_DIGITS = 6;
-
-/** A GLOBAL sample range, half-open, that was fill-substituted (no stored
- *  inner chunk) rather than read from a real recorded chunk -- ADR 0005's
- *  "partial data is reported, never silently substituted" applied to a
- *  taste's per-sample gaps, which are otherwise indistinguishable from real
- *  near-flat signal (a fill value is exactly the channel's own baseline
- *  `offset[ch]`). */
-export interface FilledRange {
-  start: number;
-  end: number;
-}
 
 export interface AssembleTasteValuesInput {
   /** The requested output channels, in the ORDER requested -- each is an
@@ -100,63 +68,22 @@ export interface AssembleTasteValuesResult {
  * silently.
  */
 export function assembleTasteValues(input: AssembleTasteValuesInput): AssembleTasteValuesResult {
-  const {
-    channels,
-    startSample,
-    nSamples,
-    segments,
-    scale,
-    offset,
-    fillValue,
-    significantDigits = TASTE_SIGNIFICANT_DIGITS,
-  } = input;
-
-  const endSample = startSample + nSamples;
-  const out: number[][] = channels.map(() => new Array<number>(nSamples));
-  const covered = new Uint8Array(nSamples);
-  const filledRanges: FilledRange[] = [];
-
-  for (const segment of segments) {
-    const overlapStart = Math.max(segment.start, startSample);
-    const overlapEnd = Math.min(segment.end, endSample);
-    if (overlapEnd <= overlapStart) continue;
-
-    if (!segment.data) {
-      const last = filledRanges[filledRanges.length - 1];
-      if (last && last.end === overlapStart) {
-        last.end = overlapEnd;
-      } else {
-        filledRanges.push({ start: overlapStart, end: overlapEnd });
-      }
+  const { significantDigits = TASTE_SIGNIFICANT_DIGITS, ...rest } = input;
+  let assembled: ReturnType<typeof assembleWindow>;
+  try {
+    assembled = assembleWindow(rest);
+  } catch (err) {
+    // Keep the tool's pinned error text: the core names itself, this tool names
+    // its own entry point.
+    if (err instanceof Error) {
+      err.message = err.message.replace(/^assembleWindow:/, "assembleTasteValues:");
     }
-
-    for (let outIdx = 0; outIdx < channels.length; outIdx++) {
-      const ch = channels[outIdx];
-      const chScale = scale[ch];
-      const chOffset = offset[ch];
-      for (let globalSample = overlapStart; globalSample < overlapEnd; globalSample++) {
-        const digital = segment.data
-          ? segment.data[ch * segment.stride + (globalSample - segment.start)]
-          : fillValue;
-        const physical = digital * chScale + chOffset;
-        out[outIdx][globalSample - startSample] = roundToSignificantDigits(
-          physical,
-          significantDigits,
-        );
-      }
-    }
-    for (let s = overlapStart; s < overlapEnd; s++) covered[s - startSample] = 1;
+    throw err;
   }
-
-  for (let i = 0; i < nSamples; i++) {
-    if (!covered[i]) {
-      throw new Error(
-        `assembleTasteValues: sample ${startSample + i} (window [${startSample}, ${endSample})) is not covered by any segment`,
-      );
-    }
-  }
-
-  return { values: out, filledRanges };
+  const values = assembled.values.map((row) =>
+    Array.from(row, (physical) => roundToSignificantDigits(physical, significantDigits)),
+  );
+  return { values, filledRanges: assembled.filledRanges };
 }
 
 /** Whether `channelCount x windowSamples` exceeds `cap` -- `read_window`'s

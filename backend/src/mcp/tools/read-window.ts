@@ -48,7 +48,7 @@
  * cached -- a taste is an inline decode of a specific window on demand.
  *
  * **Every `Range` fetch is validated, not just trusted.** `fetchRangeBytes`
- * is the ONE call site both the footer read and the chunk read go through:
+ * (`shared/zarr/fetch-range.ts`) is the ONE call site both the footer read and the chunk read go through:
  * a response to a `Range` request MUST be `206` (a compliant origin never
  * answers `200` to one), and its body length must equal exactly what was
  * asked for. An origin that silently ignores `Range` and returns the whole
@@ -78,7 +78,6 @@
  */
 
 import type { CallToolResult } from "@modelcontextprotocol/server";
-import { z } from "zod";
 import {
   READ_WINDOW_TASTE_MAX_CHANNEL_SAMPLES,
   type ReadWindowInput,
@@ -87,21 +86,9 @@ import {
   readWindowOutputSchema,
 } from "../../../../shared/contract/mcp.js";
 import type { ZarrGroup, ZarrIndex, ZarrStore } from "../../../../shared/contract/zarr-index.js";
-import { decodeBloscZstdInt16 } from "../../../../shared/zarr/codecs/blosc.js";
 import { isV3Index } from "../../../../shared/zarr/index.js";
-import {
-  type ChunkRead,
-  type ShardIndexEntry,
-  chunkSampleSpan,
-  footerByteLength,
-  innerIndicesForWindowInShard,
-  nInnerForShard,
-  parseShardFooter,
-  planShardReads,
-  shardEntriesFromPairs,
-  shardEntriesToPairs,
-  shardsForWindow,
-} from "../../../../shared/zarr/sharding.js";
+import { readLevel0Window } from "../../../../shared/zarr/read.js";
+import { nInnerForShard } from "../../../../shared/zarr/sharding.js";
 import { type Level0ArrayMetadata, loadLevel0ArrayMetadata } from "../array-metadata.js";
 import {
   type PublicDatasetRow,
@@ -112,9 +99,8 @@ import {
 } from "../catalog-row.js";
 import { type EnvelopeIndexFacts, buildEnvelopeForStore } from "../envelope.js";
 import { readZarrIndex } from "../index-reader.js";
-import { projectionUrl, readJsonProjection, writeJsonProjection } from "../projection-cache.js";
+import { mcpJsonCache } from "../projection-cache.js";
 import {
-  type DecodedSegment,
   type FilledRange,
   MAX_TASTE_DECODE_SAMPLES,
   TASTE_SIGNIFICANT_DIGITS,
@@ -270,214 +256,6 @@ function decodeBudgetResult(opts: {
   return toolError(
     `read_window taste for group "${groupName}" of recording "${recording}" in dataset "${datasetId}" would DECODE ${product} samples (${storeChannelCount} channels in the store x ${windowSamples} samples at ${rate} Hz), over the ${MAX_TASTE_DECODE_SAMPLES} limit. A stored chunk holds every channel, so asking for fewer channels does not reduce this; shorten the window to about ${maxDuration} s or less, or omit taste for a recipe.`,
   );
-}
-
-/** Cached shard-footer payload shape: `[offset, nbytes]` pairs, `[-1, -1]`
- *  meaning absent (`sharding.ts`'s `shardEntriesToPairs`/`shardEntriesFromPairs`).
- *  A pair that is NEITHER `[-1, -1]` NOR both non-negative (e.g. a corrupt
- *  `[-1, 240]`) fails this schema outright -- `readJsonProjection` then
- *  treats the whole cache entry as a miss rather than handing
- *  `shardEntriesFromPairs` a value it would otherwise trust blindly
- *  (`subarray` clamps a negative index rather than throwing). */
-const shardIndexPairSchema = z
-  .tuple([z.number(), z.number()])
-  .refine(([offset, nbytes]) => (offset === -1 && nbytes === -1) || (offset >= 0 && nbytes >= 0), {
-    message: "a shard-index pair must be [-1, -1] (absent) or both non-negative (present)",
-  });
-const shardIndexProjectionSchema = z.array(shardIndexPairSchema);
-
-interface ShardFooterLoaded {
-  entries: ShardIndexEntry[];
-  cacheStatus: "hit" | "miss";
-  bytes: number;
-}
-
-/**
- * Fetch and validate ONE `Range` response -- the single call site both
- * {@link loadShardFooter} and {@link fetchAndDecodeRangeRead} go through, so
- * they cannot drift apart on what "a valid Range response" means. A
- * compliant origin ALWAYS answers `206` to a `Range` request; a bare `200`
- * means the origin ignored `Range` and returned the whole object, which
- * would silently misalign every downstream byte offset (see the module
- * doc). The body length is asserted against `expectedLength` too -- a `206`
- * with the wrong slice is just as wrong as a `200`.
- */
-async function fetchRangeBytes(
-  deps: RecordingToolDeps,
-  url: string,
-  rangeHeader: string,
-  expectedLength: number,
-): Promise<{ buf: Uint8Array } | { error: string }> {
-  let response: Response;
-  try {
-    response = await deps.fetch(url, { headers: { Range: rangeHeader } });
-  } catch (err) {
-    return {
-      error: `network error fetching ${url}: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-  if (response.status !== 206) {
-    return {
-      error: `HTTP ${response.status} fetching ${url} with Range ${rangeHeader} (expected 206; a bare 200 means the origin ignored Range and would misalign every byte offset)`,
-    };
-  }
-  const buf = new Uint8Array(await response.arrayBuffer());
-  if (buf.length !== expectedLength) {
-    return {
-      error: `${url} (Range ${rangeHeader}) returned ${buf.length} bytes, expected exactly ${expectedLength}`,
-    };
-  }
-  return { buf };
-}
-
-async function loadShardFooter(
-  deps: RecordingToolDeps,
-  datasetId: string,
-  sourceCommit: string,
-  /** D1's `zarr_converted_at`, part of the cache key. Load-bearing here above
-   *  all: this entry holds parsed BYTE OFFSETS, replayed as Range reads against
-   *  whatever object lives at that key today. A re-conversion at an unchanged
-   *  commit (an engine bump, ADR 0033) would have this replaying stale offsets
-   *  into a new shard, and every 206 and length check still passes because the
-   *  origin returns exactly the bytes asked for -- just the wrong ones. */
-  convertedAt: string | null,
-  dataBase: string,
-  zarr: string,
-  groupName: string,
-  shardIndex: number,
-  nInner: number,
-): Promise<ShardFooterLoaded | { error: string }> {
-  const cacheKey = projectionUrl({
-    env: deps.env,
-    datasetId,
-    sourceCommit,
-    convertedAt,
-    projection: `shardidx/${zarr}/${groupName}/0/${shardIndex}`,
-  });
-  const cached = await readJsonProjection(deps.cache(), cacheKey, shardIndexProjectionSchema);
-  if (cached.status === "hit") {
-    // The entry count is a CONSTANT for a given geometry (shard_samples /
-    // chunk_samples), so a hit that does not carry exactly `nInner` pairs came
-    // from a different geometry than this call computed. Treated as a miss --
-    // re-read the footer -- rather than handed on: `planShardReads` would throw
-    // "local index N has no footer entry" out of a path that otherwise produces
-    // only typed tool errors.
-    if (cached.value.length === nInner) {
-      return { entries: shardEntriesFromPairs(cached.value), cacheStatus: "hit", bytes: 0 };
-    }
-    console.warn(
-      `[read_window] ${datasetId} ${zarr}/${groupName} shard ${shardIndex}: cached footer has ` +
-        `${cached.value.length} entries, expected ${nInner}; re-reading`,
-    );
-  }
-
-  const footerLen = footerByteLength(nInner);
-  const url = `${dataBase}${zarr}/${groupName}/0/c/0/${shardIndex}`;
-  const fetched = await fetchRangeBytes(deps, url, `bytes=-${footerLen}`, footerLen);
-  if ("error" in fetched) {
-    return { error: fetched.error };
-  }
-  let entries: ShardIndexEntry[];
-  try {
-    entries = parseShardFooter(fetched.buf, nInner);
-  } catch (err) {
-    return {
-      error: `shard footer ${url} failed to parse: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-  writeJsonProjection(deps.executionCtx, deps.cache(), cacheKey, shardEntriesToPairs(entries));
-  return { entries, cacheStatus: "miss", bytes: fetched.buf.length };
-}
-
-interface RangeReadResult {
-  segments: DecodedSegment[];
-  bytes: number;
-}
-
-/** Fetch and decode one coalesced `"range"` read -- one HTTP `Range` GET,
- *  possibly covering several inner chunks, sliced apart per {@link entries}'
- *  own recorded byte offsets and decoded individually. The decoded-length
- *  check asserts against `nChannelsInStore x chunkSamples` -- the NOMINAL
- *  stride every present chunk decodes to, never the chunk's truncated VALID
- *  span (`chunkSampleSpan`'s `end - start`), which is narrower than the
- *  stride for exactly one chunk per array (the final boundary one) and was
- *  the source of a real corruption bug (`sharding.ts`'s module doc). */
-async function fetchAndDecodeRangeRead(opts: {
-  deps: RecordingToolDeps;
-  dataBase: string;
-  zarr: string;
-  groupName: string;
-  shardIndex: number;
-  read: Extract<ChunkRead, { kind: "range" }>;
-  entries: ShardIndexEntry[];
-  nChannelsInStore: number;
-  shardSamples: number;
-  chunkSamples: number;
-  nSamplesTotal: number;
-}): Promise<RangeReadResult | { error: string }> {
-  const {
-    deps,
-    dataBase,
-    zarr,
-    groupName,
-    shardIndex,
-    read,
-    entries,
-    nChannelsInStore,
-    shardSamples,
-    chunkSamples,
-    nSamplesTotal,
-  } = opts;
-  const url = `${dataBase}${zarr}/${groupName}/0/c/0/${shardIndex}`;
-  const expectedLength = read.end - read.start + 1;
-  const fetched = await fetchRangeBytes(
-    deps,
-    url,
-    `bytes=${read.start}-${read.end}`,
-    expectedLength,
-  );
-  if ("error" in fetched) {
-    return { error: fetched.error };
-  }
-  const buf = fetched.buf;
-  const runStart = read.start;
-  const segments: DecodedSegment[] = [];
-  for (const localIndex of read.localIndices) {
-    const entry = entries[localIndex];
-    if (!entry?.present) {
-      // planShardReads only ever puts a PRESENT entry's local index into a
-      // "range" read's localIndices -- reaching here with an absent one
-      // would be a caller/planner bug, not a data condition.
-      return { error: `shard ${shardIndex} chunk ${localIndex}: footer entry is not present` };
-    }
-    const relStart = entry.offset - runStart;
-    const chunkBytes = buf.subarray(relStart, relStart + entry.nbytes);
-    let decoded: Int16Array;
-    try {
-      decoded = decodeBloscZstdInt16(chunkBytes);
-    } catch (err) {
-      return {
-        error: `shard ${shardIndex} chunk ${localIndex} failed to decode: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-    const expectedLen = nChannelsInStore * chunkSamples;
-    if (decoded.length !== expectedLen) {
-      return {
-        error:
-          `shard ${shardIndex} chunk ${localIndex} decoded to ${decoded.length} values, expected ` +
-          `${expectedLen} (${nChannelsInStore} channels x ${chunkSamples} chunk_samples)`,
-      };
-    }
-    const span = chunkSampleSpan({
-      shardIndex,
-      localIndex,
-      shardSamples,
-      chunkSamples,
-      nSamples: nSamplesTotal,
-    });
-    segments.push({ start: span.start, end: span.end, stride: chunkSamples, data: decoded });
-  }
-  return { segments, bytes: buf.length };
 }
 
 function resolveIndexFacts(index: ZarrIndex): EnvelopeIndexFacts {
@@ -801,99 +579,44 @@ export async function readWindowTool(
     };
   }
 
-  let cacheHitEverywhere = arrayMeta.cacheStatus === "hit";
-  let bytesRead = arrayMeta.upstreamBytes;
-  let chunksRead = 0;
-  const segments: DecodedSegment[] = [];
-
-  const shardIndices = shardsForWindow({
+  const read = await readLevel0Window({
+    fetcher: deps.fetch,
+    cache: mcpJsonCache(deps),
+    key: {
+      datasetId: args.dataset_id,
+      sourceCommit: index.source_commit,
+      convertedAt: row.zarr_converted_at,
+    },
+    dataBase: index.data_base,
+    zarr: store.zarr,
+    groupName: targetGroup.name,
+    shardSamples,
+    chunkSamples,
+    nInner,
+    nChannelsInStore: nChannelsGroup,
+    nSamplesTotal: nSamplesGroup,
     startSample,
     endSampleExclusive: endSample,
-    shardSamples,
   });
-  for (const shardIndex of shardIndices) {
-    const footer = await loadShardFooter(
-      deps,
-      args.dataset_id,
-      index.source_commit,
-      row.zarr_converted_at,
-      index.data_base,
-      store.zarr,
-      targetGroup.name,
-      shardIndex,
-      nInner,
-    );
-    if ("error" in footer) {
-      return {
-        result: toolError(
-          `read_window could not read the shard index for recording "${args.recording}" in dataset ` +
-            `"${args.dataset_id}": ${footer.error}`,
-        ),
-      };
-    }
-    cacheHitEverywhere = cacheHitEverywhere && footer.cacheStatus === "hit";
-    bytesRead += footer.bytes;
-
-    const localIndices = innerIndicesForWindowInShard({
-      shardIndex,
-      shardSamples,
-      chunkSamples,
-      nInnerThisShard: nInner,
-      startSample,
-      endSampleExclusive: endSample,
-    });
-    // Also wrapped: it throws when the footer has no entry for a planned local
-    // index, which after the count check above means the footer disagrees with
-    // the geometry the index published.
-    let reads: ReturnType<typeof planShardReads>;
-    try {
-      reads = planShardReads(footer.entries, localIndices);
-    } catch (err) {
-      return {
-        result: toolError(
-          `read_window could not plan the shard read for recording "${args.recording}" in dataset ` +
-            `"${args.dataset_id}": ${err instanceof Error ? err.message : String(err)}`,
-        ),
-      };
-    }
-    for (const read of reads) {
-      if (read.kind === "absent") {
-        const span = chunkSampleSpan({
-          shardIndex,
-          localIndex: read.localIndex,
-          shardSamples,
-          chunkSamples,
-          nSamples: nSamplesGroup,
-        });
-        segments.push({ start: span.start, end: span.end, stride: chunkSamples, data: null });
-        continue;
-      }
-      const fetched = await fetchAndDecodeRangeRead({
-        deps,
-        dataBase: index.data_base,
-        zarr: store.zarr,
-        groupName: targetGroup.name,
-        shardIndex,
-        read,
-        entries: footer.entries,
-        nChannelsInStore: nChannelsGroup,
-        shardSamples,
-        chunkSamples,
-        nSamplesTotal: nSamplesGroup,
-      });
-      if ("error" in fetched) {
-        return {
-          result: toolError(
-            `read_window could not read a chunk for recording "${args.recording}" in dataset ` +
-              `"${args.dataset_id}": ${fetched.error}`,
-          ),
-        };
-      }
-      segments.push(...fetched.segments);
-      bytesRead += fetched.bytes;
-      chunksRead += read.localIndices.length;
-    }
+  if (!read.ok) {
+    // The prefixes are the tool's own error texts; `mcp-read-window.test.ts` pins
+    // `footer` and `chunk` (`plan` is unreachable from a route, see the test).
+    const prefix = {
+      footer: "could not read the shard index for recording",
+      plan: "could not plan the shard read for recording",
+      chunk: "could not read a chunk for recording",
+    }[read.stage];
+    return {
+      result: toolError(
+        `read_window ${prefix} "${args.recording}" in dataset ` +
+          `"${args.dataset_id}": ${read.detail}`,
+      ),
+    };
   }
+  const cacheHitEverywhere = arrayMeta.cacheStatus === "hit" && read.footersAllHit;
+  const bytesRead = arrayMeta.upstreamBytes + read.bytes;
+  const chunksRead = read.chunksRead;
+  const segments = read.segments;
 
   let assembled: { values: number[][]; filledRanges: FilledRange[] };
   try {

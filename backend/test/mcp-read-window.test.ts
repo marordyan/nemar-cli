@@ -1005,6 +1005,62 @@ describe("read_window (route)", () => {
   });
 
   // ---------------------------------------------------------------------
+  // The tool's own error texts for a failed shard read. `readLevel0Window`
+  // (shared/zarr/read.ts) reports WHICH step failed; `read-window.ts` maps that
+  // to these prefixes, which callers and docs may match on, so they are pinned
+  // here in full. The third stage, `plan` ("could not plan the shard read for
+  // recording"), is defensive and has no test: `planShardReads` only throws when
+  // a planned local index has no footer entry, and the footer always carries
+  // exactly `nInner` entries (a cached one with another count is re-read), while
+  // the planned indices are `< nInner` -- so no input a route can send reaches it.
+  // ---------------------------------------------------------------------
+
+  describe("a failed shard read names its stage", () => {
+    const SHARD_PREFIX = `${SHARD_ID}/zarr/${SHARD_ZARR}/${SHARD_GROUP}/0/c/0/`;
+    const tasteArgs = {
+      dataset_id: SHARD_ID,
+      recording: SHARD_ZARR,
+      start_s: 0,
+      duration_s: 1,
+      channels: [0, 1, 2, 3],
+      taste: true,
+    };
+
+    test("footer stage: a Range-ignoring origin on a cold cache", async () => {
+      const key = `${SHARD_PREFIX}0`;
+      fixtureServer.ignoreRangeForKeys.add(key);
+      try {
+        const { body } = await callTool(app, env(db), 1, "read_window", tasteArgs);
+        expect(errorTextOf(body)).toStartWith(
+          `read_window could not read the shard index for recording "${SHARD_ZARR}" in dataset "${SHARD_ID}": HTTP 200 fetching `,
+        );
+      } finally {
+        fixtureServer.ignoreRangeForKeys.delete(key);
+      }
+    });
+
+    test("chunk stage: the footer is warm, then the chunk read fails", async () => {
+      // One good read warms the shard-index cache (and the array metadata).
+      const warm = await callTool(app, env(db), 1, "read_window", tasteArgs);
+      structuredContentOf(warm.body);
+      await Bun.sleep(10); // let the deferred cache writes land
+      const key = `${SHARD_PREFIX}0`;
+      fixtureServer.ignoreRangeForKeys.add(key);
+      fixtureServer.requestLog.length = 0;
+      try {
+        const { body } = await callTool(app, env(db), 2, "read_window", tasteArgs);
+        expect(errorTextOf(body)).toStartWith(
+          `read_window could not read a chunk for recording "${SHARD_ZARR}" in dataset "${SHARD_ID}": HTTP 200 fetching `,
+        );
+        // The footer came from the cache: no suffix-range (footer) request.
+        expect(fixtureServer.requestLog.filter((r) => r.range.startsWith("bytes=-"))).toEqual([]);
+      } finally {
+        fixtureServer.ignoreRangeForKeys.delete(key);
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------
   // Golden (G1): the whole tools/call result and the fixture-server request
   // log, pinned before the read path moves into shared/zarr/. The file is
   // written once (NEMAR_WRITE_GOLDEN=1, only if absent) on the unmodified

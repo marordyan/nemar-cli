@@ -1,0 +1,12 @@
+{
+  "zarr_version": "3.1.6",
+  "numpy_version": "2.3.5",
+  "shape": [
+    4,
+    6500
+  ],
+  "dtype": "<i2",
+  "layout": "channel-major",
+  "source": "nm099500-level0-zarr.json + nm099500-shard-0.bin + nm099500-shard-1.bin",
+  "note": "The committed fixture carries a placeholder checksum (generator line 238) in each shard's index; scripts/zarr/zarr_python_reference.py patches it in a temp copy because zarr-python verifies it and the TS core does not."
+}

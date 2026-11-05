@@ -599,7 +599,8 @@ export async function readWindowTool(
     endSampleExclusive: endSample,
   });
   if (!read.ok) {
-    // The prefixes are the tool's pinned error texts (`mcp-read-window.test.ts`).
+    // The prefixes are the tool's own error texts; `mcp-read-window.test.ts` pins
+    // `footer` and `chunk` (`plan` is unreachable from a route, see the test).
     const prefix = {
       footer: "could not read the shard index for recording",
       plan: "could not plan the shard read for recording",

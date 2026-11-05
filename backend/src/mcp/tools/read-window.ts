@@ -78,7 +78,6 @@
  */
 
 import type { CallToolResult } from "@modelcontextprotocol/server";
-import { z } from "zod";
 import {
   READ_WINDOW_TASTE_MAX_CHANNEL_SAMPLES,
   type ReadWindowInput,
@@ -90,17 +89,14 @@ import type { ZarrGroup, ZarrIndex, ZarrStore } from "../../../../shared/contrac
 import { decodeBloscZstdInt16 } from "../../../../shared/zarr/codecs/blosc.js";
 import { fetchRangeBytes } from "../../../../shared/zarr/fetch-range.js";
 import { isV3Index } from "../../../../shared/zarr/index.js";
+import { loadShardFooter } from "../../../../shared/zarr/shard-footer.js";
 import {
   type ChunkRead,
   type ShardIndexEntry,
   chunkSampleSpan,
-  footerByteLength,
   innerIndicesForWindowInShard,
   nInnerForShard,
-  parseShardFooter,
   planShardReads,
-  shardEntriesFromPairs,
-  shardEntriesToPairs,
   shardsForWindow,
 } from "../../../../shared/zarr/sharding.js";
 import { type Level0ArrayMetadata, loadLevel0ArrayMetadata } from "../array-metadata.js";
@@ -113,7 +109,7 @@ import {
 } from "../catalog-row.js";
 import { type EnvelopeIndexFacts, buildEnvelopeForStore } from "../envelope.js";
 import { readZarrIndex } from "../index-reader.js";
-import { projectionUrl, readJsonProjection, writeJsonProjection } from "../projection-cache.js";
+import { mcpJsonCache } from "../projection-cache.js";
 import {
   type DecodedSegment,
   type FilledRange,
@@ -271,85 +267,6 @@ function decodeBudgetResult(opts: {
   return toolError(
     `read_window taste for group "${groupName}" of recording "${recording}" in dataset "${datasetId}" would DECODE ${product} samples (${storeChannelCount} channels in the store x ${windowSamples} samples at ${rate} Hz), over the ${MAX_TASTE_DECODE_SAMPLES} limit. A stored chunk holds every channel, so asking for fewer channels does not reduce this; shorten the window to about ${maxDuration} s or less, or omit taste for a recipe.`,
   );
-}
-
-/** Cached shard-footer payload shape: `[offset, nbytes]` pairs, `[-1, -1]`
- *  meaning absent (`sharding.ts`'s `shardEntriesToPairs`/`shardEntriesFromPairs`).
- *  A pair that is NEITHER `[-1, -1]` NOR both non-negative (e.g. a corrupt
- *  `[-1, 240]`) fails this schema outright -- `readJsonProjection` then
- *  treats the whole cache entry as a miss rather than handing
- *  `shardEntriesFromPairs` a value it would otherwise trust blindly
- *  (`subarray` clamps a negative index rather than throwing). */
-const shardIndexPairSchema = z
-  .tuple([z.number(), z.number()])
-  .refine(([offset, nbytes]) => (offset === -1 && nbytes === -1) || (offset >= 0 && nbytes >= 0), {
-    message: "a shard-index pair must be [-1, -1] (absent) or both non-negative (present)",
-  });
-const shardIndexProjectionSchema = z.array(shardIndexPairSchema);
-
-interface ShardFooterLoaded {
-  entries: ShardIndexEntry[];
-  cacheStatus: "hit" | "miss";
-  bytes: number;
-}
-
-async function loadShardFooter(
-  deps: RecordingToolDeps,
-  datasetId: string,
-  sourceCommit: string,
-  /** D1's `zarr_converted_at`, part of the cache key. Load-bearing here above
-   *  all: this entry holds parsed BYTE OFFSETS, replayed as Range reads against
-   *  whatever object lives at that key today. A re-conversion at an unchanged
-   *  commit (an engine bump, ADR 0033) would have this replaying stale offsets
-   *  into a new shard, and every 206 and length check still passes because the
-   *  origin returns exactly the bytes asked for -- just the wrong ones. */
-  convertedAt: string | null,
-  dataBase: string,
-  zarr: string,
-  groupName: string,
-  shardIndex: number,
-  nInner: number,
-): Promise<ShardFooterLoaded | { error: string }> {
-  const cacheKey = projectionUrl({
-    env: deps.env,
-    datasetId,
-    sourceCommit,
-    convertedAt,
-    projection: `shardidx/${zarr}/${groupName}/0/${shardIndex}`,
-  });
-  const cached = await readJsonProjection(deps.cache(), cacheKey, shardIndexProjectionSchema);
-  if (cached.status === "hit") {
-    // The entry count is a CONSTANT for a given geometry (shard_samples /
-    // chunk_samples), so a hit that does not carry exactly `nInner` pairs came
-    // from a different geometry than this call computed. Treated as a miss --
-    // re-read the footer -- rather than handed on: `planShardReads` would throw
-    // "local index N has no footer entry" out of a path that otherwise produces
-    // only typed tool errors.
-    if (cached.value.length === nInner) {
-      return { entries: shardEntriesFromPairs(cached.value), cacheStatus: "hit", bytes: 0 };
-    }
-    console.warn(
-      `[read_window] ${datasetId} ${zarr}/${groupName} shard ${shardIndex}: cached footer has ` +
-        `${cached.value.length} entries, expected ${nInner}; re-reading`,
-    );
-  }
-
-  const footerLen = footerByteLength(nInner);
-  const url = `${dataBase}${zarr}/${groupName}/0/c/0/${shardIndex}`;
-  const fetched = await fetchRangeBytes(deps.fetch, url, `bytes=-${footerLen}`, footerLen);
-  if ("error" in fetched) {
-    return { error: fetched.error };
-  }
-  let entries: ShardIndexEntry[];
-  try {
-    entries = parseShardFooter(fetched.buf, nInner);
-  } catch (err) {
-    return {
-      error: `shard footer ${url} failed to parse: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-  writeJsonProjection(deps.executionCtx, deps.cache(), cacheKey, shardEntriesToPairs(entries));
-  return { entries, cacheStatus: "miss", bytes: fetched.buf.length };
 }
 
 interface RangeReadResult {
@@ -764,6 +681,7 @@ export async function readWindowTool(
     };
   }
 
+  const jsonCache = mcpJsonCache(deps);
   let cacheHitEverywhere = arrayMeta.cacheStatus === "hit";
   let bytesRead = arrayMeta.upstreamBytes;
   let chunksRead = 0;
@@ -775,17 +693,20 @@ export async function readWindowTool(
     shardSamples,
   });
   for (const shardIndex of shardIndices) {
-    const footer = await loadShardFooter(
-      deps,
-      args.dataset_id,
-      index.source_commit,
-      row.zarr_converted_at,
-      index.data_base,
-      store.zarr,
-      targetGroup.name,
+    const footer = await loadShardFooter({
+      fetcher: deps.fetch,
+      cache: jsonCache,
+      key: {
+        datasetId: args.dataset_id,
+        sourceCommit: index.source_commit,
+        convertedAt: row.zarr_converted_at,
+      },
+      dataBase: index.data_base,
+      zarr: store.zarr,
+      groupName: targetGroup.name,
       shardIndex,
       nInner,
-    );
+    });
     if ("error" in footer) {
       return {
         result: toolError(

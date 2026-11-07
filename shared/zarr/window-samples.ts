@@ -9,8 +9,9 @@
  * UP. It is applied to the start and the duration separately, never to the
  * end time, so a window's length does not depend on where it starts.
  *
- * Pure: no range check. Callers compare the result with the group's
- * `n_samples` and decide what an out-of-range or empty window means.
+ * Pure: no range check. Callers compare the result with the group's sample
+ * count (`n_samples` in the Zarr index, `ntimes` in the engine protocol) and
+ * decide what an out-of-range or empty window means.
  */
 export interface SampleWindow {
   /** First sample of the window (0-based). */

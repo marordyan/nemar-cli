@@ -1,8 +1,9 @@
 /**
  * The seconds-to-samples rule shared by the MCP read_window tool and the
- * local engine protocol (shared/zarr/window-samples.ts). The MCP's own
- * behaviour on this rule is pinned end to end by the golden test in
- * mcp-read-window.test.ts; these cases pin the rule itself.
+ * local engine protocol (shared/zarr/window-samples.ts). These cases pin the
+ * rule itself; the MCP's use of it at fractional seconds is pinned by the
+ * "recipe mode" rounding tests in mcp-read-window.test.ts (the golden test
+ * uses whole seconds only, where rounding never matters).
  */
 
 import { describe, expect, test } from "bun:test";

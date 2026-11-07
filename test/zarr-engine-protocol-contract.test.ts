@@ -9,20 +9,21 @@
  * table runs through Ajv (draft 2020-12) and zod, and both must give the same
  * verdict and, on success, the same parsed value.
  *
- * Two documented gaps, each tested on the side that owns it and NOT in the
+ * Documented gaps, each tested on the side that owns it and NOT in the
  * shared table (they would split the verdicts by design):
  *  - the `window` `payload_bytes` arithmetic (zod only; JSON Schema cannot
  *    express it);
  *  - in `opened`: unique representation ids, a bound `representation` that is
- *    listed and fully described, and `scale`/`offset` with `nchans` entries
- *    (zod only);
+ *    listed, is `zarr` and is fully described, and `scale`/`offset` with
+ *    `nchans` entries (zod only);
  *  - the full shape of a `recipe` response (zod reuses the MCP recipe schema;
  *    the JSON Schema types it as a bare object in v0).
  *
  * `opened.record` uses a real neuroschema record (test/fixtures/
- * neuroschema-records), and its group facts are the real nm000103 index
- * group's, so the cases show the record and the representation disagreeing
- * on rate as they do in production (500 Hz file, 250 Hz group).
+ * neuroschema-records). The group's rate, source rate, ntimes and duration
+ * follow nm000103's index (500 Hz file, 250 Hz group), so the cases show the
+ * record and the representation disagreeing on rate as they do in production;
+ * the channel count, scale and offset are illustrative.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -34,6 +35,7 @@ import {
   engineMessageSchema,
   engineRequestSchema,
   engineResponseSchema,
+  isZarrRepresentation,
   windowSchema,
 } from "../shared/contract/zarr-engine-protocol.js";
 import { zarrIndexSchema } from "../shared/contract/zarr-index.js";
@@ -543,6 +545,21 @@ describe("protocol schema: Ajv and zod agree", () => {
     if (zod.success) expect(zod.data).toEqual(doc);
   });
 
+  test("an unknown field inside a representation is accepted by both and kept (it is part of a response)", () => {
+    for (const doc of [
+      setRep(0, { chunk_samples: 1000 })(OPENED),
+      {
+        ...OPENED,
+        representations: [zarrRep(), { kind: "edf", id: "source", url: "https://example.org/x" }],
+      },
+    ]) {
+      const { jsonOk, zod } = both(doc);
+      expect(jsonOk, JSON.stringify(validateJson.errors)).toBe(true);
+      expect(zod.success).toBe(true);
+      if (zod.success) expect(zod.data).toEqual(doc);
+    }
+  });
+
   for (const r of REJECTED_BY_BOTH) {
     test(`${r.label}: rejected by both`, () => {
       const { jsonOk, zod } = both(r.doc);
@@ -698,6 +715,21 @@ describe("protocol schema: gaps owned by one side", () => {
     expect(validateJson(setRep(0, { scale: [1, 1, 1] })(OPENED))).toBe(true);
   });
 
+  test("in v0 the bound representation must be a zarr one (zod)", () => {
+    const doc = {
+      ...OPENED,
+      representation: "source",
+      representations: [zarrRep({ scale: null, offset: null }), { kind: "edf", id: "source" }],
+    };
+    expect(engineMessageSchema.safeParse(doc).success).toBe(false);
+    expect(validateJson(doc)).toBe(true);
+  });
+
+  test("isZarrRepresentation tells the kinds apart", () => {
+    expect(isZarrRepresentation(zarrRep() as never)).toBe(true);
+    expect(isZarrRepresentation({ kind: "edf", id: "source" })).toBe(false);
+  });
+
   test("the record is passed through: any object is accepted and kept by both", () => {
     const record = { ...REAL_RECORD, extensions: { nemar: { processed: false } } };
     const doc = { ...OPENED, record };
@@ -740,6 +772,22 @@ describe("protocol schema: documented semantics", () => {
     expect(defs.RecipeRequest.description).toContain("Nothing is read");
   });
 
+  test("opened says the recording is always the BIDS path, and how the default is picked", () => {
+    expect(protocolSchema.$defs.Opened.properties.recording.description).toContain(
+      "Always the recording's BIDS path",
+    );
+    const open = protocolSchema.$defs.OpenRequest.properties.representation.description;
+    expect(open).toContain("Zarr index's group order");
+    expect(open).toContain("a recording with no zarr representation is not_found");
+    expect(protocolSchema.description).toContain("the bound representation is a zarr one");
+  });
+
+  test("the record's version stamp is not a reason to reject it", () => {
+    const d = protocolSchema.$defs.NeuroschemaRecord.description;
+    expect(d).toContain("do not reject it on the stamp");
+    expect(d).toContain("signal_properties.sampling_frequency");
+  });
+
   test("growth of the closed lists is described (review item c)", () => {
     const desc = protocolSchema.description;
     expect(desc).toContain("treats an error code it does not know as internal");
@@ -763,10 +811,17 @@ describe("protocol schema: documented semantics", () => {
     for (const word of ["end-exclusive", "sorted ascending", "non-overlapping", "fill value"]) {
       expect(window, word).toContain(word);
     }
-    expect(defs.ChannelIndices.description).toContain("all store channels in ascending order");
+    expect(defs.ChannelIndices.description).toContain(
+      "all channels of the bound representation in ascending order",
+    );
     expect(defs.ChannelIndices.description).toContain("payload row i is channels[i]");
     expect(protocolSchema.$defs.HelloRequest.description).toContain("unsupported_version");
     expect(protocolSchema.$defs.HelloRequest.description).toContain("invalid_message");
+    // A later version may add hello fields, so the version is read first.
+    expect(protocolSchema.$defs.HelloRequest.description).toContain(
+      "reads protocol before validating anything else",
+    );
+    expect(protocolSchema.description).toContain("reads a hello's protocol before validating");
     expect(protocolSchema.description).toContain("must check them itself");
     expect(protocolSchema.description).toContain("MUST ignore unknown fields in a response");
     expect(protocolSchema.description).toContain("MUST reject a request with an unknown field");

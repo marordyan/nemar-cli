@@ -14,7 +14,9 @@
  * alone). `FilledRange` is part of a response and so is open too.
  * What the JSON Schema cannot express lives only here: the `window`
  * `payload_bytes` arithmetic; in `opened`, unique representation ids, a bound
- * `representation` that is listed, and `scale`/`offset` with `nchans` entries;
+ * `representation` that is listed, is `zarr` and has non-null
+ * `sampling_frequency`/`nchans`/`ntimes`/`scale`/`offset`, and `scale`/`offset`
+ * with `nchans` entries;
  * and the full shape of a `recipe` response (the schema types it as a bare
  * object in v0; this mirror reuses the MCP's `readRecipeSchema`).
  *
@@ -74,7 +76,9 @@ export const helloRequestSchema = z
   .object({
     id,
     type: z.literal("hello"),
-    /** MAJOR.MINOR; a well-formed version the engine does not speak is unsupported_version. */
+    /** MAJOR.MINOR. The engine reads it before validating the rest of the hello:
+     *  a well-formed version it does not speak is unsupported_version even when
+     *  the hello also carries fields this version does not know. */
     protocol: z.string().regex(/^[0-9]+\.[0-9]+$/),
     client: nonEmpty,
     payload_bytes: payloadBytesZero,
@@ -139,6 +143,14 @@ const otherRepresentationSchema = z
 
 export const representationSchema = z.union([zarrRepresentationSchema, otherRepresentationSchema]);
 
+/** Narrows a parsed representation to the `zarr` kind (the union's other branch
+ *  is typed `kind: string`, so a plain `kind === "zarr"` check does not narrow). */
+export function isZarrRepresentation(
+  r: z.infer<typeof representationSchema>,
+): r is z.infer<typeof zarrRepresentationSchema> {
+  return r.kind === "zarr";
+}
+
 /** A neuroschema `record` document, passed through unchanged, or null. */
 export const neuroschemaRecordSchema = z.record(z.unknown()).nullable();
 
@@ -174,18 +186,23 @@ export const openedSchema = z
       });
       return;
     }
-    if (bound.kind === "zarr") {
-      const z0 = bound as z.infer<typeof zarrRepresentationSchema>;
-      const missing = (
-        ["sampling_frequency", "nchans", "ntimes", "scale", "offset"] as const
-      ).filter((k) => z0[k] === null);
-      if (missing.length > 0) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `the bound zarr representation must have ${missing.join(", ")}`,
-          path: ["representations"],
-        });
-      }
+    if (!isZarrRepresentation(bound)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "in v0 the bound representation must be a zarr one",
+        path: ["representation"],
+      });
+      return;
+    }
+    const missing = (["sampling_frequency", "nchans", "ntimes", "scale", "offset"] as const).filter(
+      (k) => bound[k] === null,
+    );
+    if (missing.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `the bound zarr representation must have ${missing.join(", ")}`,
+        path: ["representations"],
+      });
     }
   });
 

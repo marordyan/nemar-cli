@@ -114,8 +114,17 @@ const CASES: Case[] = [
     def: "HelloRequest",
     label: "hello request",
     doc: { id: 1, type: "hello", protocol: "0.1", client: "nemar-py/0.1" },
-    mutate: set("protocol", "0.2"),
-    mutation: "protocol 0.2 (v0 matches exactly)",
+    mutate: set("protocol", "v0.1"),
+    mutation: "protocol not MAJOR.MINOR",
+  },
+  {
+    // Schema-valid on purpose: the engine, not validation, answers a version it
+    // does not speak, with unsupported_version (not invalid_message).
+    def: "HelloRequest",
+    label: "hello request naming a version the engine may not speak",
+    doc: { id: 1, type: "hello", protocol: "1.0", client: "nemar-py/2.0" },
+    mutate: set("protocol", 1),
+    mutation: "protocol a number",
   },
   {
     def: "HelloRequest",
@@ -318,6 +327,19 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
   { label: "an unknown message type", doc: { id: 1, type: "ping" } },
   { label: "no type at all", doc: { id: 1 } },
   { label: "a request without an id", doc: { type: "release", handle: "h1" } },
+  {
+    label: "hello request, protocol 0.1.2",
+    doc: { id: 1, type: "hello", protocol: "0.1.2", client: "c" },
+  },
+  { label: "hello request, protocol 1", doc: { id: 1, type: "hello", protocol: "1", client: "c" } },
+  {
+    label: "hello request, protocol empty",
+    doc: { id: 1, type: "hello", protocol: "", client: "c" },
+  },
+  {
+    label: "hello response naming another version",
+    doc: { id: 1, type: "hello", protocol: "0.2", engine: "e", max_payload_bytes: 1 },
+  },
   {
     label: "hello response without max_payload_bytes",
     doc: { id: 1, type: "hello", protocol: "0.1", engine: "e" },
@@ -540,9 +562,11 @@ describe("protocol schema: Ajv and zod agree", () => {
     }
   });
 
-  test("the protocol version constant is the one the schema pins", () => {
-    const hello = protocolSchema.$defs.HelloRequest.properties.protocol;
-    expect(hello).toEqual({ const: ENGINE_PROTOCOL_VERSION });
+  test("the protocol version constant is the one the hello response pins", () => {
+    const response = protocolSchema.$defs.HelloResponse.properties.protocol;
+    expect(response.const).toBe(ENGINE_PROTOCOL_VERSION);
+    const pattern = new RegExp(protocolSchema.$defs.HelloRequest.properties.protocol.pattern);
+    expect(pattern.test(ENGINE_PROTOCOL_VERSION)).toBe(true);
   });
 
   test("request and response unions partition the message union", () => {
@@ -710,6 +734,30 @@ describe("protocol schema: documented semantics", () => {
     }
   });
 
+  test("the two window-addressed requests say what each returns", () => {
+    expect(defs.ReadWindowRequest.description).toContain("Asks for the samples of a window");
+    expect(defs.RecipeRequest.description).toContain("Asks for the read recipe of a window");
+    expect(defs.RecipeRequest.description).toContain("Nothing is read");
+  });
+
+  test("growth of the closed lists is described (review item c)", () => {
+    const desc = protocolSchema.description;
+    expect(desc).toContain("treats an error code it does not know as internal");
+    expect(desc).toContain(
+      "must refuse a window whose dtype, layout or byte_order it does not know",
+    );
+    expect(desc).toContain("a new request field arrives only with a new protocol minor");
+    expect(defs.ErrorCode.description).toContain("treats a code it does not know as internal");
+  });
+
+  test("a channel past the end and adjacent filled ranges are described (review item e)", () => {
+    expect(defs.ChannelIndices.description).toContain("an index of nchans or more is out_of_range");
+    expect(defs.ErrorCode.description).toContain("nchans or more is out_of_range");
+    expect(protocolSchema.$defs.Window.properties.filled_ranges.description).toContain(
+      "adjacent ranges may or may not be merged",
+    );
+  });
+
   test("filled_ranges, channels and the version check are described", () => {
     const window = protocolSchema.$defs.Window.properties.filled_ranges.description;
     for (const word of ["end-exclusive", "sorted ascending", "non-overlapping", "fill value"]) {
@@ -717,7 +765,8 @@ describe("protocol schema: documented semantics", () => {
     }
     expect(defs.ChannelIndices.description).toContain("all store channels in ascending order");
     expect(defs.ChannelIndices.description).toContain("payload row i is channels[i]");
-    expect(protocolSchema.description).toContain("unsupported_version");
+    expect(protocolSchema.$defs.HelloRequest.description).toContain("unsupported_version");
+    expect(protocolSchema.$defs.HelloRequest.description).toContain("invalid_message");
     expect(protocolSchema.description).toContain("must check them itself");
     expect(protocolSchema.description).toContain("MUST ignore unknown fields in a response");
     expect(protocolSchema.description).toContain("MUST reject a request with an unknown field");

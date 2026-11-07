@@ -29,7 +29,8 @@
 import { z } from "zod";
 import { readRecipeSchema } from "./mcp.js";
 
-/** The one protocol version v0 speaks. v0 matches it exactly; from v1 only the major must match. */
+/** The one protocol version v0 speaks. A hello request may name any MAJOR.MINOR; the
+ *  engine answers one it does not speak with unsupported_version. */
 export const ENGINE_PROTOCOL_VERSION = "0.1";
 
 export const ENGINE_ERROR_CODES = [
@@ -73,7 +74,8 @@ export const helloRequestSchema = z
   .object({
     id,
     type: z.literal("hello"),
-    protocol: z.literal(ENGINE_PROTOCOL_VERSION),
+    /** MAJOR.MINOR; a well-formed version the engine does not speak is unsupported_version. */
+    protocol: z.string().regex(/^[0-9]+\.[0-9]+$/),
     client: nonEmpty,
     payload_bytes: payloadBytesZero,
   })

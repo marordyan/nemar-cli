@@ -13,8 +13,16 @@
  * shared table (they would split the verdicts by design):
  *  - the `window` `payload_bytes` arithmetic (zod only; JSON Schema cannot
  *    express it);
+ *  - in `opened`: unique representation ids, a bound `representation` that is
+ *    listed and fully described, and `scale`/`offset` with `nchans` entries
+ *    (zod only);
  *  - the full shape of a `recipe` response (zod reuses the MCP recipe schema;
  *    the JSON Schema types it as a bare object in v0).
+ *
+ * `opened.record` uses a real neuroschema record (test/fixtures/
+ * neuroschema-records), and its group facts are the real nm000103 index
+ * group's, so the cases show the record and the representation disagreeing
+ * on rate as they do in production (500 Hz file, 250 Hz group).
  */
 
 import { describe, expect, test } from "bun:test";
@@ -30,6 +38,7 @@ import {
 } from "../shared/contract/zarr-engine-protocol.js";
 import { zarrIndexSchema } from "../shared/contract/zarr-index.js";
 import protocolSchema from "../shared/zarr-engine-protocol.schema.json";
+import realRecords from "./fixtures/neuroschema-records/nm000103-sample.json";
 import indexFixture from "./fixtures/zarr-index-v3.json";
 
 const ajv = new Ajv2020({ strict: true, allErrors: true });
@@ -63,19 +72,42 @@ const set =
   (key: string, value: unknown) =>
   (d: Doc): Doc => ({ ...d, [key]: value });
 
-const OPENED = {
+const REAL_RECORD = realRecords[0] as unknown as Doc;
+
+/** A zarr representation; the bound one has scale and offset. */
+const zarrRep = (over: Doc = {}): Doc => ({
+  kind: "zarr",
+  id: "eeg_250hz",
+  store: "sub-NDARAA075AMK/eeg/sub-NDARAA075AMK_task-DespicableMe_eeg.zarr",
+  modality: "EEG",
+  sampling_frequency: 250,
+  source_sampling_frequency: 500,
+  nchans: 4,
+  ntimes: 43034,
+  recording_duration: 172.136,
+  scale: [0.5, 0.5, 0.25, 1],
+  offset: [0, 0, -1.5, 0],
+  ...over,
+});
+
+const OPENED: Doc = {
   id: 2,
   type: "opened",
   handle: "h1",
-  dataset_id: "nm099500",
-  recording: "sub-synth/eeg/rec",
-  group: "eeg_250hz",
-  n_channels: 4,
-  sample_rate_hz: 250,
-  n_samples: 5000,
-  scale: [0.5, 0.5, 0.25, 1],
-  offset: [0, 0, -1.5, 0],
+  dataset_id: "nm000103",
+  recording: "sub-NDARAA075AMK/eeg/sub-NDARAA075AMK_task-DespicableMe_eeg.set",
+  representation: "eeg_250hz",
+  record: REAL_RECORD,
+  representations: [zarrRep()],
 };
+
+const setRep =
+  (i: number, over: Doc) =>
+  (d: Doc): Doc => {
+    const reps = [...(d.representations as Doc[])];
+    reps[i] = { ...reps[i], ...over };
+    return { ...d, representations: reps };
+  };
 
 const CASES: Case[] = [
   {
@@ -107,42 +139,70 @@ const CASES: Case[] = [
   },
   {
     def: "OpenRequest",
-    label: "open request, group omitted",
+    label: "open request, representation omitted",
     doc: { id: 2, type: "open", dataset_id: "nm099500", recording: "sub-synth/eeg/rec" },
     mutate: set("dataset_id", "NM099500"),
     mutation: "dataset_id uppercase",
   },
   {
     def: "OpenRequest",
-    label: "open request, group given",
+    label: "open request, representation given",
     doc: {
       id: 3,
       type: "open",
       dataset_id: "nm099500",
       recording: "sub-synth/eeg/rec",
-      group: "eeg_250hz",
+      representation: "eeg_250hz",
     },
-    mutate: addUnknown,
-    mutation: "unknown extra field",
+    mutate: set("representation", ""),
+    mutation: "empty representation",
   },
   {
     def: "Opened",
-    label: "opened",
+    label: "opened with a real neuroschema record",
+    doc: OPENED,
+    mutate: setRep(0, { nchans: 0 }),
+    mutation: "nchans 0",
+  },
+  {
+    def: "Opened",
+    label: "opened with no record",
+    doc: { ...OPENED, record: null },
+    mutate: set("record", "not a record"),
+    mutation: "record a string",
+  },
+  {
+    def: "Opened",
+    label: "opened with a second, unbound zarr group (nulls where the index has none)",
     doc: {
-      id: 2,
-      type: "opened",
-      handle: "h1",
-      dataset_id: "nm099500",
-      recording: "sub-synth/eeg/rec",
-      group: "eeg_250hz",
-      n_channels: 4,
-      sample_rate_hz: 250,
-      n_samples: 5000,
-      scale: [0.5, 0.5, 0.25, 1],
-      offset: [0, 0, -1.5, 0],
+      ...OPENED,
+      representations: [
+        zarrRep(),
+        zarrRep({
+          id: "eeg_1000hz",
+          sampling_frequency: 1000,
+          source_sampling_frequency: null,
+          nchans: 2,
+          ntimes: null,
+          recording_duration: null,
+          modality: null,
+          scale: null,
+          offset: null,
+        }),
+      ],
     },
-    mutate: set("n_channels", 0),
-    mutation: "n_channels 0",
+    mutate: setRep(1, { scale: "none" }),
+    mutation: "scale a string on the unbound group",
+  },
+  {
+    def: "Opened",
+    label: "opened listing a representation of a kind v0 does not define",
+    doc: {
+      ...OPENED,
+      representations: [zarrRep(), { kind: "edf", id: "source", url: "https://example.org/x" }],
+    },
+    mutate: setRep(1, { id: "" }),
+    mutation: "empty id on the unknown kind",
   },
   {
     def: "ReadWindowRequest",
@@ -270,10 +330,36 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
     label: "hello response with a fractional max_payload_bytes",
     doc: { id: 1, type: "hello", protocol: "0.1", engine: "e", max_payload_bytes: 1.5 },
   },
-  { label: "opened without scale", doc: { ...OPENED, scale: undefined } },
-  { label: "opened without offset", doc: { ...OPENED, offset: undefined } },
-  { label: "opened with a string in scale", doc: { ...OPENED, scale: ["0.5", 1, 1, 1] } },
-  { label: "opened with offset not an array", doc: { ...OPENED, offset: 0 } },
+  { label: "opened without record (null, not absent)", doc: without("record")(OPENED) },
+  { label: "opened without representations", doc: without("representations")(OPENED) },
+  { label: "opened with no representations", doc: { ...OPENED, representations: [] } },
+  { label: "opened without representation", doc: without("representation")(OPENED) },
+  { label: "opened with a record that is an array", doc: { ...OPENED, record: [REAL_RECORD] } },
+  {
+    label: "a zarr representation without scale (null, not absent)",
+    doc: setRep(0, { scale: undefined })(OPENED),
+  },
+  {
+    label: "a zarr representation without store",
+    doc: setRep(0, { store: undefined })(OPENED),
+  },
+  {
+    label: "a zarr representation with a string in scale",
+    doc: setRep(0, { scale: ["0.5", 1, 1, 1] })(OPENED),
+  },
+  {
+    label: "a zarr representation with a fractional nchans",
+    doc: setRep(0, { nchans: 1.5 })(OPENED),
+  },
+  {
+    label: "a zarr representation with a zero sampling_frequency",
+    doc: setRep(0, { sampling_frequency: 0 })(OPENED),
+  },
+  { label: "a representation without kind", doc: setRep(0, { kind: undefined })(OPENED) },
+  {
+    label: "open request still naming the old group field",
+    doc: { id: 3, type: "open", dataset_id: "nm099500", recording: "r", group: "eeg_250hz" },
+  },
   {
     label: "read_window request with a repeated channel",
     doc: { id: 3, type: "read_window", handle: "h", start_s: 0, duration_s: 1, channels: [1, 1] },
@@ -532,20 +618,69 @@ describe("protocol schema: gaps owned by one side", () => {
     expect(windowSchema.safeParse(window({ n_samples: 0, payload_bytes: 0 })).success).toBe(true);
   });
 
-  test("opened scale and offset must have n_channels entries (zod)", () => {
+  test("the bound representation must be listed (zod)", () => {
     expect(engineMessageSchema.safeParse(OPENED).success).toBe(true);
-    expect(engineMessageSchema.safeParse({ ...OPENED, scale: [1, 1, 1] }).success).toBe(false);
-    expect(engineMessageSchema.safeParse({ ...OPENED, offset: [0, 0, 0, 0, 0] }).success).toBe(
+    expect(engineMessageSchema.safeParse({ ...OPENED, representation: "eeg_500hz" }).success).toBe(
       false,
     );
-    expect(engineMessageSchema.safeParse({ ...OPENED, scale: [], offset: [] }).success).toBe(false);
+    expect(validateJson({ ...OPENED, representation: "eeg_500hz" })).toBe(true);
+  });
+
+  test("representation ids must be unique (zod)", () => {
+    const doc = { ...OPENED, representations: [zarrRep(), zarrRep({ scale: null, offset: null })] };
+    expect(engineMessageSchema.safeParse(doc).success).toBe(false);
+    expect(validateJson(doc)).toBe(true);
+  });
+
+  test("a bound zarr representation must have its geometry, scale and offset (zod)", () => {
+    for (const key of ["sampling_frequency", "nchans", "ntimes", "scale", "offset"]) {
+      const doc = setRep(0, { [key]: null })(OPENED);
+      expect(engineMessageSchema.safeParse(doc).success, key).toBe(false);
+      expect(validateJson(doc), key).toBe(true);
+    }
+    // The same nulls are fine on a representation the handle is not bound to.
+    const unbound = {
+      ...OPENED,
+      representation: "eeg_1000hz",
+      representations: [
+        zarrRep({
+          sampling_frequency: null,
+          nchans: null,
+          ntimes: null,
+          scale: null,
+          offset: null,
+        }),
+        zarrRep({ id: "eeg_1000hz" }),
+      ],
+    };
+    expect(engineMessageSchema.safeParse(unbound).success).toBe(true);
+  });
+
+  test("scale and offset must have nchans entries (zod)", () => {
+    for (const over of [
+      { scale: [1, 1, 1] },
+      { offset: [0, 0, 0, 0, 0] },
+      { scale: [], offset: [] },
+    ]) {
+      const doc = setRep(0, over)(OPENED);
+      expect(engineMessageSchema.safeParse(doc).success, JSON.stringify(over)).toBe(false);
+    }
   });
 
   test("the JSON Schema cannot check that length and says so; Ajv accepts the mismatch", () => {
-    const desc = protocolSchema.$defs.Opened.properties.scale.description;
-    expect(desc).toContain("length equals n_channels");
+    const desc = protocolSchema.$defs.ZarrRepresentation.properties.scale.description;
+    expect(desc).toContain("nchans entries");
     expect(desc).toContain("physical = digital * scale[c] + offset[c]");
-    expect(validateJson({ ...OPENED, scale: [1, 1, 1] })).toBe(true);
+    expect(validateJson(setRep(0, { scale: [1, 1, 1] })(OPENED))).toBe(true);
+  });
+
+  test("the record is passed through: any object is accepted and kept by both", () => {
+    const record = { ...REAL_RECORD, extensions: { nemar: { processed: false } } };
+    const doc = { ...OPENED, record };
+    const { jsonOk, zod } = both(doc);
+    expect(jsonOk).toBe(true);
+    expect(zod.success).toBe(true);
+    if (zod.success) expect(zod.data).toEqual(doc);
   });
 
   test("the JSON Schema documents the arithmetic it cannot enforce", () => {
@@ -568,8 +703,8 @@ describe("protocol schema: documented semantics", () => {
   test("the time rule and out_of_range are stated on both window-addressed requests", () => {
     for (const name of ["ReadWindowRequest", "RecipeRequest"]) {
       const d = defs[name].description ?? "";
-      expect(d, name).toContain("floor(start_s * sample_rate_hz + 0.5)");
-      expect(d, name).toContain("floor(duration_s * sample_rate_hz + 0.5)");
+      expect(d, name).toContain("floor(start_s * sampling_frequency + 0.5)");
+      expect(d, name).toContain("floor(duration_s * sampling_frequency + 0.5)");
       expect(d, name).toContain("out_of_range");
       expect(d, name).toContain("never returns a truncated window");
     }

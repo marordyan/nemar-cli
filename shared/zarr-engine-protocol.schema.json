@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://api.nemar.org/schemas/zarr-engine-protocol-v0.json",
   "title": "NEMAR Zarr engine protocol (v0, unstable)",
-  "description": "The header of one frame of the local protocol the NEMAR CLI engine speaks over stdin/stdout (frame: magic NZE0, u32 LE header_len, UTF-8 JSON header padded with spaces to an 8-byte boundary, then payload_bytes of binary samples; see ADR 0118). v0 is UNSTABLE and may change in place; the published versions that follow will not. hello must match protocol \"0.1\" exactly in v0; from v1 only the major must match. Missing data is never zeros: it is reported in filled_ranges (ADR 0005). Compatibility rule: REQUESTS are closed (additionalProperties false) and the engine MUST reject a request with an unknown field as invalid_message; RESPONSES are open and a client MUST ignore unknown fields in a response, so that from v1 a minor version may add response fields.  JSON Schema alone cannot check the window payload_bytes arithmetic or that opened scale and offset have n_channels entries; the zod mirror does, and a client in another language must check them itself. The engine checks the hello protocol field before validating the rest of a request, so a different version gets unsupported_version. Each message is one object, discriminated by type (and, for hello and recipe, by which of request or response fields it carries).",
+  "description": "The header of one frame of the local protocol the NEMAR CLI engine speaks over stdin/stdout (frame: magic NZE0, u32 LE header_len, UTF-8 JSON header padded with spaces to an 8-byte boundary, then payload_bytes of binary samples; see ADR 0118). v0 is UNSTABLE and may change in place; the published versions that follow will not. The v0 engine speaks only protocol \"0.1\"; from v1 only the major must match. The engine reads a hello's protocol before validating the rest of it: a well-formed version it does not speak is unsupported_version whatever else the hello carries, and a malformed one is invalid_message. The hello request's fields change only with a new major, never in a minor, so an engine can always validate a hello of its own major. Missing data is never zeros: it is reported in filled_ranges (ADR 0005). Compatibility rule: REQUESTS are closed (additionalProperties false) and the engine MUST reject a request with an unknown field as invalid_message; RESPONSES are open and a client MUST ignore unknown fields in a response, so that from v1 a minor version may add response fields.  JSON Schema alone cannot check the window payload_bytes arithmetic, that representation ids are unique, that opened.representation names one of them, that the bound representation is a zarr one whose sampling_frequency, nchans, ntimes, scale and offset are non-null, or that a representation's scale and offset have nchans entries; the zod mirror does, and a client in another language must check them itself. Closed lists and growth: a client treats an error code it does not know as internal; a client must refuse a window whose dtype, layout or byte_order it does not know, rather than guess at the bytes; a new request field arrives only with a new protocol minor, and a client sends only the fields of the version the engine named in its hello response. Each message is one object, discriminated by type (and, for hello and recipe, by which of request or response fields it carries).",
   "oneOf": [
     {
       "$ref": "#/$defs/HelloRequest"
@@ -64,7 +64,7 @@
         "type": "integer",
         "minimum": 0
       },
-      "description": "Zero-based store channel indices. In a request, omitting channels means all store channels in ascending order. In a window response, payload row i is channels[i]. Indices must not repeat.",
+      "description": "Zero-based channel indices into the representation the handle is bound to (0 to nchans - 1; an index of nchans or more is out_of_range). In a request, omitting channels means all channels of the bound representation in ascending order. In a window response, payload row i is channels[i]. Indices must not repeat.",
       "uniqueItems": true
     },
     "ErrorCode": {
@@ -79,7 +79,8 @@
         "upstream_error",
         "decode_error",
         "internal"
-      ]
+      ],
+      "description": "Why a request failed. A client treats a code it does not know as internal. A channel index of nchans or more is out_of_range; a representation id or recording the dataset does not have is not_found."
     },
     "FilledRange": {
       "type": "object",
@@ -95,6 +96,144 @@
         "end_sample": {
           "type": "integer",
           "minimum": 0
+        }
+      }
+    },
+    "NeuroschemaRecord": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "The neuroschema record document (doc_type \"record\", https://github.com/nemarOrg/neuroschema) whose bids_relpath equals recording, passed through exactly as NEMAR publishes it in <dataset>/<version>/records.json for the dataset's latest published version, or null when none is available. It conforms to the neuroschema 0.4.x record schema, but its own schema_version stamp may be older (the published records say 0.3.0); do not reject it on the stamp. It describes the source file and is the authority for file-level facts: its signal_properties.sampling_frequency and signal_summary.nchans can differ from a representation's (a 500 Hz file is served as a 250 Hz Zarr group). It may come from a different dataset release than the representations, because records are published per version and the Zarr copy is the latest serving copy. Typed loosely here because neuroschema's own schemas do not have resolvable $id URLs; validate it with the neuroschema record schema if you need to. The engine never refuses to open because of it."
+    },
+    "Representation": {
+      "type": "object",
+      "required": [
+        "kind",
+        "id"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What form the samples are stored in. v0 defines \"zarr\"; a client skips a kind it does not know."
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique among this recording's representations; what open.representation names."
+        }
+      },
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "zarr"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "$ref": "#/$defs/ZarrRepresentation"
+      },
+      "description": "One form the recording's samples can be read from. Open like every response: an unknown kind, or an unknown field, is ignored by a client."
+    },
+    "ZarrRepresentation": {
+      "type": "object",
+      "required": [
+        "kind",
+        "id",
+        "store",
+        "modality",
+        "sampling_frequency",
+        "source_sampling_frequency",
+        "nchans",
+        "ntimes",
+        "recording_duration",
+        "scale",
+        "offset"
+      ],
+      "properties": {
+        "kind": {
+          "const": "zarr"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The Zarr group name, e.g. eeg_250hz."
+        },
+        "store": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The store's path relative to the dataset (Zarr index stores[].zarr)."
+        },
+        "modality": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The group's modality (Zarr index group modality); one recording can hold groups of several modalities."
+        },
+        "sampling_frequency": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Hz, of this group (Zarr index group rate); null when the index has no positive rate. Field names follow neuroschema; values describe this group, not the source file.",
+          "exclusiveMinimum": 0
+        },
+        "source_sampling_frequency": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Hz, the source rate the converter recorded for this group before its rate cap (Zarr index group source_rate_hz). For the file's own rate the record's signal_properties.sampling_frequency is the authority.",
+          "exclusiveMinimum": 0
+        },
+        "nchans": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "Channels in this group; null when the index has no channel count of at least 1."
+        },
+        "ntimes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Samples per channel in this group; the time rule's out_of_range bound."
+        },
+        "recording_duration": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Seconds, of this group.",
+          "minimum": 0
+        },
+        "scale": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "description": "Per channel (nchans entries; JSON Schema cannot check this, the zod mirror does and clients must). physical = digital * scale[c] + offset[c] for channel c; what a client reading units \"digital\" needs to convert. The engine fills scale and offset for the representation the handle is bound to and leaves them null for the others in v0 (neither schema copy checks that null). Channel names are deferred and not in v0."
+        },
+        "offset": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "description": "Per channel (nchans entries; not checkable in JSON Schema). See scale: physical = digital * scale[c] + offset[c]."
         }
       }
     },
@@ -115,7 +254,9 @@
           "const": "hello"
         },
         "protocol": {
-          "const": "0.1"
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+$",
+          "description": "The protocol version the client speaks, as MAJOR.MINOR."
         },
         "client": {
           "type": "string",
@@ -125,7 +266,7 @@
           "$ref": "#/$defs/PayloadBytesZero"
         }
       },
-      "description": "The client's opening message. The engine checks protocol before validating anything else, so a different version is answered with unsupported_version, not invalid_message."
+      "description": "The client's opening message. The engine reads protocol before validating anything else in it: a well-formed version the engine does not speak is answered with unsupported_version even if the rest of the hello does not validate; a malformed protocol is invalid_message. Its fields change only with a new major, never in a minor: a same-major engine always understands a hello, and only a different major may carry fields it does not know."
     },
     "HelloResponse": {
       "type": "object",
@@ -144,7 +285,8 @@
           "const": "hello"
         },
         "protocol": {
-          "const": "0.1"
+          "const": "0.1",
+          "description": "The protocol version the engine speaks; the client sends only what this version defines."
         },
         "engine": {
           "type": "string",
@@ -181,11 +323,13 @@
         },
         "recording": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The recording's BIDS path relative to the dataset repository root (neuroschema record bids_relpath, Zarr index stores[].path). The engine also accepts the store's zarr path."
         },
-        "group": {
+        "representation": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The id of the representation to bind the handle to. Omitted: the first zarr representation in the order opened lists them, which is the Zarr index's group order, as the MCP read_window tool picks the first group. In v0 only a zarr representation can be bound. An id the recording does not have, the id of a representation that is not zarr, or a recording with no zarr representation is not_found. A chosen zarr representation whose index entry has no positive rate, no channel count of at least 1 or no sample count is upstream_error: the serving index does not describe it well enough to read."
         },
         "payload_bytes": {
           "$ref": "#/$defs/PayloadBytesZero"
@@ -200,12 +344,9 @@
         "handle",
         "dataset_id",
         "recording",
-        "group",
-        "n_channels",
-        "sample_rate_hz",
-        "n_samples",
-        "scale",
-        "offset"
+        "representation",
+        "record",
+        "representations"
       ],
       "properties": {
         "id": {
@@ -222,42 +363,30 @@
         },
         "recording": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Always the recording's BIDS path relative to the dataset repository root (Zarr index stores[].path), even when the request named the store's zarr path."
         },
-        "group": {
+        "representation": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The id of the representation the handle is bound to: read_window and recipe read it. It is always listed in representations, in v0 it is always a zarr representation, and its sampling_frequency, nchans, ntimes, scale and offset are non-null."
         },
-        "n_channels": {
-          "type": "integer",
-          "minimum": 1
+        "record": {
+          "$ref": "#/$defs/NeuroschemaRecord"
         },
-        "sample_rate_hz": {
-          "type": "number",
-          "exclusiveMinimum": 0
-        },
-        "n_samples": {
-          "type": "integer",
-          "minimum": 0
+        "representations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/Representation"
+          },
+          "description": "Every representation of the recording, the bound one included, zarr ones in the Zarr index's group order. ids are unique."
         },
         "payload_bytes": {
           "$ref": "#/$defs/PayloadBytesZero"
-        },
-        "scale": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "Per store channel, one entry per channel (length equals n_channels; JSON Schema cannot check this, the zod mirror does and clients must). physical = digital * scale[c] + offset[c] for store channel c. This is what a client reading units \"digital\" needs to convert. Channel names are deferred and not in v0."
-        },
-        "offset": {
-          "type": "array",
-          "items": {
-            "type": "number"
-          },
-          "description": "Per store channel, one entry per channel (length equals n_channels; not checkable in JSON Schema). See scale: physical = digital * scale[c] + offset[c]."
         }
-      }
+      },
+      "description": "Answers open. File-level metadata is in record (neuroschema); facts about each stored form are in representations, under neuroschema field names but describing that form."
     },
     "ReadWindowRequest": {
       "type": "object",
@@ -301,7 +430,7 @@
           "$ref": "#/$defs/PayloadBytesZero"
         }
       },
-      "description": "Asks for a window of a recording opened by handle. Time rule, identical to the MCP read_window tool: start_sample = floor(start_s * sample_rate_hz + 0.5) and n_samples = floor(duration_s * sample_rate_hz + 0.5), with ties rounding up. If n_samples < 1, or start_sample >= the recording's n_samples, or start_sample + n_samples > the recording's n_samples, the engine answers out_of_range; it never returns a truncated window."
+      "description": "Asks for the samples of a window of the representation the handle is bound to. Time rule, identical to the MCP read_window tool, with sampling_frequency and ntimes those of the representation the handle is bound to: start_sample = floor(start_s * sampling_frequency + 0.5) and n_samples = floor(duration_s * sampling_frequency + 0.5), with ties rounding up (shared/zarr/window-samples.ts). If n_samples < 1, or start_sample >= ntimes, or start_sample + n_samples > ntimes, the engine answers out_of_range; it never returns a truncated window."
     },
     "Window": {
       "type": "object",
@@ -352,7 +481,7 @@
           "items": {
             "$ref": "#/$defs/FilledRange"
           },
-          "description": "Sample ranges that could not be read: absolute sample indices of the recording (not offsets into the window), end-exclusive, sorted ascending, non-overlapping, each inside [start_sample, start_sample + n_samples) of this window, with start_sample < end_sample. The payload values inside a filled range are the array's fill value (0 for these stores) converted like any other value, so for units \"physical\" they are offset[c], not zero; they are placeholders, never data (ADR 0005). Order, containment and start < end are guaranteed by the engine and are checked by neither schema copy."
+          "description": "Sample ranges that could not be read: absolute sample indices of the recording (not offsets into the window), end-exclusive, sorted ascending, non-overlapping (adjacent ranges may or may not be merged), each inside [start_sample, start_sample + n_samples) of this window, with start_sample < end_sample. The payload values inside a filled range are the array's fill value (0 for these stores) converted like any other value, so for units \"physical\" they are offset[c], not zero; they are placeholders, never data (ADR 0005). Order, containment and start < end are guaranteed by the engine and are checked by neither schema copy."
         },
         "payload_bytes": {
           "type": "integer",
@@ -396,7 +525,7 @@
           "$ref": "#/$defs/PayloadBytesZero"
         }
       },
-      "description": "Asks for a window of a recording opened by handle. Time rule, identical to the MCP read_window tool: start_sample = floor(start_s * sample_rate_hz + 0.5) and n_samples = floor(duration_s * sample_rate_hz + 0.5), with ties rounding up. If n_samples < 1, or start_sample >= the recording's n_samples, or start_sample + n_samples > the recording's n_samples, the engine answers out_of_range; it never returns a truncated window."
+      "description": "Asks for the read recipe of a window instead of its samples: the MCP read-recipe object that tells a client which store objects and byte ranges to fetch and decode to read the window itself. Nothing is read. Time rule, identical to the MCP read_window tool, with sampling_frequency and ntimes those of the representation the handle is bound to: start_sample = floor(start_s * sampling_frequency + 0.5) and n_samples = floor(duration_s * sampling_frequency + 0.5), with ties rounding up (shared/zarr/window-samples.ts). If n_samples < 1, or start_sample >= ntimes, or start_sample + n_samples > ntimes, the engine answers out_of_range; it never returns a truncated window."
     },
     "RecipeResponse": {
       "type": "object",

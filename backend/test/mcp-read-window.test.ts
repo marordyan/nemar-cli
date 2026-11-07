@@ -477,6 +477,35 @@ describe("read_window (route)", () => {
       // Default start_s 0, duration_s 10 -> sample_slice [0, 2500) at 250 Hz.
       expect(output.recipe.sample_slice).toEqual({ start: 0, end: 2500 });
     });
+
+    // The MCP and the local engine protocol share one seconds-to-samples rule
+    // (shared/zarr/window-samples.ts). Whole seconds never exercise rounding, so
+    // these pin the MCP to that rule at fractional seconds (250 Hz).
+    test("a tie rounds up, for the start and for the duration on its own", async () => {
+      const { body } = await callTool(app, env(db), 1, "read_window", {
+        dataset_id: V3_ID,
+        recording: FIRST_STORE_ZARR,
+        start_s: 0.25, // 62.5 -> 63 (truncation would give 62)
+        duration_s: 0.25, // 62.5 -> 63 samples (end minus start would give 62)
+      });
+      const output = structuredContentOf(body);
+      expect(output.mode).toBe("recipe");
+      if (output.mode !== "recipe") return;
+      expect(output.recipe.sample_slice).toEqual({ start: 63, end: 126 });
+    });
+
+    test("below a tie rounds down (not up)", async () => {
+      const { body } = await callTool(app, env(db), 1, "read_window", {
+        dataset_id: V3_ID,
+        recording: FIRST_STORE_ZARR,
+        start_s: 1,
+        duration_s: 0.201, // 50.25 -> 50 samples (rounding up would give 51)
+      });
+      const output = structuredContentOf(body);
+      expect(output.mode).toBe("recipe");
+      if (output.mode !== "recipe") return;
+      expect(output.recipe.sample_slice).toEqual({ start: 250, end: 300 });
+    });
   });
 
   // ---------------------------------------------------------------------

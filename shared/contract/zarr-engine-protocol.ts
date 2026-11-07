@@ -12,10 +12,18 @@
  * field), response objects are `.passthrough()` (a client ignores an unknown
  * field, and keeps it in the parsed value, exactly as Ajv leaves the document
  * alone). `FilledRange` is part of a response and so is open too.
- * Two things the JSON Schema cannot express live only here: the `window`
- * `payload_bytes` arithmetic, and the full shape of a `recipe` response (the
- * schema types it as a bare object in v0; this mirror reuses the MCP's
- * `readRecipeSchema`).
+ * What the JSON Schema cannot express lives only here: the `window`
+ * `payload_bytes` arithmetic; in `opened`, unique representation ids, a bound
+ * `representation` that is listed, is `zarr` and has non-null
+ * `sampling_frequency`/`nchans`/`ntimes`/`scale`/`offset`, and `scale`/`offset`
+ * with `nchans` entries;
+ * and the full shape of a `recipe` response (the schema types it as a bare
+ * object in v0; this mirror reuses the MCP's `readRecipeSchema`).
+ *
+ * `opened.record` is a neuroschema `record` document passed through unchanged
+ * and typed loosely on both sides (neuroschema's schemas have no resolvable
+ * `$id`); `test/contract-neuroschema-record.test.ts` validates real ones
+ * against the vendored neuroschema bundle.
  *
  * The frame (magic, header length, padding, payload) is `shared/zarr/protocol-frame.ts`.
  */
@@ -23,7 +31,8 @@
 import { z } from "zod";
 import { readRecipeSchema } from "./mcp.js";
 
-/** The one protocol version v0 speaks. v0 matches it exactly; from v1 only the major must match. */
+/** The one protocol version v0 speaks. A hello request may name any MAJOR.MINOR; the
+ *  engine answers one it does not speak with unsupported_version. */
 export const ENGINE_PROTOCOL_VERSION = "0.1";
 
 export const ENGINE_ERROR_CODES = [
@@ -67,7 +76,11 @@ export const helloRequestSchema = z
   .object({
     id,
     type: z.literal("hello"),
-    protocol: z.literal(ENGINE_PROTOCOL_VERSION),
+    /** MAJOR.MINOR. The engine reads it before validating the rest of the hello:
+     *  a well-formed version it does not speak is unsupported_version even when
+     *  the hello also carries fields this version does not know. The hello
+     *  request's fields change only with a new major, never in a minor. */
+    protocol: z.string().regex(/^[0-9]+\.[0-9]+$/),
     client: nonEmpty,
     payload_bytes: payloadBytesZero,
   })
@@ -90,11 +103,57 @@ export const openRequestSchema = z
     id,
     type: z.literal("open"),
     dataset_id: datasetId,
+    /** BIDS path relative to the repository root, or the store's zarr path. */
     recording: nonEmpty,
-    group: nonEmpty.optional(),
+    /** A representation id; omitted means the first zarr representation. */
+    representation: nonEmpty.optional(),
     payload_bytes: payloadBytesZero,
   })
   .strict();
+
+/** A `zarr` representation: one Zarr group of the recording, described with
+ *  neuroschema field names but group-level values. */
+export const zarrRepresentationSchema = z
+  .object({
+    kind: z.literal("zarr"),
+    id: nonEmpty,
+    store: nonEmpty,
+    modality: z.string().nullable(),
+    sampling_frequency: z.number().gt(0).nullable(),
+    source_sampling_frequency: z.number().gt(0).nullable(),
+    nchans: z.number().int().min(1).nullable(),
+    ntimes: z.number().int().min(0).nullable(),
+    recording_duration: z.number().min(0).nullable(),
+    /** physical = digital * scale[c] + offset[c]; null except on the bound representation. */
+    scale: z.array(z.number()).nullable(),
+    offset: z.array(z.number()).nullable(),
+  })
+  .passthrough()
+  // Zod-only: JSON Schema cannot compare an array length to another field.
+  .refine(
+    (r) =>
+      (r.scale === null || r.scale.length === r.nchans) &&
+      (r.offset === null || r.offset.length === r.nchans),
+    { message: "scale and offset must each have nchans entries", path: ["scale"] },
+  );
+
+/** A representation of a kind this protocol version does not define; a client skips it. */
+const otherRepresentationSchema = z
+  .object({ kind: nonEmpty.refine((k) => k !== "zarr"), id: nonEmpty })
+  .passthrough();
+
+export const representationSchema = z.union([zarrRepresentationSchema, otherRepresentationSchema]);
+
+/** Narrows a parsed representation to the `zarr` kind (the union's other branch
+ *  is typed `kind: string`, so a plain `kind === "zarr"` check does not narrow). */
+export function isZarrRepresentation(
+  r: z.infer<typeof representationSchema>,
+): r is z.infer<typeof zarrRepresentationSchema> {
+  return r.kind === "zarr";
+}
+
+/** A neuroschema `record` document, passed through unchanged, or null. */
+export const neuroschemaRecordSchema = z.record(z.unknown()).nullable();
 
 export const openedSchema = z
   .object({
@@ -103,21 +162,49 @@ export const openedSchema = z
     handle,
     dataset_id: datasetId,
     recording: nonEmpty,
-    group: nonEmpty,
-    n_channels: z.number().int().min(1),
-    sample_rate_hz: z.number().gt(0),
-    n_samples: z.number().int().min(0),
-    /** physical = digital * scale[c] + offset[c], per store channel c. */
-    scale: z.array(z.number()),
-    offset: z.array(z.number()),
+    /** The id of the representation the handle is bound to. */
+    representation: nonEmpty,
+    record: neuroschemaRecordSchema,
+    representations: z.array(representationSchema).min(1),
     payload_bytes: payloadBytesZero,
   })
   .passthrough()
-  // Zod-only, like the window payload_bytes arithmetic: JSON Schema cannot
-  // compare an array length to another field.
-  .refine((m) => m.scale.length === m.n_channels && m.offset.length === m.n_channels, {
-    message: "scale and offset must each have n_channels entries",
-    path: ["scale"],
+  .superRefine((m, ctx) => {
+    const ids = m.representations.map((r) => r.id);
+    if (new Set(ids).size !== ids.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "representation ids must be unique",
+        path: ["representations"],
+      });
+    }
+    const bound = m.representations.find((r) => r.id === m.representation);
+    if (!bound) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "representation must name one of representations",
+        path: ["representation"],
+      });
+      return;
+    }
+    if (!isZarrRepresentation(bound)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "in v0 the bound representation must be a zarr one",
+        path: ["representation"],
+      });
+      return;
+    }
+    const missing = (["sampling_frequency", "nchans", "ntimes", "scale", "offset"] as const).filter(
+      (k) => bound[k] === null,
+    );
+    if (missing.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `the bound zarr representation must have ${missing.join(", ")}`,
+        path: ["representations"],
+      });
+    }
   });
 
 export const readWindowRequestSchema = z
@@ -242,6 +329,8 @@ export type HelloRequest = z.infer<typeof helloRequestSchema>;
 export type HelloResponse = z.infer<typeof helloResponseSchema>;
 export type OpenRequest = z.infer<typeof openRequestSchema>;
 export type Opened = z.infer<typeof openedSchema>;
+export type ZarrRepresentation = z.infer<typeof zarrRepresentationSchema>;
+export type Representation = z.infer<typeof representationSchema>;
 export type ReadWindowRequest = z.infer<typeof readWindowRequestSchema>;
 export type EngineWindow = z.infer<typeof windowSchema>;
 export type RecipeRequest = z.infer<typeof recipeRequestSchema>;

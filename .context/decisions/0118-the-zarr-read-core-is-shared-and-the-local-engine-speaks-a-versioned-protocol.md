@@ -13,6 +13,9 @@ Two copies of a decoder that has to agree with the converter byte for byte would
 The code runs inside a Worker, so it is held to the Worker's limits: no filesystem, no `node:` or `bun:` imports, no WebAssembly, and network and cache access only through what the caller hands in.
 Whatever other programs speak to the CLI must be understood by three languages, must not open a port that any local process or web page could reach, and must carry float64 samples without losing a bit.
 It is not known yet whether the engine ships inside the CLI (plan A) or as a separate download (plan B), nor how a private dataset is read.
+NEMAR describes recordings in neuroschema (nemarOrg/neuroschema): a `record` document per primary signal file, published for each dataset version in `records.json`.
+ADR 0037 says to take the standard that owns the meaning instead of naming the same facts again.
+A Zarr store is not the file, though: one recording can have several groups, and a group's rate can differ from the file's (nm000103's 500 Hz files are served as 250 Hz groups).
 
 ## Decision
 
@@ -32,36 +35,51 @@ It is not known yet whether the engine ships inside the CLI (plan A) or as a sep
 4. **The messages** are `hello`, `open`, `read_window`, `recipe` and `release`, answered by `hello`, `opened`, `window`, `recipe` and `released`, or by `error` with one of ten codes.
    A request carries a client-chosen integer `id` of at least 1 and the response echoes it; an `error` reply carries `id: null` when the request's id could not be read (an unparseable frame, invalid JSON, a missing or non-integer id), and no other message may; v0 handles one request at a time.
    `payload_bytes` is 0 on every message except `window`, where it equals `channels.length * n_samples` times 8 (`float64`) or 2 (`int16`); the JSON Schema documents that arithmetic and the zod mirror enforces it.
-   `units: "digital"` returns the raw int16 with no scale or offset applied; `opened` carries `scale` and `offset`, one entry per store channel (the zod mirror checks that their length is `n_channels`; JSON Schema cannot), with physical = digital * scale[c] + offset[c], so a digital client can convert.
-   Channel names are deferred.
-   A window is addressed in time by the MCP's own rule: `start_sample = floor(start_s * sample_rate_hz + 0.5)` and `n_samples = floor(duration_s * sample_rate_hz + 0.5)`, ties rounding up; if `n_samples < 1`, or `start_sample` is at or past the recording's `n_samples`, or `start_sample + n_samples` exceeds it, the engine answers `out_of_range` and never returns a truncated window.
-   An omitted `channels` means all store channels in ascending order, payload row i is `channels[i]`, and channels must not repeat.
-   `filled_ranges` are absolute sample indices, end-exclusive, sorted, non-overlapping and inside the window; the payload inside one is the array's fill value (0 for these stores) converted like any other value, so for `physical` it is `offset[c]`.
-   The engine checks the `hello` `protocol` field before validating anything else, so another version is `unsupported_version`, not `invalid_message`.
-   JSON Schema cannot check the `payload_bytes` arithmetic or the `scale` and `offset` lengths; clients in other languages must.
+   `units: "digital"` returns the raw int16 with no scale or offset applied; the bound representation carries `scale` and `offset`, one entry per channel, with physical = digital * scale[c] + offset[c], so a digital client can convert.
+   Channel names are deferred: neither the published records nor the Zarr index carry them today.
+   A window is addressed in time by the MCP's own rule, one helper both use (`shared/zarr/window-samples.ts`): `start_sample = floor(start_s * sampling_frequency + 0.5)` and `n_samples = floor(duration_s * sampling_frequency + 0.5)`, ties rounding up, with the bound representation's rate; if `n_samples < 1`, or `start_sample` is at or past its `ntimes`, or `start_sample + n_samples` exceeds it, the engine answers `out_of_range` and never returns a truncated window.
+   An omitted `channels` means all channels in ascending order, payload row i is `channels[i]`, channels must not repeat, and an index of `nchans` or more is `out_of_range`.
+   `filled_ranges` are absolute sample indices, end-exclusive, sorted, non-overlapping (adjacent ones may or may not be merged) and inside the window; the payload inside one is the array's fill value (0 for these stores) converted like any other value, so for `physical` it is `offset[c]`.
+   A `hello` request names any `MAJOR.MINOR`: one the engine does not speak is `unsupported_version`, a malformed one `invalid_message`.
+   JSON Schema cannot check the `payload_bytes` arithmetic, unique representation ids, that `opened.representation` is listed, or the `scale` and `offset` lengths; the zod mirror does, and clients in other languages must.
    The `hello` response carries `max_payload_bytes`, the largest payload the engine will send; a `read_window` whose window would exceed it is `too_large`, and the value itself is engine policy.
-5. **Compatibility.**
+5. **`opened` describes the recording in neuroschema and its stored forms separately.**
+   `record` is the neuroschema `record` whose `bids_relpath` equals the opened recording, passed through exactly as published, or `null` when there is none (ADR 0005: missing metadata never blocks a read).
+   It is typed as a bare object in the protocol schema, because neuroschema's schemas have no resolvable `$id`; nemar-cli vendors the neuroschema record schema next to the dataset one and tests real records against it.
+   The engine never refuses to open because a record fails that schema: live conformance is warn-only (ADR 0077, #1247), and the published records are stamped 0.3.0 while conforming to 0.4.1.
+   The record may come from another release than the Zarr copy, since records are per version and the Zarr index is the latest serving copy.
+   `representations` lists every form the samples can be read from, each with a `kind` and an `id` unique within the recording; v0 defines `zarr`, one per Zarr group, and a client skips a kind it does not know.
+   A `zarr` representation uses neuroschema field names (`sampling_frequency`, `nchans`, `ntimes`, `recording_duration`) for the group's own values, and fields the index lacks are `null`, not absent.
+   `open` may name a representation; otherwise the engine binds the first `zarr` one, as the MCP picks the first group, and `opened.representation` says which.
+   No fact of the record is repeated outside it.
+6. **Compatibility.**
    Requests are closed: the engine MUST reject a request with an unknown field (`invalid_message`).
    Responses are open: a client MUST ignore unknown fields in a response, so from v1 a minor version may add response fields.
-   The `filled_ranges` items belong to a response and are open too.
-6. **Versioning.**
+   The `filled_ranges` items and the representations belong to a response and are open too.
+   A client treats an error code it does not know as `internal`, and refuses a `window` whose `dtype`, `layout` or `byte_order` it does not know rather than guess at the bytes.
+   A new request field arrives only with a new protocol minor, and a client sends only what the version in the engine's `hello` response defines.
+7. **Versioning.**
    `hello` carries the protocol version.
-   In v0 it must match exactly (`"0.1"`), because v0 is unstable; from v1 a minor mismatch is accepted and only the major must match.
+   In v0 the engine speaks only `"0.1"`, because v0 is unstable; from v1 a minor mismatch is accepted and only the major must match.
    v0 is published at `https://api.nemar.org/schemas/zarr-engine-protocol-v0.json` and is the one published schema that may change in place; every version after it is immutable like the index schema.
-7. **Missing data is never zeros.**
+8. **Missing data is never zeros.**
    A `window` reports what could not be read in `filled_ranges` (ADR 0005).
-8. **Still open:** plan A versus plan B for shipping the engine; private-dataset access, where ADR 0114's credential helper is the likely route; and a Unix-domain socket, which would add a transport and not change the messages.
+9. **Still open:** plan A versus plan B for shipping the engine; private-dataset access, where ADR 0114's credential helper is the likely route; and a Unix-domain socket, which would add a transport and not change the messages.
 
 ## Consequences
 
 - **One decoder to maintain.**
   A fix to chunk decoding or shard indexing lands once and reaches the MCP and the engine together; the cost is that `shared/zarr/` can never import anything the Worker cannot run.
 - **A client needs three small things in any language:** an 8-byte prefix reader, a JSON parser, and a typed-array view over the payload.
-- **The two protocol copies can disagree in two places by design.**
-  JSON Schema cannot check the `payload_bytes` arithmetic, and the `recipe` response is typed as a bare object there while zod validates the full MCP recipe.
-  Both gaps have tests that pin them, so closing one later is a visible change.
+- **The two protocol copies can disagree in known places by design.**
+  JSON Schema cannot check the `payload_bytes` arithmetic or the cross-field rules of `opened`, and the `recipe` response is typed as a bare object there while zod validates the full MCP recipe.
+  Each gap has a test that pins it, so closing one later is a visible change.
+- **Metadata has one owner.**
+  A client reads file-level facts (modality, BIDS entities, the file's own rate and channel count) from the neuroschema record and never from the engine's own names, so a neuroschema change reaches engine clients without a protocol change; the price is that a client must be ready for `record: null`.
+- **New stored forms do not break clients.**
+  A derivative or another format becomes a new representation `kind` that old clients skip.
 - **v0 gives no stability promise.**
-  A client written against it can break until v1; the exact-match `hello` makes that a clear refusal instead of a silent misread.
+  A client written against it can break until v1; `unsupported_version` in answer to `hello` makes that a clear refusal instead of a silent misread.
 - **Requests are serialized.**
   The `id` field is already there, so concurrent requests can be added without breaking the format.
 - **This ADR's number is provisional.**
@@ -79,6 +97,12 @@ It is not known yet whether the engine ships inside the CLI (plan A) or as a sep
   A dependency, and a code generator or library, in each of three languages, for a protocol with five requests.
 - **Newline-delimited JSON with base64 samples.**
   A third larger than the bytes, and a decode step on both ends for every window.
+- **Name the recording's facts in the protocol** (`sample_rate_hz`, `n_channels`, `n_samples`, as the first draft did).
+  A second vocabulary for facts neuroschema owns (ADR 0037), and it hid which facts belong to the file and which to a Zarr group.
+- **Put the Zarr facts inside the record, or in a new neuroschema extension.**
+  The record core is closed (`additionalProperties: false`), and an extension needs a neuroschema release for a protocol that is still unstable.
+- **One `zarr` object instead of a list of representations.**
+  A recording can have several Zarr groups, and a derivative stored as Zarr would collide with the raw copy.
 - **Localhost TCP.**
   Any local process or web page can connect to it; stdio is reachable only by the process that started the engine.
 
@@ -86,5 +110,6 @@ It is not known yet whether the engine ships inside the CLI (plan A) or as a sep
 
 - `shared/zarr-engine-protocol.schema.json`, `shared/contract/zarr-engine-protocol.ts`, `shared/zarr/protocol-frame.ts`.
 - `test/zarr-engine-protocol-contract.test.ts`, `test/zarr-engine-frame.test.ts`, `test/fixtures/engine-frames/`, `scripts/zarr/engine_frame_fixtures.py`.
+- `shared/contract/neuroschema/record.bundle.json`, `test/contract-neuroschema-record.test.ts`, `test/fixtures/neuroschema-records/` (three records from nm000103's public `records.json`); `shared/zarr/window-samples.ts` and `backend/test/zarr-window-samples.test.ts`.
 - `backend/src/routes/schemas.ts` serves the v0 schema; `backend/test/zarr-index-v3.test.ts` tests it.
-- ADR 0005, ADR 0029, ADR 0057, ADR 0114.
+- ADR 0005, ADR 0029, ADR 0037, ADR 0057, ADR 0077, ADR 0114.

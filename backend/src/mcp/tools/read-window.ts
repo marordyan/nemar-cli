@@ -89,6 +89,7 @@ import type { ZarrGroup, ZarrIndex, ZarrStore } from "../../../../shared/contrac
 import { isV3Index } from "../../../../shared/zarr/index.js";
 import { readLevel0Window } from "../../../../shared/zarr/read.js";
 import { nInnerForShard } from "../../../../shared/zarr/sharding.js";
+import { secondsToSampleWindow } from "../../../../shared/zarr/window-samples.js";
 import { type Level0ArrayMetadata, loadLevel0ArrayMetadata } from "../array-metadata.js";
 import {
   type PublicDatasetRow,
@@ -384,10 +385,13 @@ export async function readWindowTool(
     return { result: missingGeometryResult(args.dataset_id, args.recording, targetGroup.name) };
   }
 
-  // The converter's own sample_index_for rounding rule (scripts/zarr/generate_zarr.py):
-  // ties round UP, deliberately not Math.round's banker's rounding.
-  const startSample = Math.floor(args.start_s * rate + 0.5);
-  const requestedSamples = Math.floor(args.duration_s * rate + 0.5);
+  // The converter's own sample_index_for rounding rule, shared with the local
+  // engine protocol so both land on the same samples.
+  const { startSample, nSamples: requestedSamples } = secondsToSampleWindow(
+    args.start_s,
+    args.duration_s,
+    rate,
+  );
   const endSample = startSample + requestedSamples;
   if (startSample >= nSamplesGroup || endSample > nSamplesGroup) {
     return {

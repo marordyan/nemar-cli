@@ -18,7 +18,6 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { Ajv2020 } from "ajv/dist/2020";
 import { buildReadRecipe } from "../shared/contract/mcp.js";
 import {
@@ -574,15 +573,6 @@ describe("protocol schema: documented semantics", () => {
       expect(d, name).toContain("out_of_range");
       expect(d, name).toContain("never returns a truncated window");
     }
-  });
-
-  test("the time rule is the MCP read_window rule", () => {
-    const source = readFileSync(
-      new URL("../backend/src/mcp/tools/read-window.ts", import.meta.url),
-      "utf8",
-    );
-    expect(source).toContain("Math.floor(args.start_s * rate + 0.5)");
-    expect(source).toContain("Math.floor(args.duration_s * rate + 0.5)");
   });
 
   test("filled_ranges, channels and the version check are described", () => {

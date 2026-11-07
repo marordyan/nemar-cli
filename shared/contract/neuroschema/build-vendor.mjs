@@ -5,8 +5,10 @@
  * The website/CLI/data-plane dataset shape conforms to the neuroschema JSON
  * Schema, which lives in a SEPARATE repo (nemarOrg/neuroschema, Python/JSON-
  * Schema). nemar-cli CI can't reach that repo, so we vendor a self-contained
- * bundle of the dataset schema + all its transitive $refs into ONE file that
+ * bundle of one root schema + all its transitive $refs into ONE file that
  * ajv (2020-12) can compile, and validate real data-plane responses against it.
+ * Two roots are vendored: `dataset` (metadata.json) and `record` (one per
+ * signal file, records.json and the Zarr engine protocol's `opened.record`).
  *
  * Bundling strategy: every reachable schema is assigned a stable absolute $id
  * (`nsc:/<path-from-schema-root>`), all external file $refs are rewritten to the
@@ -16,8 +18,9 @@
  *
  * Usage (from the nemar-cli repo root, with the neuroschema repo checked out
  * as a sibling):
- *   bun shared/contract/neuroschema/build-vendor.mjs ../neuroschema
- * Commit the regenerated dataset.bundle.json + bump the provenance below.
+ *   bun shared/contract/neuroschema/build-vendor.mjs ../neuroschema [dataset|record]
+ * The root defaults to `dataset`; the output is `<root>.bundle.json`. Regenerate
+ * BOTH bundles from the same neuroschema commit and commit them together.
  */
 
 import { execFileSync } from "node:child_process";
@@ -25,8 +28,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
 const nscRepo = process.argv[2];
-if (!nscRepo) {
-  console.error("usage: bun build-vendor.mjs <path-to-neuroschema-repo>");
+const rootName = process.argv[3] ?? "dataset";
+if (!nscRepo || !["dataset", "record"].includes(rootName)) {
+  console.error("usage: bun build-vendor.mjs <path-to-neuroschema-repo> [dataset|record]");
   process.exit(1);
 }
 
@@ -45,7 +49,7 @@ const nscCommit = execFileSync("git", ["-C", nscRepo, "rev-parse", "HEAD"], {
   encoding: "utf8",
 }).trim();
 const schemaRoot = resolve(nscRepo, "schema");
-const ROOT_REL = "core/dataset.schema.json";
+const ROOT_REL = `core/${rootName}.schema.json`;
 const idFor = (relPath) => `nsc:/${relPath}`;
 
 const bundle = new Map(); // relPath -> rewritten schema
@@ -96,6 +100,6 @@ const out = {
   root: idFor(ROOT_REL),
   schemas: [...bundle.values()],
 };
-const dest = join(import.meta.dir, "dataset.bundle.json");
+const dest = join(import.meta.dir, `${rootName}.bundle.json`);
 writeFileSync(dest, `${JSON.stringify(out, null, 2)}\n`);
 console.log(`wrote ${dest}: ${out.schemas.length} schemas, root ${out.root}`);

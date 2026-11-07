@@ -1,0 +1,1157 @@
+{
+  "_provenance": {
+    "source": "https://github.com/nemarOrg/neuroschema",
+    "generated_by": "shared/contract/neuroschema/build-vendor.mjs",
+    "note": "Do not hand-edit; regenerate from the neuroschema repo.",
+    "neuroschema_version": "0.4.1",
+    "source_commit": "062a988cc539e2b8fdedcc53286a7b6fd46848be"
+  },
+  "root": "nsc:/core/record.schema.json",
+  "schemas": [
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "nsc:/core/record.schema.json",
+      "title": "Record Metadata",
+      "description": "Per-data-file metadata for an individual recording within a neuroimaging dataset. A data file is a primary recording (e.g., .set, .edf, .vhdr) along with its BIDS sidecar context. Each record has its own modality (required) and can override dataset-level signal properties via signal_properties.",
+      "type": "object",
+      "required": [
+        "dataset",
+        "bids_relpath",
+        "modality"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "description": "Envelope field: schema version (present when validated through root schema)."
+        },
+        "doc_type": {
+          "type": "string",
+          "description": "Envelope field: document type (present when validated through root schema)."
+        },
+        "dataset": {
+          "type": "string",
+          "description": "Parent dataset identifier (foreign key to dataset.dataset_id).",
+          "pattern": "^[a-z]{2}[0-9]+$"
+        },
+        "data_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Human-readable name for this data file (e.g., 'ds002718_sub-004_task-FaceRecognition_eeg.set')."
+        },
+        "bids_relpath": {
+          "type": "string",
+          "description": "BIDS-compliant relative path within the dataset (e.g., 'sub-004/eeg/sub-004_task-FaceRecognition_eeg.set')."
+        },
+        "modality": {
+          "type": "string",
+          "description": "Recording modality for this file (e.g., 'EEG', 'MEG', 'MRI', 'iEEG', 'EMG'). Required per record; not inherited from dataset."
+        },
+        "datatype": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "BIDS datatype directory (e.g., 'eeg', 'meg', 'anat', 'func')."
+        },
+        "suffix": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "BIDS filename suffix (e.g., 'eeg', 'meg', 'bold', 'T1w')."
+        },
+        "file_extension": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "File extension including the leading dot (e.g., '.set', '.edf', '.vhdr', '.fif')."
+        },
+        "entities": {
+          "$ref": "nsc:/definitions/bidsEntities.schema.json"
+        },
+        "signal_properties": {
+          "$ref": "nsc:/definitions/inheritable.schema.json"
+        },
+        "signal_summary": {
+          "$ref": "nsc:/definitions/signalSummary.schema.json"
+        },
+        "provenance": {
+          "$ref": "nsc:/definitions/recordProvenance.schema.json"
+        },
+        "extensions": {
+          "$ref": "nsc:/extensions/extensionsContainer.schema.json"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "nsc:/definitions/bidsEntities.schema.json",
+      "title": "BIDS Entities",
+      "description": "Standard Brain Imaging Data Structure (BIDS) entities parsed from the file path.",
+      "type": "object",
+      "properties": {
+        "subject": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Subject label (e.g., '004', 'NDARAC589YMB')."
+        },
+        "session": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Session label (e.g., 'pre', '01')."
+        },
+        "task": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Task label (e.g., 'FaceRecognition', 'rest')."
+        },
+        "run": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Run label (e.g., '1', '01')."
+        },
+        "acquisition": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Acquisition label (e.g., 'full', 'lowres')."
+        },
+        "space": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Space label (e.g., 'MNI152NLin2009cAsym', 'T1w')."
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "nsc:/definitions/inheritable.schema.json",
+      "title": "Inheritable Signal Properties",
+      "description": "Signal properties that follow the BIDS inheritance pattern: the dataset provides defaults and individual records can override them. Used in both dataset.signal_defaults and record.signal_properties.",
+      "type": "object",
+      "properties": {
+        "sampling_frequency": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Sampling frequency in Hz.",
+          "minimum": 0
+        },
+        "power_line_frequency": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Power line frequency in Hz (typically 50 or 60).",
+          "enum": [
+            50,
+            60,
+            null
+          ]
+        },
+        "reference": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "EEG reference (e.g., 'nose', 'Cz', 'average')."
+        },
+        "recording_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Recording type (e.g., 'continuous', 'epoched')."
+        },
+        "channel_system": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Electrode placement system (e.g., '10-20', '10-10', '10-5', 'GSN-HydroCel-129', 'other')."
+        },
+        "placement_scheme": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Detailed electrode placement scheme from BIDS EEG sidecar (e.g., 'extended 10-10% system')."
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "nsc:/definitions/signalSummary.schema.json",
+      "title": "Signal Summary",
+      "description": "Summary of the recording signal properties. Keeps only aggregate info in core; per-channel details go in extensions. Signal properties that follow BIDS inheritance (sampling_frequency, reference, power_line_frequency) are in inheritable.schema.json instead.",
+      "type": "object",
+      "properties": {
+        "nchans": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Total number of channels.",
+          "minimum": 0
+        },
+        "ntimes": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Number of time points (samples) in the recording.",
+          "minimum": 0
+        },
+        "recording_duration": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Total recording duration in seconds.",
+          "minimum": 0
+        },
+        "channel_type_counts": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Count of channels by type (e.g., {'EEG': 64, 'EOG': 2, 'ECG': 1}).",
+          "additionalProperties": {
+            "type": "integer"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "nsc:/definitions/recordProvenance.schema.json",
+      "title": "Record Provenance",
+      "description": "Record-level timestamps tracking when a record was digested, created, and last modified.",
+      "type": "object",
+      "properties": {
+        "digested_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ISO 8601 timestamp of when this record was ingested/digested into the system.",
+          "format": "date-time"
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ISO 8601 timestamp of when this record was first created.",
+          "format": "date-time"
+        },
+        "modified_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ISO 8601 timestamp of last modification to this record.",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "nsc:/extensions/extensionsContainer.schema.json",
+      "title": "Extensions Container",
+      "description": "Container for domain-specific extensions using reserved namespaces. Each project or domain gets its own namespace. Adding new top-level namespaces requires a MINOR schema version bump. Follows the pattern established by signalJourney's extension system.",
+      "type": "object",
+      "properties": {
+        "eegdash": {
+          "description": "Namespace for EEGDash-specific properties (visualization, streaming).",
+          "$ref": "nsc:/extensions/eegdash.schema.json"
+        },
+        "signalJourney": {
+          "description": "Namespace for signalJourney processing pipeline metadata.",
+          "$ref": "nsc:/extensions/signalJourney.schema.json"
+        },
+        "nemar": {
+          "description": "Namespace for NEMAR-specific properties (API fields, legacy fields).",
+          "$ref": "nsc:/extensions/nemar.schema.json"
+        },
+        "dataQuality": {
+          "description": "Namespace for data quality metrics and indicators.",
+          "$ref": "nsc:/extensions/dataQuality.schema.json"
+        },
+        "rawDetail": {
+          "description": "Namespace for detailed per-channel arrays (channel names, types, TSV data). Separated from core to keep core documents lean.",
+          "$ref": "nsc:/extensions/rawDetail.schema.json"
+        },
+        "dataCite": {
+          "description": "Namespace for DataCite DOI registration metadata (publisher, resource type, geo_locations, alternate_identifiers, related_items). Note: keywords, related_identifiers, contributors, dates, rights, and language moved to core in v0.3.0.",
+          "$ref": "nsc:/extensions/dataCite.schema.json"
+        },
+        "dataCategories": {
+          "description": "Namespace for study classification (paradigm, clinical context, cognitive domains).",
+          "$ref": "nsc:/extensions/dataCategories.schema.json"
+        }
+      },
+      "x-extension-managers": {
+        "description": "Maps each extension namespace to its owning service and MongoDB collection. Core fields are platform-neutral; extension collections have separate access control per service.",
+        "core": {
+          "manager": "nemar-api",
+          "collection": "datasets | records"
+        },
+        "eegdash": {
+          "manager": "eegdash",
+          "collection": "ext_eegdash"
+        },
+        "signalJourney": {
+          "manager": "signal-journey",
+          "collection": "ext_signalJourney"
+        },
+        "nemar": {
+          "manager": "nemar-api",
+          "collection": "ext_nemar"
+        },
+        "dataQuality": {
+          "manager": "nemar-pipeline",
+          "collection": "ext_dataQuality"
+        },
+        "rawDetail": {
+          "manager": "nemar-api",
+          "collection": "ext_rawDetail"
+        },
+        "dataCite": {
+          "manager": "nemar-tools",
+          "collection": "ext_dataCite"
+        },
+        "dataCategories": {
+          "manager": "nemar-api",
+          "collection": "ext_dataCategories"
+        }
+      },
+      "additionalProperties": true
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "nsc:/extensions/eegdash.schema.json",
+      "title": "EEGDash Extension",
+      "description": "EEGDash-specific metadata for visualization and streaming. Fields that support the EEGDash dashboard but are not part of the core neuroschema.",
+      "type": "object",
+      "properties": {
+        "storage": {
+          "type": "object",
+          "description": "Storage location details for EEGDash backend.",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "s3",
+                "https",
+                "local"
+              ]
+            },
+            "base": {
+              "type": "string",
+              "description": "Base URI for the storage location."
+            },
+            "raw_key": {
+              "type": "string",
+              "description": "Relative path key to the raw file."
+            },
+            "dep_keys": {
+              "type": "array",
+              "description": "Dependency file keys.",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "tags": {
+          "type": "object",
+          "description": "Classification tags for EEGDash filtering.",
+          "properties": {
+            "pathology": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "modality": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        "repository_stats": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Stats from git-based repository sources.",
+          "properties": {
+            "stars": {
+              "type": "integer"
+            },
+            "forks": {
+              "type": "integer"
+            },
+            "watchers": {
+              "type": "integer"
+            }
+          },
+          "additionalProperties": false
+        },
+        "senior_author": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Senior/corresponding author name for display purposes."
+        },
+        "contact_info": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Contact information for the dataset (email or URL)."
+        },
+        "ages": {
+          "type": "array",
+          "description": "Raw array of participant ages. Core has summary statistics only (age_min, age_max, age_mean); this holds the full distribution.",
+          "items": {
+            "type": "number"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "nsc:/extensions/signalJourney.schema.json",
+      "title": "signalJourney Extension",
+      "description": "Namespace for linking to signalJourney processing pipeline records. References processing provenance tracked in signalJourney's own schema.",
+      "type": "object",
+      "properties": {
+        "pipeline_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Identifier for the signalJourney pipeline associated with this record/dataset."
+        },
+        "processing_status": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Status of processing (e.g., 'pending', 'completed', 'failed').",
+          "enum": [
+            "pending",
+            "in_progress",
+            "completed",
+            "failed",
+            null
+          ]
+        },
+        "sj_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Version of the signalJourney specification used."
+        }
+      },
+      "additionalProperties": true
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "nsc:/extensions/nemar.schema.json",
+      "title": "NEMAR Extension",
+      "description": "NEMAR-specific properties that extend the core schema. Includes fields from the NEMAR API and nemar.json that are not part of the universal core.",
+      "type": "object",
+      "properties": {
+        "on_brainlife": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether the dataset is available on BrainLife."
+        },
+        "has_visualization": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether NEMAR has generated visualizations for this dataset."
+        },
+        "nemar_json": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Contents of the nemar.json file (warnings, plots, channel system info).",
+          "properties": {
+            "error": {
+              "type": "string"
+            },
+            "warning": {
+              "type": "string"
+            },
+            "has_visualization": {
+              "type": "boolean"
+            },
+            "latest_date": {
+              "type": "string"
+            },
+            "plots": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "extension": {
+                  "type": "string"
+                }
+              }
+            },
+            "channelsystem": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        },
+        "local_dataset": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether a local copy of the dataset is maintained by NEMAR."
+        },
+        "processed": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether NEMAR has processed this dataset."
+        },
+        "hed_annotation": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether the dataset has HED annotations (from NEMAR processing)."
+        },
+        "citation_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Number of papers citing this dataset (from NEMAR citations repository).",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "nsc:/extensions/dataQuality.schema.json",
+      "title": "Data Quality Extension",
+      "description": "Namespace for data quality metrics and indicators. Placeholder for future data quality assessment projects.",
+      "type": "object",
+      "properties": {
+        "quality_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Overall quality score (0-1 scale).",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "quality_flags": {
+          "type": "array",
+          "description": "List of quality flags or issues identified.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "assessed_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ISO 8601 timestamp of when the quality assessment was performed.",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": true
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "nsc:/extensions/rawDetail.schema.json",
+      "title": "Raw Detail Extension",
+      "description": "Detailed per-channel arrays and raw BIDS sidecar content. This extension holds the verbose data that was previously in the core MongoDB documents (channel_names, channel_types, channel_tsv, eeg_json). Separated from core to allow lean queries that skip large arrays.",
+      "type": "object",
+      "properties": {
+        "channel_names": {
+          "type": "array",
+          "description": "Ordered list of channel names.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "channel_types": {
+          "type": "array",
+          "description": "Ordered list of channel types (parallel to channel_names).",
+          "items": {
+            "type": "string"
+          }
+        },
+        "channel_tsv": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Parsed content of the BIDS channels.tsv file.",
+          "properties": {
+            "name": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "units": {
+              "type": "array",
+              "items": {}
+            }
+          },
+          "additionalProperties": true
+        },
+        "eeg_json": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Parsed content of the BIDS EEG sidecar JSON (*_eeg.json). Contains task description, equipment info, filter settings, etc.",
+          "additionalProperties": true
+        },
+        "participant_tsv": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Parsed row from the BIDS participants.tsv for this subject.",
+          "additionalProperties": true
+        },
+        "bids_dependencies": {
+          "type": "array",
+          "description": "List of BIDS sidecar file paths that this record depends on.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "electrode_tsv": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Parsed content of the BIDS electrodes.tsv file (electrode names, coordinates).",
+          "additionalProperties": true
+        },
+        "events_tsv": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Parsed content of the BIDS events.tsv file (onset, duration, trial_type columns).",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "nsc:/extensions/dataCite.schema.json",
+      "title": "DataCite Extension",
+      "description": "DataCite-specific metadata for DOI registration (kernel 4.6). Fields here are specific to the DataCite registration format and are not universally needed. Universal scholarly metadata (keywords, related_identifiers, contributors, dates, rights, language) has moved to the core dataset schema as of v0.3.0.",
+      "type": "object",
+      "properties": {
+        "publisher": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Name of the entity that holds/publishes the data (e.g., 'NEMAR', 'OpenNeuro')."
+        },
+        "publisher_identifier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Persistent identifier for the publisher (e.g., ROR ID for the institution)."
+        },
+        "publisher_identifier_scheme": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Scheme for the publisher identifier (e.g., 'ROR', 'ISNI')."
+        },
+        "publication_year": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Year when the dataset was first published or made available."
+        },
+        "resource_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Free-text description of the resource type (e.g., 'EEG Dataset', 'EMG Dataset')."
+        },
+        "resource_type_general": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "DataCite controlled vocabulary for general resource type.",
+          "enum": [
+            "Audiovisual",
+            "Award",
+            "Book",
+            "BookChapter",
+            "Collection",
+            "ComputationalNotebook",
+            "ConferencePaper",
+            "ConferenceProceeding",
+            "DataPaper",
+            "Dataset",
+            "Dissertation",
+            "Event",
+            "Image",
+            "Instrument",
+            "InteractiveResource",
+            "Journal",
+            "JournalArticle",
+            "Model",
+            "OutputManagementPlan",
+            "PeerReview",
+            "PhysicalObject",
+            "Preprint",
+            "Project",
+            "Report",
+            "Service",
+            "Software",
+            "Sound",
+            "Standard",
+            "StudyRegistration",
+            "Text",
+            "Workflow",
+            "Other",
+            null
+          ]
+        },
+        "geo_locations": {
+          "type": "array",
+          "description": "Geographic locations where the data was collected or about which the data is focused. Coordinates use WGS 84.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "place": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Free-text description of the location (e.g., 'Fudan University, Shanghai, China')."
+              },
+              "point": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "Geographic coordinates (WGS 84).",
+                "properties": {
+                  "latitude": {
+                    "type": "number",
+                    "minimum": -90,
+                    "maximum": 90
+                  },
+                  "longitude": {
+                    "type": "number",
+                    "minimum": -180,
+                    "maximum": 180
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "alternate_identifiers": {
+          "type": "array",
+          "description": "Other identifiers for this dataset besides the DOI (e.g., platform-specific IDs like 'nm000108' for NEMAR, 'ds005516' for OpenNeuro).",
+          "items": {
+            "type": "object",
+            "required": [
+              "identifier"
+            ],
+            "properties": {
+              "identifier": {
+                "type": "string",
+                "description": "The alternate identifier value."
+              },
+              "identifier_type": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Type or source of the alternate identifier (e.g., 'NEMAR', 'OpenNeuro', 'PhysioNet')."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "related_items": {
+          "type": "array",
+          "description": "Full bibliographic references for related items (DataCite property 20). Use when you need to cite a resource with complete bibliographic detail (title, authors, journal, pages) rather than just an identifier link.",
+          "items": {
+            "type": "object",
+            "required": [
+              "relation_type",
+              "related_item_type"
+            ],
+            "properties": {
+              "relation_type": {
+                "type": "string",
+                "description": "Relationship of the related item to this dataset.",
+                "enum": [
+                  "IsCitedBy",
+                  "Cites",
+                  "IsSupplementTo",
+                  "IsSupplementedBy",
+                  "IsDescribedBy",
+                  "Describes",
+                  "References",
+                  "IsReferencedBy",
+                  "IsDerivedFrom",
+                  "IsSourceOf",
+                  "IsPartOf",
+                  "HasPart"
+                ]
+              },
+              "related_item_type": {
+                "type": "string",
+                "description": "Type of the related item.",
+                "enum": [
+                  "JournalArticle",
+                  "Book",
+                  "BookChapter",
+                  "ConferencePaper",
+                  "Preprint",
+                  "DataPaper",
+                  "Dissertation",
+                  "Report",
+                  "Text",
+                  "Dataset",
+                  "Software",
+                  "Other"
+                ]
+              },
+              "related_item_identifier": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "description": "Identifier for the related item.",
+                "required": [
+                  "identifier"
+                ],
+                "properties": {
+                  "identifier": {
+                    "type": "string"
+                  },
+                  "identifier_type": {
+                    "type": "string",
+                    "enum": [
+                      "DOI",
+                      "ISSN",
+                      "ISBN",
+                      "PMID",
+                      "URL",
+                      "arXiv"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Title of the related item."
+              },
+              "creators": {
+                "type": "array",
+                "description": "Authors of the related item.",
+                "items": {
+                  "$ref": "nsc:/definitions/person.schema.json"
+                }
+              },
+              "publication_year": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "description": "Publication year of the related item."
+              },
+              "volume": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "issue": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "first_page": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "last_page": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "publisher": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "nsc:/definitions/person.schema.json",
+      "title": "Person",
+      "description": "A structured person record for authors or contributors. Includes name components, ORCID, and affiliations for DataCite compatibility.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Full display name (e.g., 'Jane A. Smith')."
+        },
+        "name_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Whether this is a person or organization. Defaults to Personal if omitted.",
+          "enum": [
+            "Personal",
+            "Organizational",
+            null
+          ]
+        },
+        "given_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Given (first) name."
+        },
+        "family_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Family (last) name."
+        },
+        "orcid": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ORCID identifier URL (e.g., 'https://orcid.org/0000-0002-1234-5678').",
+          "format": "uri"
+        },
+        "affiliations": {
+          "type": "array",
+          "description": "List of institutional affiliations.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Institution name."
+              },
+              "identifier": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Institution identifier (e.g., ROR ID)."
+              },
+              "scheme": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Identifier scheme (e.g., 'ROR', 'GRID', 'ISNI')."
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "nsc:/extensions/dataCategories.schema.json",
+      "title": "Data Categories Extension",
+      "description": "Study classification metadata for filtering and discovery. Captures the experimental paradigm, clinical context, and cognitive domains of the dataset.",
+      "type": "object",
+      "properties": {
+        "study_domain": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Broad research domain (e.g., 'cognitive neuroscience', 'clinical', 'BCI', 'developmental')."
+        },
+        "study_design": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Study design type (e.g., 'cross-sectional', 'longitudinal', 'case-control', 'within-subject')."
+        },
+        "paradigm": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Experimental paradigm details.",
+          "properties": {
+            "type": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Paradigm type (e.g., 'event-related', 'resting-state', 'steady-state', 'block-design', 'naturalistic')."
+            },
+            "stimulus_modality": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Stimulus modality (e.g., 'visual', 'auditory', 'somatosensory', 'multimodal')."
+            },
+            "response_type": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Response type required (e.g., 'button-press', 'verbal', 'eye-movement', 'passive')."
+            }
+          },
+          "additionalProperties": false
+        },
+        "clinical": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Clinical context of the study.",
+          "properties": {
+            "is_clinical": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Whether the dataset involves clinical populations."
+            },
+            "conditions": {
+              "type": "array",
+              "description": "Clinical conditions studied (e.g., ['epilepsy', 'ADHD']).",
+              "items": {
+                "type": "string"
+              }
+            },
+            "population": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Target population (e.g., 'healthy adults', 'pediatric patients', 'elderly')."
+            }
+          },
+          "additionalProperties": false
+        },
+        "cognitive_domains": {
+          "type": "array",
+          "description": "Cognitive domains investigated (e.g., ['attention', 'memory', 'language', 'motor']).",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 /**
- * Test-layer helper: compile an ajv (JSON Schema 2020-12) validator for the
- * vendored neuroschema dataset bundle (epic #896, #898).
+ * Test-layer helper: compile ajv (JSON Schema 2020-12) validators for the
+ * vendored neuroschema bundles (epic #896, #898): the `dataset` root and the
+ * per-signal-file `record` root.
  *
  * Lives under test/ (not shared/contract/) on purpose: ajv is a test-only
  * concern, so the shared contract stays zero-dependency-beyond-zod and
@@ -20,11 +21,10 @@ interface Bundle {
   schemas: Array<{ $id: string } & Record<string, unknown>>;
 }
 
-const BUNDLE_PATH = join(import.meta.dir, "../../shared/contract/neuroschema/dataset.bundle.json");
+const BUNDLE_DIR = join(import.meta.dir, "../../shared/contract/neuroschema");
 
-/** Compile a validator for the neuroschema dataset root from the vendored bundle. */
-export function compileNeuroschemaDatasetValidator(): ValidateFunction {
-  const bundle = JSON.parse(readFileSync(BUNDLE_PATH, "utf8")) as Bundle;
+function compileBundle(file: string): ValidateFunction {
+  const bundle = JSON.parse(readFileSync(join(BUNDLE_DIR, file), "utf8")) as Bundle;
   // strict:false tolerates neuroschema's descriptive keywords; allErrors for
   // readable failures. Each vendored schema carries its own nsc:/ $id, so
   // cross-file $refs (rewritten by build-vendor.mjs) resolve on addSchema.
@@ -32,8 +32,18 @@ export function compileNeuroschemaDatasetValidator(): ValidateFunction {
   addFormats(ajv);
   for (const schema of bundle.schemas) ajv.addSchema(schema);
   const validate = ajv.getSchema(bundle.root);
-  if (!validate) throw new Error(`neuroschema root ${bundle.root} not found in bundle`);
+  if (!validate) throw new Error(`neuroschema root ${bundle.root} not found in ${file}`);
   return validate;
+}
+
+/** Compile a validator for the neuroschema dataset root from the vendored bundle. */
+export function compileNeuroschemaDatasetValidator(): ValidateFunction {
+  return compileBundle("dataset.bundle.json");
+}
+
+/** Compile a validator for the neuroschema record root (one signal file). */
+export function compileNeuroschemaRecordValidator(): ValidateFunction {
+  return compileBundle("record.bundle.json");
 }
 
 /** Format ajv errors compactly for test output. */

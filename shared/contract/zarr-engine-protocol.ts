@@ -78,7 +78,8 @@ export const helloRequestSchema = z
     type: z.literal("hello"),
     /** MAJOR.MINOR. The engine reads it before validating the rest of the hello:
      *  a well-formed version it does not speak is unsupported_version even when
-     *  the hello also carries fields this version does not know. */
+     *  the hello also carries fields this version does not know. The hello
+     *  request's fields change only with a new major, never in a minor. */
     protocol: z.string().regex(/^[0-9]+\.[0-9]+$/),
     client: nonEmpty,
     payload_bytes: payloadBytesZero,

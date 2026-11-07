@@ -822,6 +822,14 @@ describe("protocol schema: documented semantics", () => {
       "reads protocol before validating anything else",
     );
     expect(protocolSchema.description).toContain("reads a hello's protocol before validating");
+    // Reading the version first only helps across majors; a minor that added a
+    // hello field would break an older same-major engine, so none may.
+    expect(protocolSchema.$defs.HelloRequest.description).toContain(
+      "fields change only with a new major, never in a minor",
+    );
+    expect(protocolSchema.description).toContain(
+      "The hello request's fields change only with a new major, never in a minor",
+    );
     expect(protocolSchema.description).toContain("must check them itself");
     expect(protocolSchema.description).toContain("MUST ignore unknown fields in a response");
     expect(protocolSchema.description).toContain("MUST reject a request with an unknown field");

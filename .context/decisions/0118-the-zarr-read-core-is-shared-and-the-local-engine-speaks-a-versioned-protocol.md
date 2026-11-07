@@ -40,7 +40,8 @@ A Zarr store is not the file, though: one recording can have several groups, and
    A window is addressed in time by the MCP's own rule, one helper both use (`shared/zarr/window-samples.ts`): `start_sample = floor(start_s * sampling_frequency + 0.5)` and `n_samples = floor(duration_s * sampling_frequency + 0.5)`, ties rounding up, with the bound representation's rate; if `n_samples < 1`, or `start_sample` is at or past its `ntimes`, or `start_sample + n_samples` exceeds it, the engine answers `out_of_range` and never returns a truncated window.
    An omitted `channels` means all channels of the bound representation in ascending order, payload row i is `channels[i]`, channels must not repeat, and an index of `nchans` or more is `out_of_range`.
    `filled_ranges` are absolute sample indices, end-exclusive, sorted, non-overlapping (adjacent ones may or may not be merged) and inside the window; the payload inside one is the array's fill value (0 for these stores) converted like any other value, so for `physical` it is `offset[c]`.
-   A `hello` request names any `MAJOR.MINOR`, and the engine reads it before validating the rest of the hello: a version it does not speak is `unsupported_version` even when the hello carries fields this version does not know (so a later version may add hello fields), and a malformed one is `invalid_message`.
+   A `hello` request names any `MAJOR.MINOR`, and the engine reads it before validating the rest of the hello: a version it does not speak is `unsupported_version` even when the hello carries fields this version does not know, and a malformed one is `invalid_message`.
+   The `hello` request's fields change only with a new major, never in a minor: the minor-version rule below would otherwise let a newer same-major client send a field an older engine rejects as `invalid_message`.
    JSON Schema cannot check the `payload_bytes` arithmetic, unique representation ids, that `opened.representation` is listed and is a `zarr` representation with non-null `sampling_frequency`, `nchans`, `ntimes`, `scale` and `offset`, or the `scale` and `offset` lengths; the zod mirror does, and clients in other languages must.
    The `hello` response carries `max_payload_bytes`, the largest payload the engine will send; a `read_window` whose window would exceed it is `too_large`, and the value itself is engine policy.
 5. **`opened` describes the recording in neuroschema and its stored forms separately.**
@@ -60,7 +61,7 @@ A Zarr store is not the file, though: one recording can have several groups, and
    Responses are open: a client MUST ignore unknown fields in a response, so from v1 a minor version may add response fields.
    The `filled_ranges` items and the representations belong to a response and are open too.
    A client treats an error code it does not know as `internal`, and refuses a `window` whose `dtype`, `layout` or `byte_order` it does not know rather than guess at the bytes.
-   A new request field arrives only with a new protocol minor, and a client sends only what the version in the engine's `hello` response defines.
+   A new request field arrives only with a new protocol minor, and a client sends only what the version in the engine's `hello` response defines; the `hello` request itself is the exception, whose fields change only with a new major.
 7. **Versioning.**
    `hello` carries the protocol version.
    In v0 the engine speaks only `"0.1"`, because v0 is unstable; from v1 a minor mismatch is accepted and only the major must match.

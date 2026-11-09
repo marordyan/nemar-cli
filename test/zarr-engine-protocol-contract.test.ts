@@ -854,6 +854,43 @@ describe("protocol schema: gaps owned by one side", () => {
     expect(validateJson(window({ payload_bytes: 47 }))).toBe(true);
   });
 
+  test("a recipe's channel_slice and sample_slice are Range objects in both copies", () => {
+    const withSlices = (over: Doc) => ({
+      id: 5,
+      type: "recipe",
+      recipe: { ...(realRecipe as unknown as Doc), ...over },
+    });
+    const good = withSlices({
+      sample_slice: { start: 0, end: 250 },
+      channel_slice: { start: 2, end: 6 },
+    });
+    expect(validateJson(good), JSON.stringify(validateJson.errors)).toBe(true);
+    expect(engineMessageSchema.safeParse(good).success).toBe(true);
+    for (const [label, over] of [
+      ["channel_slice as an array", { channel_slice: [2, 6] }],
+      ["channel_slice with stop instead of end", { channel_slice: { start: 2, stop: 6 } }],
+      ["channel_slice with a negative start", { channel_slice: { start: -1, end: 6 } }],
+      ["sample_slice with a fractional end", { sample_slice: { start: 0, end: 2.5 } }],
+      ["sample_slice as a string", { sample_slice: "0:250" }],
+    ] as const) {
+      const doc = withSlices(over as Doc);
+      expect(validateJson(doc), label).toBe(false);
+      expect(engineMessageSchema.safeParse(doc).success, label).toBe(false);
+    }
+  });
+
+  test("a backwards Range is rejected by zod; JSON Schema cannot compare the two fields and says so", () => {
+    const doc = {
+      id: 5,
+      type: "recipe",
+      recipe: { ...(realRecipe as unknown as Doc), channel_slice: { start: 6, end: 2 } },
+    };
+    expect(engineMessageSchema.safeParse(doc).success).toBe(false);
+    expect(validateJson(doc)).toBe(true);
+    expect(protocolSchema.$defs.Range.description).toContain("JSON Schema cannot");
+    expect(protocolSchema.description).toContain("that a Range's end is at least its start");
+  });
+
   test("a recipe response must carry a full MCP recipe in zod; the schema only needs an object", () => {
     const doc = { id: 5, type: "recipe", recipe: {} };
     expect(validateJson(doc)).toBe(true);

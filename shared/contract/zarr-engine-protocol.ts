@@ -26,9 +26,10 @@
  * `payload_bytes` arithmetic; in `opened`, unique representation ids, a bound
  * `representation` that is listed, is `zarr` and has non-null
  * `sampling_frequency`/`nchans`/`ntimes`/`scale`/`offset`, and `scale`/`offset`
- * with `nchans` entries;
- * and the full shape of a `recipe` response (the schema types it as a bare
- * object in v0; this mirror reuses the MCP's `readRecipeSchema`).
+ * with `nchans` entries when `nchans` is known; a `Range` whose `end` is at least
+ * its `start`; and the full shape of a `recipe` response (the schema types only
+ * its `channel_slice` and `sample_slice` in v0; this mirror reuses the MCP's
+ * `readRecipeSchema`).
  *
  * `opened.record` is a neuroschema `record` document passed through unchanged
  * and typed loosely on both sides (neuroschema's schemas have no resolvable
@@ -133,18 +134,20 @@ export const zarrRepresentationSchema = z
     sampling_frequency: z.number().gt(0).nullable(),
     source_sampling_frequency: z.number().gt(0).nullable(),
     nchans: z.number().int().min(1).nullable(),
-    ntimes: z.number().int().min(0).nullable(),
+    ntimes: z.number().int().min(1).nullable(),
     recording_duration: z.number().min(0).nullable(),
     /** physical = digital * scale[c] + offset[c]; null except on the bound representation. */
     scale: z.array(z.number()).nullable(),
     offset: z.array(z.number()).nullable(),
   })
   .passthrough()
-  // Zod-only: JSON Schema cannot compare an array length to another field.
+  // Zod-only: JSON Schema cannot compare an array length to another field. Only
+  // checkable when nchans is known; the bound representation always has it.
   .refine(
     (r) =>
-      (r.scale === null || r.scale.length === r.nchans) &&
-      (r.offset === null || r.offset.length === r.nchans),
+      r.nchans === null ||
+      ((r.scale === null || r.scale.length === r.nchans) &&
+        (r.offset === null || r.offset.length === r.nchans)),
     { message: "scale and offset must each have nchans entries", path: ["scale"] },
   );
 
@@ -176,7 +179,9 @@ export const openedSchema = z
     /** The id of the representation the handle is bound to. */
     representation: nonEmpty,
     record: neuroschemaRecordSchema,
-    representations: z.array(representationSchema).min(1),
+    // Non-empty: the JSON Schema says minItems 1; here the superRefine's "bound
+    // representation is listed" check already rejects an empty list.
+    representations: z.array(representationSchema),
     payload_bytes: payloadBytesZero,
   })
   .passthrough()
@@ -236,7 +241,7 @@ export const windowSchema = z
     id,
     type: z.literal("window"),
     start_sample: z.number().int().min(0),
-    n_samples: z.number().int().min(0),
+    n_samples: z.number().int().min(1),
     channels: channelIndices,
     dtype: z.enum(["float64", "int16"]),
     layout: z.literal("channel-major"),

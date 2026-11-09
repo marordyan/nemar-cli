@@ -381,6 +381,22 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
     doc: setRep(0, { sampling_frequency: 0 })(OPENED),
   },
   { label: "a representation without kind", doc: setRep(0, { kind: undefined })(OPENED) },
+  { label: "a zarr representation with ntimes 0", doc: setRep(0, { ntimes: 0 })(OPENED) },
+  {
+    label: "an empty window (n_samples 0)",
+    doc: {
+      id: 3,
+      type: "window",
+      start_sample: 0,
+      n_samples: 0,
+      channels: [0],
+      dtype: "float64",
+      layout: "channel-major",
+      byte_order: "little",
+      filled_ranges: [],
+      payload_bytes: 0,
+    },
+  },
   {
     // Not a valid request (client is empty), and a response may not carry client.
     label: "a hello response carrying client (the hello request's marker field)",
@@ -419,7 +435,7 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
       id: 3,
       type: "window",
       start_sample: 0,
-      n_samples: 0,
+      n_samples: 1,
       channels: [0],
       dtype: "int16",
       layout: "channel-major",
@@ -452,13 +468,13 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
       id: null,
       type: "window",
       start_sample: 0,
-      n_samples: 0,
+      n_samples: 1,
       channels: [0],
       dtype: "float64",
       layout: "channel-major",
       byte_order: "little",
       filled_ranges: [],
-      payload_bytes: 0,
+      payload_bytes: 8,
     },
   },
   { label: "a fractional id", doc: { id: 1.5, type: "released" } },
@@ -761,8 +777,8 @@ describe("protocol schema: gaps owned by one side", () => {
     expect(windowSchema.safeParse(window({ dtype: "int16", payload_bytes: 48 })).success).toBe(
       false,
     );
-    // An empty window carries no payload.
-    expect(windowSchema.safeParse(window({ n_samples: 0, payload_bytes: 0 })).success).toBe(true);
+    // A window is never empty: the time rule makes that out_of_range instead.
+    expect(windowSchema.safeParse(window({ n_samples: 0, payload_bytes: 0 })).success).toBe(false);
   });
 
   test("the bound representation must be listed (zod)", () => {
@@ -812,6 +828,19 @@ describe("protocol schema: gaps owned by one side", () => {
       const doc = setRep(0, over)(OPENED);
       expect(engineMessageSchema.safeParse(doc).success, JSON.stringify(over)).toBe(false);
     }
+  });
+
+  test("an unbound representation with no nchans may carry scale and offset of any length (both copies)", () => {
+    const doc = {
+      ...OPENED,
+      representations: [
+        zarrRep(),
+        zarrRep({ id: "eeg_1000hz", nchans: null, scale: [1, 2], offset: [0, 0] }),
+      ],
+    };
+    const { jsonOk, zod } = both(doc);
+    expect(jsonOk, JSON.stringify(validateJson.errors)).toBe(true);
+    expect(zod.success).toBe(true);
   });
 
   test("the JSON Schema cannot check that length and says so; Ajv accepts the mismatch", () => {
@@ -946,6 +975,18 @@ describe("protocol schema: documented semantics", () => {
       "A field added to a request in a minor must be safe for an older engine to ignore",
     );
     expect(defs.ErrorCode.description).toContain("treats a code it does not know as internal");
+  });
+
+  test("a window echoes the request's channels, in order", () => {
+    expect(defs.ChannelIndices.description).toContain(
+      "channels equals the request's channels exactly, in the request's order",
+    );
+  });
+
+  test("a response field added in a minor must be safe for an older client to ignore", () => {
+    expect(protocolSchema.description).toContain(
+      "a field added to a response in a minor must be safe for an older client to ignore",
+    );
   });
 
   test("a channel past the end and adjacent filled ranges are described", () => {

@@ -652,25 +652,23 @@ describe("protocol schema: forward compatibility of requests", () => {
     }
   });
 
-  test("a newer client's hello (newer minor, extra fields) validates; the version decides the answer", () => {
-    const doc = {
-      id: 1,
-      type: "hello",
-      protocol: "1.1",
-      client: "nemar-py/3",
-      capabilities: ["x"],
-    };
-    const { jsonOk, zod } = both(doc);
-    expect(jsonOk).toBe(true);
-    expect(zod.success).toBe(true);
-    expect(engineRequestSchema.safeParse(doc).success).toBe(true);
+  test("a newer client's hello with extra fields validates, same major or not; the engine decides by version", () => {
+    for (const protocol of ["0.2", "1.1"]) {
+      const doc = { id: 1, type: "hello", protocol, client: "nemar-py/3", capabilities: ["x"] };
+      const { jsonOk, zod } = both(doc);
+      expect(jsonOk, protocol).toBe(true);
+      expect(zod.success, protocol).toBe(true);
+      expect(engineRequestSchema.safeParse(doc).success, protocol).toBe(true);
+    }
   });
 
-  test("an open request that still names the old v0 draft field group is accepted and the field ignored", () => {
+  test("an open request that still names the old v0 draft field group is accepted, the field kept as unknown", () => {
     const doc = { id: 3, type: "open", dataset_id: "nm099500", recording: "r", group: "eeg_250hz" };
     const { jsonOk, zod } = both(doc);
     expect(jsonOk).toBe(true);
     expect(zod.success).toBe(true);
+    // Not a known field: it selects nothing, and opened.representation tells the client what was bound.
+    if (zod.success) expect(zod.data).toEqual(doc);
   });
 
   test("a request carrying the response's fields is still a request", () => {
@@ -930,10 +928,15 @@ describe("protocol schema: documented semantics", () => {
   test("the record's version stamp is not a reason to reject it", () => {
     const d = protocolSchema.$defs.NeuroschemaRecord.description;
     expect(d).toContain("do not reject it on the stamp");
+    // Conformance is an expectation checked on samples, not a guarantee.
+    expect(d).toContain("checked on sample published records");
+    expect(protocolSchema.$defs.HelloResponse.properties.protocol.description).toContain(
+      "a client relies on a request field only when this version defines it",
+    );
     expect(d).toContain("signal_properties.sampling_frequency");
   });
 
-  test("growth of the closed lists is described (review item c)", () => {
+  test("growth of the closed lists is described", () => {
     const desc = protocolSchema.description;
     expect(desc).toContain("treats an error code it does not know as internal");
     expect(desc).toContain(
@@ -945,7 +948,7 @@ describe("protocol schema: documented semantics", () => {
     expect(defs.ErrorCode.description).toContain("treats a code it does not know as internal");
   });
 
-  test("a channel past the end and adjacent filled ranges are described (review item e)", () => {
+  test("a channel past the end and adjacent filled ranges are described", () => {
     expect(defs.ChannelIndices.description).toContain("an index of nchans or more is out_of_range");
     expect(defs.ErrorCode.description).toContain("nchans or more is out_of_range");
     expect(protocolSchema.$defs.Window.properties.filled_ranges.description).toContain(

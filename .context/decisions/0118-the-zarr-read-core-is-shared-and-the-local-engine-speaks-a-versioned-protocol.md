@@ -48,7 +48,7 @@ A Zarr store is not the file, though: one recording can have several groups, and
 5. **`opened` describes the recording in neuroschema and its stored forms separately.**
    `opened.recording` is always the BIDS path, even when `open` named the store's zarr path, and `record` is the neuroschema `record` whose `bids_relpath` equals it, from the dataset's latest published `records.json`, passed through exactly as published, or `null` when there is none (ADR 0005: missing metadata never blocks a read).
    It is typed as a bare object in the protocol schema, because neuroschema's schemas have no resolvable `$id`; nemar-cli vendors the neuroschema record schema next to the dataset one and tests real records against it.
-   The engine never refuses to open because a record fails that schema, and a client must not reject one on its `schema_version` stamp: the published records are stamped 0.3.0 while conforming to 0.4.1.
+   The engine never refuses to open because a record fails that schema, and a client must not reject one on its `schema_version` stamp: the sampled published records are stamped 0.3.0 and conform to 0.4.1.
    That is this ADR's decision under ADR 0005; the live `metadata.json` check already only warns on neuroschema conformance (ADR 0077, #1247), which is the precedent.
    The record may come from another release than the Zarr copy, since records are per version and the Zarr index is the latest serving copy.
    `representations` lists every form the samples can be read from, each with a `kind` and an `id` unique within the recording; v0 defines `zarr`, one per Zarr group, and a client skips a kind it does not know.

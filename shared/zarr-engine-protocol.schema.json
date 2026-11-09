@@ -122,7 +122,7 @@
         "object",
         "null"
       ],
-      "description": "The neuroschema record document (doc_type \"record\", https://github.com/nemarOrg/neuroschema) whose bids_relpath equals recording, passed through exactly as NEMAR publishes it in <dataset>/<version>/records.json for the dataset's latest published version, or null when none is available. It conforms to the neuroschema 0.4.x record schema, but its own schema_version stamp may be older (the published records say 0.3.0); do not reject it on the stamp. It describes the source file and is the authority for file-level facts: its signal_properties.sampling_frequency and signal_summary.nchans can differ from a representation's (a 500 Hz file is served as a 250 Hz Zarr group). It may come from a different dataset release than the representations, because records are published per version and the Zarr copy is the latest serving copy. Typed loosely here because neuroschema's own schemas do not have resolvable $id URLs; validate it with the neuroschema record schema if you need to. The engine never refuses to open because of it."
+      "description": "The neuroschema record document (doc_type \"record\", https://github.com/nemarOrg/neuroschema) whose bids_relpath equals recording, passed through exactly as NEMAR publishes it in <dataset>/<version>/records.json for the dataset's latest published version, or null when none is available. It is expected to conform to the neuroschema 0.4.1 record schema that nemar-cli vendors (checked on sample published records), and its own schema_version stamp may be older (the sampled records say 0.3.0); do not reject it on the stamp. It describes the source file and is the authority for file-level facts: its signal_properties.sampling_frequency and signal_summary.nchans can differ from a representation's (a 500 Hz file is served as a 250 Hz Zarr group). It may come from a different dataset release than the representations, because records are published per version and the Zarr copy is the latest serving copy. Typed loosely here because neuroschema's own schemas do not have resolvable $id URLs; validate it with the neuroschema record schema if you need to. The engine never refuses to open because of it."
     },
     "Representation": {
       "type": "object",
@@ -303,7 +303,7 @@
         },
         "protocol": {
           "const": "0.1",
-          "description": "The protocol version the engine speaks; the client sends only what this version defines."
+          "description": "The protocol version the engine speaks; a client relies on a request field only when this version defines it."
         },
         "engine": {
           "type": "string",

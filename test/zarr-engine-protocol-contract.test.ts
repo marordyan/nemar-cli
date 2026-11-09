@@ -336,6 +336,14 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
   },
   { label: "hello request, protocol 1", doc: { id: 1, type: "hello", protocol: "1", client: "c" } },
   {
+    label: "hello request, protocol with a leading zero (00.1)",
+    doc: { id: 1, type: "hello", protocol: "00.1", client: "c" },
+  },
+  {
+    label: "hello request, protocol with a leading zero (0.01)",
+    doc: { id: 1, type: "hello", protocol: "0.01", client: "c" },
+  },
+  {
     label: "hello request, protocol empty",
     doc: { id: 1, type: "hello", protocol: "", client: "c" },
   },
@@ -989,9 +997,35 @@ describe("protocol schema: documented semantics", () => {
     );
   });
 
+  test("hello versions compare as integers: no leading zeros, multi-digit parts allowed", () => {
+    for (const protocol of ["0.1", "0.10", "1.0", "10.2"]) {
+      const doc = { id: 1, type: "hello", protocol, client: "c" };
+      expect(validateJson(doc), protocol).toBe(true);
+      expect(engineMessageSchema.safeParse(doc).success, protocol).toBe(true);
+    }
+    expect(protocolSchema.$defs.HelloRequest.properties.protocol.description).toContain(
+      "compared as integers",
+    );
+  });
+
+  test("every error code is defined, with which ones are worth retrying", () => {
+    const desc = defs.ErrorCode.description ?? "";
+    for (const code of ENGINE_ERROR_CODES) expect(desc, code).toContain(`${code}:`);
+    expect(desc).toContain("a later retry may succeed");
+    expect(desc).toContain("retrying does not help");
+  });
+
+  test("hello comes first, once, and the engine survives unsupported_version", () => {
+    const desc = defs.HelloRequest.description ?? "";
+    expect(desc).toContain("any other request before a successful hello is invalid_message");
+    expect(desc).toContain("a second hello after one");
+    expect(desc).toContain("After unsupported_version the engine keeps running");
+  });
+
   test("a channel past the end and adjacent filled ranges are described", () => {
     expect(defs.ChannelIndices.description).toContain("an index of nchans or more is out_of_range");
-    expect(defs.ErrorCode.description).toContain("nchans or more is out_of_range");
+    expect(defs.ErrorCode.description).toContain("out_of_range: the window falls outside");
+    expect(defs.ErrorCode.description).toContain("a channel index is nchans or more");
     expect(protocolSchema.$defs.Window.properties.filled_ranges.description).toContain(
       "adjacent ranges may or may not be merged",
     );

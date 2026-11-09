@@ -90,7 +90,7 @@ export const helloRequestSchema = z
     /** MAJOR.MINOR. The engine reads it before validating the rest of the hello:
      *  a well-formed version it does not speak is unsupported_version even when
      *  the rest of the hello does not validate. */
-    protocol: z.string().regex(/^[0-9]+\.[0-9]+$/),
+    protocol: z.string().regex(/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/),
     client: nonEmpty,
     payload_bytes: payloadBytesZero,
   })

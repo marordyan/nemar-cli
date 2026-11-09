@@ -80,7 +80,7 @@
         "decode_error",
         "internal"
       ],
-      "description": "Why a request failed. A client treats a code it does not know as internal. A channel index of nchans or more is out_of_range; a representation id or recording the dataset does not have is not_found."
+      "description": "Why a request failed. invalid_message: the frame or header is malformed, the request fails validation, a request other than hello came before a successful hello, or a second hello came after one. unsupported_version: hello named a well-formed version the engine does not speak; the engine keeps running and the client may send another hello. not_found: the dataset, recording or representation does not exist or is not public, or the recording has no zarr representation. not_ready: it exists but its serving copy is not available yet (for example still being converted); a later retry may succeed. unknown_handle: the handle was never opened or has been released. out_of_range: the window falls outside the bound representation by the time rule, or a channel index is nchans or more. too_large: the window's payload would exceed max_payload_bytes; a smaller window may succeed. upstream_error: the data host failed, or the serving index does not describe the representation well enough to read; a retry may succeed only for a host failure. decode_error: bytes were fetched but could not be decoded (a corrupt chunk or shard, or a codec the engine does not support); retrying does not help. internal: a fault in the engine. A client treats a code it does not know as internal."
     },
     "FilledRange": {
       "type": "object",
@@ -272,8 +272,8 @@
         },
         "protocol": {
           "type": "string",
-          "pattern": "^[0-9]+\\.[0-9]+$",
-          "description": "The protocol version the client speaks, as MAJOR.MINOR."
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+          "description": "The protocol version the client speaks, as MAJOR.MINOR with no leading zeros (0.1, 1.10). MAJOR and MINOR are compared as integers."
         },
         "client": {
           "type": "string",
@@ -283,7 +283,7 @@
           "$ref": "#/$defs/PayloadBytesZero"
         }
       },
-      "description": "The client's opening message. The engine reads protocol before validating anything else in it: a well-formed version the engine does not speak is answered with unsupported_version even if the rest of the hello does not validate; unknown fields are ignored like in any request; a malformed protocol is invalid_message."
+      "description": "The client's opening message, and the first request on the stream: any other request before a successful hello is invalid_message, and so is a second hello after one. The engine reads protocol before validating anything else in it: a well-formed version the engine does not speak is answered with unsupported_version even if the rest of the hello does not validate; unknown fields are ignored like in any request; a malformed protocol is invalid_message. After unsupported_version the engine keeps running, so the client may send another hello with a version it also speaks."
     },
     "HelloResponse": {
       "type": "object",

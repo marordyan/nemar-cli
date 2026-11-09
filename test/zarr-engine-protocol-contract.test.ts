@@ -954,30 +954,39 @@ describe("protocol schema: documented semantics", () => {
   });
 
   test("the three texts agree on a recipe's channel_slice", () => {
-    // The ADR, the JSON Schema and the zod docblock each say what it holds, so a
-    // client in any language can check it; a drift in one fails here.
-    const adr = readFileSync(
-      new URL(
-        "../.context/decisions/0118-the-zarr-read-core-is-shared-and-the-local-engine-speaks-a-versioned-protocol.md",
-        import.meta.url,
+    // The ADR, the JSON Schema and the zod docblock carry the SAME sentence, so a
+    // client in any language can check the field; removing any clause from any of
+    // the three fails here. Backticks and line wrapping are not part of the words.
+    const SENTENCE =
+      "A recipe's channel_slice is the half-open range from the lowest requested channel " +
+      "to one past the highest, so it can include channels the request did not name, " +
+      "and it is absent when the request named no channels.";
+    const words = (s: string) => s.replace(/`/g, "").replace(/\s+/g, " ");
+    const adr = words(
+      readFileSync(
+        new URL(
+          "../.context/decisions/0118-the-zarr-read-core-is-shared-and-the-local-engine-speaks-a-versioned-protocol.md",
+          import.meta.url,
+        ),
+        "utf8",
       ),
-      "utf8",
-    ).replace(/\s+/g, " ");
-    const zodFile = readFileSync(
-      new URL("../shared/contract/zarr-engine-protocol.ts", import.meta.url),
-      "utf8",
-    ).replace(/\s*\*\s*/g, " ");
-    const recipe = protocolSchema.$defs.RecipeRequest.description;
-    for (const text of [adr, recipe]) {
-      expect(text).toContain(
-        "half-open range from the lowest requested channel to one past the highest",
-      );
-      expect(text).toContain("absent when the request named no channels");
-    }
-    expect(adr).toContain("a recipe's `channel_slice` (absent when the request named no channels)");
-    expect(zodFile).toContain("absent when the request named no channels");
-    expect(zodFile).toContain(
-      "the range from the lowest requested channel to one past the highest",
     );
+    // In the zod file the sentence sits in a JSDoc block: drop each line's " * ".
+    const zodFile = words(
+      readFileSync(
+        new URL("../shared/contract/zarr-engine-protocol.ts", import.meta.url),
+        "utf8",
+      ).replace(/\n\s*\*\s?/g, " "),
+    );
+    const recipe = words(protocolSchema.$defs.RecipeRequest.description);
+    for (const [name, text] of [
+      ["ADR 0118", adr],
+      ["zod docblock", zodFile],
+      ["RecipeRequest description", recipe],
+    ] as const) {
+      expect(text, name).toContain(SENTENCE);
+    }
+    // The client-check rule in decision 6 names it too.
+    expect(adr).toContain("a recipe's channel_slice (absent when the request named no channels)");
   });
 });

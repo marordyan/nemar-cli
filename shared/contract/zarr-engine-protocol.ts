@@ -16,11 +16,12 @@
  * the two keep the same verdicts. A known field with a bad value is still
  * rejected; a misspelled optional field is ignored, so a client checks the
  * answer (`opened.representation`, a window's `channels` and `dtype`, and a
- * recipe's `channel_slice`, absent when the request named no channels and
- * otherwise the range from the lowest requested channel to one past the
- * highest). `hello` and `recipe` requests and responses share
- * a `type`, so a response must not carry the request's marker field (`client`,
- * `handle`), matching the JSON Schema's `not`.
+ * recipe's `channel_slice`). A recipe's `channel_slice` is the half-open range
+ * from the lowest requested channel to one past the highest, so it can include
+ * channels the request did not name, and it is absent when the request named
+ * no channels. `hello` and `recipe` requests and responses share a `type`, so
+ * a response must not carry the request's marker field (`client`, `handle`),
+ * matching the JSON Schema's `not`.
  * What the JSON Schema cannot express lives only here: the `window`
  * `payload_bytes` arithmetic; in `opened`, unique representation ids, a bound
  * `representation` that is listed, is `zarr` and has non-null

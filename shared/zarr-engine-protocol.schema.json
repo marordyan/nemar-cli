@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://api.nemar.org/schemas/zarr-engine-protocol-v0.json",
   "title": "NEMAR Zarr engine protocol (v0, unstable)",
-  "description": "The header of one frame of the local protocol the NEMAR CLI engine speaks over stdin/stdout (frame: magic NZE0, u32 LE header_len, UTF-8 JSON header padded with spaces to an 8-byte boundary, then payload_bytes of binary samples; see ADR 0118). v0 is UNSTABLE and may change in place; the published versions that follow will not. The v0 engine speaks only protocol \"0.1\"; from v1 only the major must match. The engine reads a hello's protocol before validating the rest of it: a well-formed version it does not speak is unsupported_version whatever else the hello carries, and a malformed one is invalid_message. Missing data is never zeros: it is reported in filled_ranges (ADR 0005). Compatibility rule: every message is open. The engine MUST ignore unknown fields in a request and a client MUST ignore unknown fields in a response, so that from v1 a minor version may add fields in either direction; a known field with an invalid value is still invalid_message. Because a misspelled optional request field is ignored rather than refused, a client MUST check the answer against what it asked for: opened.representation, a window's channels and dtype (dtype float64 means physical units, int16 digital), and a recipe's channel_slice (absent when the request named no channels). A field added to a request in a minor must be safe for an older engine to ignore, and a client relies on a newer request field only when the engine's hello response names a version that defines it. Likewise a field added to a response in a minor must be safe for an older client to ignore: anything that changes how a payload is read comes as a new dtype, layout or byte_order value (which an older client refuses) or in a new major.  JSON Schema alone cannot check the window payload_bytes arithmetic, that representation ids are unique, that opened.representation names one of them, that the bound representation is a zarr one whose sampling_frequency, nchans, ntimes, scale and offset are non-null, that a representation's scale and offset have nchans entries when nchans is known, or that a Range's end is at least its start; the zod mirror does, and a client in another language must check them itself. Closed lists and growth: a client treats an error code it does not know as internal; a client must refuse a window whose dtype, layout or byte_order it does not know, rather than guess at the bytes. Each message is one object, discriminated by type and, for hello and recipe, by its request-only field: a hello carrying client is a request and a hello response must not carry client; a recipe carrying handle is a request and a recipe response must not carry handle.",
+  "description": "The header of one frame of the local protocol the NEMAR CLI engine speaks over stdin/stdout (frame: magic NZE0, u32 LE header_len, UTF-8 JSON header padded with spaces to an 8-byte boundary, then payload_bytes of binary samples; see ADR 0118). v0 is UNSTABLE and may change in place; the published versions that follow will not. The v0 engine speaks only protocol \"0.1\"; from v1 only the major must match. The engine reads a hello's protocol before validating the rest of it: a well-formed version it does not speak is unsupported_version whatever else the hello carries, and a malformed one is invalid_message. Missing data is never zeros: it is reported in filled_ranges (ADR 0005). Compatibility rule: every message is open. The engine MUST ignore unknown fields in a request and a client MUST ignore unknown fields in a response, so that from v1 a minor version may add fields in either direction; a known field with an invalid value is still invalid_message. Because a misspelled optional request field is ignored rather than refused, a client MUST check the answer against what it asked for: opened.representation, a window's channels and dtype (dtype float64 means physical units, int16 digital), and a recipe's channel_slice (absent when the request named no channels). A field added to a request in a minor must be safe for an older engine to ignore, and a client relies on a newer request field only when the engine's hello response names a version that defines it. Likewise a field added to a response in a minor must be safe for an older client to ignore: anything that changes how a payload is read comes as a new dtype, layout or byte_order value (which an older client refuses) or in a new major.  JSON Schema alone cannot check the window payload_bytes arithmetic, that representation ids are unique, that opened.representation names one of them, that the bound representation is a zarr one whose sampling_frequency, nchans, ntimes, scale and offset are non-null, that a representation's scale and offset have nchans entries when nchans is known, or that a Range's end is at least its start; the zod mirror does, and a client in another language must check them itself. Closed lists and growth: a client treats an error code it does not know as internal; a client must refuse a window whose dtype, layout or byte_order it does not know, rather than guess at the bytes. A client validates what it receives against $defs/Response and an engine against $defs/Request; the root accepts either direction. Each message is one object, discriminated by type and, for hello and recipe, by its request-only field: a hello carrying client is a request and a hello response must not carry client; a recipe carrying handle is a request and a recipe response must not carry handle.",
   "oneOf": [
     {
       "$ref": "#/$defs/HelloRequest"
@@ -39,6 +39,49 @@
     }
   ],
   "$defs": {
+    "Request": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/HelloRequest"
+        },
+        {
+          "$ref": "#/$defs/OpenRequest"
+        },
+        {
+          "$ref": "#/$defs/ReadWindowRequest"
+        },
+        {
+          "$ref": "#/$defs/RecipeRequest"
+        },
+        {
+          "$ref": "#/$defs/ReleaseRequest"
+        }
+      ],
+      "description": "Any message a client sends. An engine validates incoming frames against this, not against the root."
+    },
+    "Response": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/HelloResponse"
+        },
+        {
+          "$ref": "#/$defs/Opened"
+        },
+        {
+          "$ref": "#/$defs/Window"
+        },
+        {
+          "$ref": "#/$defs/RecipeResponse"
+        },
+        {
+          "$ref": "#/$defs/Released"
+        },
+        {
+          "$ref": "#/$defs/Error"
+        }
+      ],
+      "description": "Any message the engine sends (a success type or error). A client validates incoming frames against this, not against the root, so an echoed request is not mistaken for an answer."
+    },
     "Id": {
       "type": "integer",
       "minimum": 1,

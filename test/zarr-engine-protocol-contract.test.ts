@@ -725,6 +725,43 @@ describe("protocol schema: forward compatibility of requests", () => {
   });
 });
 
+describe("protocol schema: request and response entry points", () => {
+  const compileDef = (name: string) =>
+    new Ajv2020({ strict: true }).compile({
+      ...protocolSchema,
+      oneOf: undefined,
+      $ref: `#/$defs/${name}`,
+    } as object);
+  const requestRoot = compileDef("Request");
+  const responseRoot = compileDef("Response");
+
+  test("they partition the root: every case is exactly one of request or response, as in zod", () => {
+    for (const c of CASES) {
+      const isReq = requestRoot(c.doc) as boolean;
+      const isRes = responseRoot(c.doc) as boolean;
+      expect(isReq !== isRes, c.label).toBe(true);
+      expect(isReq, c.label).toBe(engineRequestSchema.safeParse(c.doc).success);
+      expect(isRes, c.label).toBe(engineResponseSchema.safeParse(c.doc).success);
+    }
+  });
+
+  test("they list the same messages as the root", () => {
+    const names = (refs: { $ref: string }[]) => refs.map((r) => r.$ref.replace("#/$defs/", ""));
+    const req = names(protocolSchema.$defs.Request.oneOf as { $ref: string }[]);
+    const res = names(protocolSchema.$defs.Response.oneOf as { $ref: string }[]);
+    expect([...req, ...res].sort()).toEqual(
+      names(protocolSchema.oneOf as { $ref: string }[]).sort(),
+    );
+  });
+
+  test("an echoed request is not an answer", () => {
+    const echoed = { id: 1, type: "release", handle: "h" };
+    expect(validateJson(echoed)).toBe(true);
+    expect(responseRoot(echoed)).toBe(false);
+    expect(engineResponseSchema.safeParse(echoed).success).toBe(false);
+  });
+});
+
 describe("protocol schema: coverage", () => {
   const messageDefs = (protocolSchema.oneOf as { $ref: string }[]).map((r) =>
     r.$ref.replace("#/$defs/", ""),

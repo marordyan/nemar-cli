@@ -24,7 +24,7 @@ A Zarr store is not the file, though: one recording can have several groups, and
    I/O happens only through the `Fetcher` and `JsonCache` interfaces; no WebAssembly.
    Rules that exist only for the MCP (taste caps, the wire form with seconds, the envelope) stay in the Worker.
 2. **The local engine speaks a versioned protocol over its own stdin and stdout, never TCP.**
-   `shared/zarr-engine-protocol.schema.json` (JSON Schema, draft 2020-12) is the source of truth.
+   `shared/zarr-engine-protocol.schema.json` (JSON Schema, draft 2020-12) is the source of truth; its `$defs/Request` and `$defs/Response` are what an engine and a client validate against, and its root accepts either direction.
    `shared/contract/zarr-engine-protocol.ts` is a hand-written zod mirror, not generated from it, and `test/zarr-engine-protocol-contract.test.ts` runs one table of cases through both and requires the same verdict and parsed value.
 3. **Every message in either direction is one frame.**
    Magic `NZE0`; `header_len` as a little-endian u32; a UTF-8 JSON header right-padded with spaces so that `8 + header_len` is a multiple of 8; then `payload_bytes` of binary samples.

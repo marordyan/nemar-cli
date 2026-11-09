@@ -530,7 +530,7 @@
           "$ref": "#/$defs/PayloadBytesZero"
         }
       },
-      "description": "Asks for the read recipe of a window instead of its samples: the MCP read-recipe object that tells a client which store objects and byte ranges to fetch and decode to read the window itself. Nothing is read. Time rule, identical to the MCP read_window tool, with sampling_frequency and ntimes those of the representation the handle is bound to: start_sample = floor(start_s * sampling_frequency + 0.5) and n_samples = floor(duration_s * sampling_frequency + 0.5), with ties rounding up (shared/zarr/window-samples.ts). If n_samples < 1, or start_sample >= ntimes, or start_sample + n_samples > ntimes, the engine answers out_of_range; it never returns a truncated window."
+      "description": "Asks for the read recipe of a window instead of its samples: the MCP read-recipe object that tells a client which store objects and byte ranges to fetch and decode to read the window itself. Nothing is read. Time rule, identical to the MCP read_window tool, with sampling_frequency and ntimes those of the representation the handle is bound to: start_sample = floor(start_s * sampling_frequency + 0.5) and n_samples = floor(duration_s * sampling_frequency + 0.5), with ties rounding up (shared/zarr/window-samples.ts). If n_samples < 1, or start_sample >= ntimes, or start_sample + n_samples > ntimes, the engine answers out_of_range; it never returns a truncated window. A recipe's channel_slice is the half-open range from the lowest requested channel to one past the highest, so it can include channels the request did not name, and it is absent when the request named no channels."
     },
     "RecipeResponse": {
       "type": "object",

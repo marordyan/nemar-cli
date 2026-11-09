@@ -27,6 +27,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { Ajv2020 } from "ajv/dist/2020";
 import { buildReadRecipe } from "../shared/contract/mcp.js";
 import {
@@ -949,5 +950,34 @@ describe("protocol schema: documented semantics", () => {
     ]) {
       expect(protocolSchema.description, field).toContain(field);
     }
+    expect(protocolSchema.description).toContain("absent when the request named no channels");
+  });
+
+  test("the three texts agree on a recipe's channel_slice", () => {
+    // The ADR, the JSON Schema and the zod docblock each say what it holds, so a
+    // client in any language can check it; a drift in one fails here.
+    const adr = readFileSync(
+      new URL(
+        "../.context/decisions/0118-the-zarr-read-core-is-shared-and-the-local-engine-speaks-a-versioned-protocol.md",
+        import.meta.url,
+      ),
+      "utf8",
+    ).replace(/\s+/g, " ");
+    const zodFile = readFileSync(
+      new URL("../shared/contract/zarr-engine-protocol.ts", import.meta.url),
+      "utf8",
+    ).replace(/\s*\*\s*/g, " ");
+    const recipe = protocolSchema.$defs.RecipeRequest.description;
+    for (const text of [adr, recipe]) {
+      expect(text).toContain(
+        "half-open range from the lowest requested channel to one past the highest",
+      );
+      expect(text).toContain("absent when the request named no channels");
+    }
+    expect(adr).toContain("a recipe's `channel_slice` (absent when the request named no channels)");
+    expect(zodFile).toContain("absent when the request named no channels");
+    expect(zodFile).toContain(
+      "the range from the lowest requested channel to one past the highest",
+    );
   });
 });

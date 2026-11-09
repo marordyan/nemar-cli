@@ -15,9 +15,10 @@
  * (test/contract-schemas.test.ts), and the JSON Schema follows this mirror so
  * the two keep the same verdicts. A known field with a bad value is still
  * rejected; a misspelled optional field is ignored, so a client checks the
- * answer (`opened.representation`, a window's `channels` and `dtype`). `hello` and `recipe` requests and
- * responses share a `type`, so a response must not carry the request's marker
- * field (`client`, `handle`), matching the JSON Schema's `not`.
+ * answer (`opened.representation`, a window's `channels` and `dtype`, a
+ * recipe's `channel_slice`). `hello` and `recipe` requests and responses share
+ * a `type`, so a response must not carry the request's marker field (`client`,
+ * `handle`), matching the JSON Schema's `not`.
  * What the JSON Schema cannot express lives only here: the `window`
  * `payload_bytes` arithmetic; in `opened`, unique representation ids, a bound
  * `representation` that is listed, is `zarr` and has non-null

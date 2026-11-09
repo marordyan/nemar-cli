@@ -942,7 +942,11 @@ describe("protocol schema: documented semantics", () => {
     expect(protocolSchema.description).toContain(
       "a client MUST check the answer against what it asked for",
     );
-    for (const field of ["opened.representation", "channels and dtype"]) {
+    for (const field of [
+      "opened.representation",
+      "channels and dtype",
+      "a recipe's channel_slice",
+    ]) {
       expect(protocolSchema.description, field).toContain(field);
     }
   });

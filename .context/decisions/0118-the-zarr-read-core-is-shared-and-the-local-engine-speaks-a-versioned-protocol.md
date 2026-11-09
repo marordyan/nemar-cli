@@ -58,9 +58,10 @@ A Zarr store is not the file, though: one recording can have several groups, and
 6. **Compatibility.**
    Every message is open: the engine MUST ignore unknown fields in a request and a client MUST ignore unknown fields in a response, so from v1 a minor version may add fields in either direction.
    Open is not loose: a missing required field or a known field with an invalid value is still `invalid_message`.
+   The price is that a misspelled optional request field is ignored rather than refused (`unit` for `units`, `chanels` for `channels`, `representaton` for `representation`), so a client checks the answer against what it asked for: `opened.representation`, and a window's `channels` and `dtype`.
    The `filled_ranges` items and the representations are open too.
    `hello` and `recipe` share a `type` between request and response, so each request has a marker field (`client`, `handle`) that the response never carries.
-   The first draft closed requests; that was reversed (2026-11-08) because the contract forbids a closed schema under `shared/contract/` (`test/contract-schemas.test.ts`: one closed schema breaks every un-upgraded client), and because an older engine refusing a newer client's request is the failure open messages exist to prevent.
+   The first draft closed requests; that was reversed (2026-11-08) because no zod schema under `shared/contract/` may call `.strict()` (`test/contract-schemas.test.ts`: one strict schema there breaks every un-upgraded client), and the protocol's JSON Schema follows its zod mirror so the two keep giving the same verdicts, and because an older engine refusing a newer client's request is the failure open messages exist to prevent.
    A client treats an error code it does not know as `internal`, and refuses a `window` whose `dtype`, `layout` or `byte_order` it does not know rather than guess at the bytes.
    A field added to a request in a minor must be safe for an older engine to ignore, and a client relies on a newer request field only when the engine's `hello` response names a version that defines it.
 7. **Versioning.**
@@ -93,7 +94,7 @@ A Zarr store is not the file, though: one recording can have several groups, and
 ## Alternatives considered
 
 - **Closed requests (the engine rejects an unknown request field).**
-  The first draft's rule. It breaks the repository's ban on closed schemas in `shared/contract/`, and it turns every newer client into an error against an older engine; ignoring unknown fields, with new request fields safe to ignore, gives the same safety for known fields.
+  The first draft's rule. It needs `.strict()` in the zod mirror, which the repository forbids under `shared/contract/` (the JSON Schema would then differ from its mirror), and it turns every newer client into an error against an older engine; ignoring unknown fields, with new request fields safe to ignore, gives the same safety for known fields.
 - **Copy the core instead of moving it.**
   A second decoder that must match the first byte for byte; ADR 0057 is the account of how two copies of one thing diverge.
 - **Put the core in `src/lib/zarr/`.**

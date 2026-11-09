@@ -10,9 +10,12 @@
  *
  * Compatibility: every message object is `.passthrough()`. An engine ignores an
  * unknown request field and a client an unknown response field, and both keep
- * it in the parsed value, exactly as Ajv leaves the document alone. Nothing in
- * `shared/contract/` may be closed (test/contract-schemas.test.ts). A known
- * field with a bad value is still rejected. `hello` and `recipe` requests and
+ * it in the parsed value, exactly as Ajv leaves the document alone. No zod
+ * schema under `shared/contract/` may be strict, which rejects unknown keys
+ * (test/contract-schemas.test.ts), and the JSON Schema follows this mirror so
+ * the two keep the same verdicts. A known field with a bad value is still
+ * rejected; a misspelled optional field is ignored, so a client checks the
+ * answer (`opened.representation`, a window's `channels` and `dtype`). `hello` and `recipe` requests and
  * responses share a `type`, so a response must not carry the request's marker
  * field (`client`, `handle`), matching the JSON Schema's `not`.
  * What the JSON Schema cannot express lives only here: the `window`

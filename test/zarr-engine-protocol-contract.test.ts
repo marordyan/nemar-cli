@@ -381,6 +381,11 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
   },
   { label: "a representation without kind", doc: setRep(0, { kind: undefined })(OPENED) },
   {
+    // Not a valid request (client is empty), and a response may not carry client.
+    label: "a hello response carrying client (the hello request's marker field)",
+    doc: { id: 1, type: "hello", protocol: "0.1", engine: "e", max_payload_bytes: 1, client: "" },
+  },
+  {
     label: "a recipe response carrying handle (the recipe request's marker field)",
     doc: { id: 5, type: "recipe", recipe: realRecipe as unknown as Doc, handle: "h1" },
   },
@@ -677,8 +682,16 @@ describe("protocol schema: forward compatibility of requests", () => {
       engine: "e",
       max_payload_bytes: 9,
     };
-    // recipe: handle marks the request, so a recipe object is just unknown here.
-    const recipe = { id: 5, type: "recipe", handle: "h1", start_s: 0, duration_s: 1, recipe: {} };
+    // recipe: handle marks the request, so a recipe object is just unknown here. A
+    // REAL recipe, so the zod response branch would accept it but for the handle refine.
+    const recipe = {
+      id: 5,
+      type: "recipe",
+      handle: "h1",
+      start_s: 0,
+      duration_s: 1,
+      recipe: realRecipe as unknown as Doc,
+    };
     for (const doc of [hello, recipe]) {
       const { jsonOk, zod } = both(doc);
       expect(jsonOk, JSON.stringify(validateJson.errors)).toBe(true);
@@ -925,5 +938,12 @@ describe("protocol schema: documented semantics", () => {
     expect(protocolSchema.description).toContain(
       "a known field with an invalid value is still invalid_message",
     );
+    // Open requests ignore a misspelled optional field, so clients must check the answer.
+    expect(protocolSchema.description).toContain(
+      "a client MUST check the answer against what it asked for",
+    );
+    for (const field of ["opened.representation", "channels and dtype"]) {
+      expect(protocolSchema.description, field).toContain(field);
+    }
   });
 });

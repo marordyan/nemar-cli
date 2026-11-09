@@ -348,6 +348,43 @@ export type HelloResponse = z.infer<typeof helloResponseSchema>;
 export type OpenRequest = z.infer<typeof openRequestSchema>;
 export type Opened = z.infer<typeof openedSchema>;
 export type ZarrRepresentation = z.infer<typeof zarrRepresentationSchema>;
+
+/** The representation a handle is bound to, with the fields `openedSchema`
+ *  guarantees non-null on it. */
+export type BoundZarrRepresentation = ZarrRepresentation & {
+  sampling_frequency: number;
+  nchans: number;
+  ntimes: number;
+  scale: number[];
+  offset: number[];
+};
+
+/**
+ * The bound representation of an `opened` message that `openedSchema` parsed,
+ * typed with the fields it guarantees. The schema's superRefine is the one place
+ * this invariant is enforced; this helper is the one place it is relied on, so a
+ * caller never needs a cast or a non-null assertion. Throws if handed an `opened`
+ * that did not pass the schema.
+ */
+export function boundRepresentation(opened: Opened): BoundZarrRepresentation {
+  const bound = opened.representations.find((r) => r.id === opened.representation);
+  if (!bound || !isZarrRepresentation(bound)) {
+    throw new Error(
+      `opened.representation ${opened.representation} is not a listed zarr representation`,
+    );
+  }
+  const { sampling_frequency, nchans, ntimes, scale, offset } = bound;
+  if (
+    sampling_frequency === null ||
+    nchans === null ||
+    ntimes === null ||
+    scale === null ||
+    offset === null
+  ) {
+    throw new Error(`the bound representation ${bound.id} is missing a required field`);
+  }
+  return { ...bound, sampling_frequency, nchans, ntimes, scale, offset };
+}
 export type Representation = z.infer<typeof representationSchema>;
 export type ReadWindowRequest = z.infer<typeof readWindowRequestSchema>;
 export type EngineWindow = z.infer<typeof windowSchema>;

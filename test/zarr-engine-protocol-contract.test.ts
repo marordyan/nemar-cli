@@ -33,10 +33,12 @@ import { buildReadRecipe } from "../shared/contract/mcp.js";
 import {
   ENGINE_ERROR_CODES,
   ENGINE_PROTOCOL_VERSION,
+  boundRepresentation,
   engineMessageSchema,
   engineRequestSchema,
   engineResponseSchema,
   isZarrRepresentation,
+  openedSchema,
   windowSchema,
 } from "../shared/contract/zarr-engine-protocol.js";
 import { zarrIndexSchema } from "../shared/contract/zarr-index.js";
@@ -903,6 +905,44 @@ describe("protocol schema: gaps owned by one side", () => {
     };
     expect(engineMessageSchema.safeParse(doc).success).toBe(false);
     expect(validateJson(doc)).toBe(true);
+  });
+
+  test("boundRepresentation returns the bound zarr representation with its guaranteed fields", () => {
+    const parsed = openedSchema.parse({
+      ...OPENED,
+      representation: "eeg_1000hz",
+      representations: [
+        zarrRep({ scale: null, offset: null }),
+        zarrRep({
+          id: "eeg_1000hz",
+          sampling_frequency: 1000,
+          nchans: 2,
+          scale: [1, 2],
+          offset: [0, 0],
+        }),
+      ],
+    });
+    const bound = boundRepresentation(parsed);
+    // The non-null typing is checked where it is declared: shared/ is in the root
+    // typecheck, and the helper's return must satisfy BoundZarrRepresentation.
+    const rate: number = bound.sampling_frequency;
+    const scale: number[] = bound.scale;
+    expect(bound.id).toBe("eeg_1000hz");
+    expect(rate).toBe(1000);
+    expect(scale).toEqual([1, 2]);
+    expect(bound.nchans).toBe(2);
+  });
+
+  test("boundRepresentation refuses an opened that did not pass the schema", () => {
+    const unlisted = { ...OPENED, representation: "nope" } as unknown as Parameters<
+      typeof boundRepresentation
+    >[0];
+    expect(() => boundRepresentation(unlisted)).toThrow("not a listed zarr representation");
+    const missing = {
+      ...OPENED,
+      representations: [zarrRep({ ntimes: null })],
+    } as unknown as Parameters<typeof boundRepresentation>[0];
+    expect(() => boundRepresentation(missing)).toThrow("missing a required field");
   });
 
   test("isZarrRepresentation tells the kinds apart", () => {

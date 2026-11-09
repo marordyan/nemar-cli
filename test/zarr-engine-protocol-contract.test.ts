@@ -381,8 +381,8 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
   },
   { label: "a representation without kind", doc: setRep(0, { kind: undefined })(OPENED) },
   {
-    label: "open request still naming the old group field",
-    doc: { id: 3, type: "open", dataset_id: "nm099500", recording: "r", group: "eeg_250hz" },
+    label: "a recipe response carrying handle (the recipe request's marker field)",
+    doc: { id: 5, type: "recipe", recipe: realRecipe as unknown as Doc, handle: "h1" },
   },
   {
     label: "read_window request with a repeated channel",
@@ -458,8 +458,8 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
   { label: "a fractional id", doc: { id: 1.5, type: "released" } },
   { label: "a string id", doc: { id: "1", type: "released" } },
   {
-    // With open responses, {client, engine} is a valid hello RESPONSE carrying an
-    // unknown field, so the old "both" row is gone; neither is still invalid.
+    // {client, engine} is a valid hello REQUEST carrying an unknown field (every
+    // message is open), so the old "both" row is gone; neither is still invalid.
     label: "hello with neither client nor engine",
     doc: { id: 1, type: "hello", protocol: "0.1" },
   },
@@ -505,25 +505,16 @@ describe("protocol schema: Ajv and zod agree", () => {
     });
   }
 
-  // Requests are closed, responses are open (ADR 0118): the engine rejects an
-  // unknown field in a request, a client ignores one in a response.
+  // Every message is open (ADR 0118): an engine ignores an unknown request
+  // field and a client an unknown response field, and both keep it.
   for (const c of CASES) {
-    const isRequest = c.def.endsWith("Request");
-    if (isRequest) {
-      test(`${c.label}: an unknown extra field is rejected by both (request)`, () => {
-        const { jsonOk, zod } = both(addUnknown(c.doc));
-        expect(jsonOk).toBe(false);
-        expect(zod.success).toBe(false);
-      });
-    } else {
-      test(`${c.label}: an unknown extra field is accepted by both and kept (response)`, () => {
-        const doc = addUnknown(c.doc);
-        const { jsonOk, zod } = both(doc);
-        expect(jsonOk, JSON.stringify(validateJson.errors)).toBe(true);
-        expect(zod.success).toBe(true);
-        if (zod.success) expect(zod.data).toEqual(doc);
-      });
-    }
+    test(`${c.label}: an unknown extra field is accepted by both and kept`, () => {
+      const doc = addUnknown(c.doc);
+      const { jsonOk, zod } = both(doc);
+      expect(jsonOk, JSON.stringify(validateJson.errors)).toBe(true);
+      expect(zod.success).toBe(true);
+      if (zod.success) expect(zod.data).toEqual(doc);
+    });
   }
 
   test("an unknown field inside a filled range is accepted by both and kept (it is part of a response)", () => {
@@ -591,6 +582,109 @@ describe("protocol schema: Ajv and zod agree", () => {
       const isReq = engineRequestSchema.safeParse(c.doc).success;
       const isRes = engineResponseSchema.safeParse(c.doc).success;
       expect(isReq !== isRes, c.label).toBe(true);
+    }
+  });
+});
+
+describe("protocol schema: forward compatibility of requests", () => {
+  // An older engine must accept a request from a newer client that carries
+  // fields the older version does not define, and must still reject a request
+  // whose KNOWN fields are invalid. Every request case is checked both ways.
+  const requests = CASES.filter((c) => c.def.endsWith("Request"));
+
+  test("every request message type is covered", () => {
+    const covered = new Set(requests.map((c) => c.def));
+    const requestDefs = (protocolSchema.oneOf as { $ref: string }[])
+      .map((r) => r.$ref.replace("#/$defs/", ""))
+      .filter((n) => n.endsWith("Request"));
+    expect([...covered].sort()).toEqual(requestDefs.sort());
+  });
+
+  for (const c of requests) {
+    const future = { ...c.doc, since_v1_1: { mode: "fast" }, tags: ["a", "b"] };
+
+    test(`${c.label}: future fields are accepted, kept, and it stays a request`, () => {
+      const { jsonOk, zod } = both(future);
+      expect(jsonOk, JSON.stringify(validateJson.errors)).toBe(true);
+      expect(zod.success).toBe(true);
+      if (zod.success) expect(zod.data).toEqual(future);
+      expect(engineRequestSchema.safeParse(future).success).toBe(true);
+      expect(engineResponseSchema.safeParse(future).success).toBe(false);
+    });
+
+    test(`${c.label}: with future fields, ${c.mutation} is still rejected by both`, () => {
+      const bad = c.mutate(future);
+      expect(bad).not.toEqual(future);
+      const { jsonOk, zod } = both(bad);
+      expect(jsonOk).toBe(false);
+      expect(zod.success).toBe(false);
+    });
+  }
+
+  test("a required field cannot be replaced by an unknown one", () => {
+    // Open does not mean loose: dropping a required field and adding another is invalid.
+    const doc = { id: 3, type: "read_window", handle: "h1", start_seconds: 0, duration_s: 1 };
+    const { jsonOk, zod } = both(doc);
+    expect(jsonOk).toBe(false);
+    expect(zod.success).toBe(false);
+  });
+
+  test("known fields keep their types when unknown fields are present", () => {
+    const base = { id: 3, type: "read_window", handle: "h1", start_s: 0, duration_s: 1, extra: 1 };
+    for (const [key, value] of [
+      ["start_s", "0"],
+      ["duration_s", -1],
+      ["channels", [0, 0]],
+      ["units", "volts"],
+      ["handle", 7],
+      ["id", 0],
+      ["payload_bytes", 8],
+    ] as const) {
+      const { jsonOk, zod } = both({ ...base, [key]: value });
+      expect(jsonOk, key).toBe(false);
+      expect(zod.success, key).toBe(false);
+    }
+  });
+
+  test("a newer client's hello (newer minor, extra fields) validates; the version decides the answer", () => {
+    const doc = {
+      id: 1,
+      type: "hello",
+      protocol: "1.1",
+      client: "nemar-py/3",
+      capabilities: ["x"],
+    };
+    const { jsonOk, zod } = both(doc);
+    expect(jsonOk).toBe(true);
+    expect(zod.success).toBe(true);
+    expect(engineRequestSchema.safeParse(doc).success).toBe(true);
+  });
+
+  test("an open request that still names the old v0 draft field group is accepted and the field ignored", () => {
+    const doc = { id: 3, type: "open", dataset_id: "nm099500", recording: "r", group: "eeg_250hz" };
+    const { jsonOk, zod } = both(doc);
+    expect(jsonOk).toBe(true);
+    expect(zod.success).toBe(true);
+  });
+
+  test("a request carrying the response's fields is still a request", () => {
+    // hello: client marks the request, so engine and max_payload_bytes are just unknown here.
+    const hello = {
+      id: 1,
+      type: "hello",
+      protocol: "0.1",
+      client: "c",
+      engine: "e",
+      max_payload_bytes: 9,
+    };
+    // recipe: handle marks the request, so a recipe object is just unknown here.
+    const recipe = { id: 5, type: "recipe", handle: "h1", start_s: 0, duration_s: 1, recipe: {} };
+    for (const doc of [hello, recipe]) {
+      const { jsonOk, zod } = both(doc);
+      expect(jsonOk, JSON.stringify(validateJson.errors)).toBe(true);
+      expect(zod.success).toBe(true);
+      expect(engineRequestSchema.safeParse(doc).success).toBe(true);
+      expect(engineResponseSchema.safeParse(doc).success).toBe(false);
     }
   });
 });
@@ -794,7 +888,9 @@ describe("protocol schema: documented semantics", () => {
     expect(desc).toContain(
       "must refuse a window whose dtype, layout or byte_order it does not know",
     );
-    expect(desc).toContain("a new request field arrives only with a new protocol minor");
+    expect(desc).toContain(
+      "A field added to a request in a minor must be safe for an older engine to ignore",
+    );
     expect(defs.ErrorCode.description).toContain("treats a code it does not know as internal");
   });
 
@@ -817,21 +913,17 @@ describe("protocol schema: documented semantics", () => {
     expect(defs.ChannelIndices.description).toContain("payload row i is channels[i]");
     expect(protocolSchema.$defs.HelloRequest.description).toContain("unsupported_version");
     expect(protocolSchema.$defs.HelloRequest.description).toContain("invalid_message");
-    // A later version may add hello fields, so the version is read first.
+    // The version is read first, so a hello that is otherwise invalid for this
+    // version still gets unsupported_version.
     expect(protocolSchema.$defs.HelloRequest.description).toContain(
       "reads protocol before validating anything else",
     );
     expect(protocolSchema.description).toContain("reads a hello's protocol before validating");
-    // Reading the version first only helps across majors; a minor that added a
-    // hello field would break an older same-major engine, so none may.
-    expect(protocolSchema.$defs.HelloRequest.description).toContain(
-      "fields change only with a new major, never in a minor",
-    );
-    expect(protocolSchema.description).toContain(
-      "The hello request's fields change only with a new major, never in a minor",
-    );
     expect(protocolSchema.description).toContain("must check them itself");
     expect(protocolSchema.description).toContain("MUST ignore unknown fields in a response");
-    expect(protocolSchema.description).toContain("MUST reject a request with an unknown field");
+    expect(protocolSchema.description).toContain("MUST ignore unknown fields in a request");
+    expect(protocolSchema.description).toContain(
+      "a known field with an invalid value is still invalid_message",
+    );
   });
 });

@@ -8,10 +8,13 @@
  * which runs one table of cases through both and compares verdicts and parsed
  * values (the same approach as `backend/test/mcp-schema-parity.test.ts`).
  *
- * Compatibility: request objects are `.strict()` (the engine rejects an unknown
- * field), response objects are `.passthrough()` (a client ignores an unknown
- * field, and keeps it in the parsed value, exactly as Ajv leaves the document
- * alone). `FilledRange` is part of a response and so is open too.
+ * Compatibility: every message object is `.passthrough()`. An engine ignores an
+ * unknown request field and a client an unknown response field, and both keep
+ * it in the parsed value, exactly as Ajv leaves the document alone. Nothing in
+ * `shared/contract/` may be closed (test/contract-schemas.test.ts). A known
+ * field with a bad value is still rejected. `hello` and `recipe` requests and
+ * responses share a `type`, so a response must not carry the request's marker
+ * field (`client`, `handle`), matching the JSON Schema's `not`.
  * What the JSON Schema cannot express lives only here: the `window`
  * `payload_bytes` arithmetic; in `opened`, unique representation ids, a bound
  * `representation` that is listed, is `zarr` and has non-null
@@ -78,13 +81,12 @@ export const helloRequestSchema = z
     type: z.literal("hello"),
     /** MAJOR.MINOR. The engine reads it before validating the rest of the hello:
      *  a well-formed version it does not speak is unsupported_version even when
-     *  the hello also carries fields this version does not know. The hello
-     *  request's fields change only with a new major, never in a minor. */
+     *  the rest of the hello does not validate. */
     protocol: z.string().regex(/^[0-9]+\.[0-9]+$/),
     client: nonEmpty,
     payload_bytes: payloadBytesZero,
   })
-  .strict();
+  .passthrough();
 
 export const helloResponseSchema = z
   .object({
@@ -96,7 +98,9 @@ export const helloResponseSchema = z
     max_payload_bytes: z.number().int().min(1),
     payload_bytes: payloadBytesZero,
   })
-  .passthrough();
+  .passthrough()
+  // `client` marks a hello REQUEST; a response never carries it (JSON Schema `not`).
+  .refine((m) => !("client" in m), { message: "a hello response must not carry client" });
 
 export const openRequestSchema = z
   .object({
@@ -109,7 +113,7 @@ export const openRequestSchema = z
     representation: nonEmpty.optional(),
     payload_bytes: payloadBytesZero,
   })
-  .strict();
+  .passthrough();
 
 /** A `zarr` representation: one Zarr group of the recording, described with
  *  neuroschema field names but group-level values. */
@@ -218,7 +222,7 @@ export const readWindowRequestSchema = z
     units: z.enum(["physical", "digital"]).optional(),
     payload_bytes: payloadBytesZero,
   })
-  .strict();
+  .passthrough();
 
 export const windowSchema = z
   .object({
@@ -252,7 +256,7 @@ export const recipeRequestSchema = z
     channels: channelIndices.optional(),
     payload_bytes: payloadBytesZero,
   })
-  .strict();
+  .passthrough();
 
 export const recipeResponseSchema = z
   .object({
@@ -261,7 +265,9 @@ export const recipeResponseSchema = z
     recipe: readRecipeSchema,
     payload_bytes: payloadBytesZero,
   })
-  .passthrough();
+  .passthrough()
+  // `handle` marks a recipe REQUEST; a response never carries it (JSON Schema `not`).
+  .refine((m) => !("handle" in m), { message: "a recipe response must not carry handle" });
 
 export const releaseRequestSchema = z
   .object({
@@ -270,7 +276,7 @@ export const releaseRequestSchema = z
     handle,
     payload_bytes: payloadBytesZero,
   })
-  .strict();
+  .passthrough();
 
 export const releasedSchema = z
   .object({

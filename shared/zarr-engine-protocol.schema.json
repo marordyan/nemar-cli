@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://api.nemar.org/schemas/zarr-engine-protocol-v0.json",
   "title": "NEMAR Zarr engine protocol (v0, unstable)",
-  "description": "The header of one frame of the local protocol the NEMAR CLI engine speaks over stdin/stdout (frame: magic NZE0, u32 LE header_len, UTF-8 JSON header padded with spaces to an 8-byte boundary, then payload_bytes of binary samples; see ADR 0118). v0 is UNSTABLE and may change in place; the published versions that follow will not. The v0 engine speaks only protocol \"0.1\"; from v1 only the major must match. The engine reads a hello's protocol before validating the rest of it: a well-formed version it does not speak is unsupported_version whatever else the hello carries, and a malformed one is invalid_message. The hello request's fields change only with a new major, never in a minor, so an engine can always validate a hello of its own major. Missing data is never zeros: it is reported in filled_ranges (ADR 0005). Compatibility rule: REQUESTS are closed (additionalProperties false) and the engine MUST reject a request with an unknown field as invalid_message; RESPONSES are open and a client MUST ignore unknown fields in a response, so that from v1 a minor version may add response fields.  JSON Schema alone cannot check the window payload_bytes arithmetic, that representation ids are unique, that opened.representation names one of them, that the bound representation is a zarr one whose sampling_frequency, nchans, ntimes, scale and offset are non-null, or that a representation's scale and offset have nchans entries; the zod mirror does, and a client in another language must check them itself. Closed lists and growth: a client treats an error code it does not know as internal; a client must refuse a window whose dtype, layout or byte_order it does not know, rather than guess at the bytes; a new request field arrives only with a new protocol minor, and a client sends only the fields of the version the engine named in its hello response. Each message is one object, discriminated by type (and, for hello and recipe, by which of request or response fields it carries).",
+  "description": "The header of one frame of the local protocol the NEMAR CLI engine speaks over stdin/stdout (frame: magic NZE0, u32 LE header_len, UTF-8 JSON header padded with spaces to an 8-byte boundary, then payload_bytes of binary samples; see ADR 0118). v0 is UNSTABLE and may change in place; the published versions that follow will not. The v0 engine speaks only protocol \"0.1\"; from v1 only the major must match. The engine reads a hello's protocol before validating the rest of it: a well-formed version it does not speak is unsupported_version whatever else the hello carries, and a malformed one is invalid_message. Missing data is never zeros: it is reported in filled_ranges (ADR 0005). Compatibility rule: every message is open. The engine MUST ignore unknown fields in a request and a client MUST ignore unknown fields in a response, so that from v1 a minor version may add fields in either direction; a known field with an invalid value is still invalid_message. A field added to a request in a minor must be safe for an older engine to ignore, and a client relies on a newer request field only when the engine's hello response names a version that defines it.  JSON Schema alone cannot check the window payload_bytes arithmetic, that representation ids are unique, that opened.representation names one of them, that the bound representation is a zarr one whose sampling_frequency, nchans, ntimes, scale and offset are non-null, or that a representation's scale and offset have nchans entries; the zod mirror does, and a client in another language must check them itself. Closed lists and growth: a client treats an error code it does not know as internal; a client must refuse a window whose dtype, layout or byte_order it does not know, rather than guess at the bytes. Each message is one object, discriminated by type and, for hello and recipe, by its request-only field: a hello carrying client is a request and a hello response must not carry client; a recipe carrying handle is a request and a recipe response must not carry handle.",
   "oneOf": [
     {
       "$ref": "#/$defs/HelloRequest"
@@ -239,7 +239,6 @@
     },
     "HelloRequest": {
       "type": "object",
-      "additionalProperties": false,
       "required": [
         "id",
         "type",
@@ -266,7 +265,7 @@
           "$ref": "#/$defs/PayloadBytesZero"
         }
       },
-      "description": "The client's opening message. The engine reads protocol before validating anything else in it: a well-formed version the engine does not speak is answered with unsupported_version even if the rest of the hello does not validate; a malformed protocol is invalid_message. Its fields change only with a new major, never in a minor: a same-major engine always understands a hello, and only a different major may carry fields it does not know."
+      "description": "The client's opening message. The engine reads protocol before validating anything else in it: a well-formed version the engine does not speak is answered with unsupported_version even if the rest of the hello does not validate; unknown fields are ignored like in any request; a malformed protocol is invalid_message."
     },
     "HelloResponse": {
       "type": "object",
@@ -300,11 +299,19 @@
           "minimum": 1,
           "description": "The largest payload, in bytes, the engine will send in one window. A read_window whose window would exceed it is answered with too_large. The value is engine policy."
         }
-      }
+      },
+      "not": {
+        "properties": {
+          "client": {}
+        },
+        "required": [
+          "client"
+        ]
+      },
+      "description": "Answers hello. It never carries client, the field that marks a hello request."
     },
     "OpenRequest": {
       "type": "object",
-      "additionalProperties": false,
       "required": [
         "id",
         "type",
@@ -390,7 +397,6 @@
     },
     "ReadWindowRequest": {
       "type": "object",
-      "additionalProperties": false,
       "required": [
         "id",
         "type",
@@ -492,7 +498,6 @@
     },
     "RecipeRequest": {
       "type": "object",
-      "additionalProperties": false,
       "required": [
         "id",
         "type",
@@ -548,11 +553,19 @@
         "payload_bytes": {
           "$ref": "#/$defs/PayloadBytesZero"
         }
-      }
+      },
+      "not": {
+        "properties": {
+          "handle": {}
+        },
+        "required": [
+          "handle"
+        ]
+      },
+      "description": "Answers recipe. It never carries handle, the field that marks a recipe request."
     },
     "ReleaseRequest": {
       "type": "object",
-      "additionalProperties": false,
       "required": [
         "id",
         "type",

@@ -25,14 +25,14 @@ A Zarr store is not the file, though: one recording can have several groups, and
    Rules that exist only for the MCP (taste caps, the wire form with seconds, the envelope) stay in the Worker.
 2. **The local engine speaks a versioned protocol over its own stdin and stdout, never TCP.**
    `shared/zarr-engine-protocol.schema.json` (JSON Schema, draft 2020-12) is the source of truth; its `$defs/Request` and `$defs/Response` are what an engine and a client validate against, and its root accepts either direction.
-   `shared/contract/zarr-engine-protocol.ts` is a hand-written zod mirror, not generated from it, and `test/zarr-engine-protocol-contract.test.ts` runs one table of cases through both and requires the same verdict and parsed value.
+   `shared/contract/zarr-engine-protocol.ts` is a hand-written zod mirror, not generated from it, and `test/zarr-engine-protocol-contract.test.ts` runs one table of cases through both and requires the same verdict and parsed value, except for the gaps the JSON Schema cannot express, which the test file lists and tests on the zod side.
 3. **Every message in either direction is one frame.**
    Magic `NZE0`; `header_len` as a little-endian u32; a UTF-8 JSON header right-padded with spaces so that `8 + header_len` is a multiple of 8; then `payload_bytes` of binary samples.
    The padding makes a float64 payload start 8-byte aligned, so numpy `frombuffer` and MATLAB `typecast` read it without a copy.
    `header_len` is at most 1 MiB.
    The payload limit is the engine's policy and is not in the schema.
    `shared/zarr/protocol-frame.ts` is the TypeScript codec; `scripts/zarr/engine_frame_fixtures.py` is an independent Python implementation, and `test/zarr-engine-frame.test.ts` requires the two to produce identical bytes.
-4. **The messages** are `hello`, `open`, `read_window`, `recipe` and `release`, answered by `hello`, `opened`, `window`, `recipe` and `released`, or by `error` with one of ten codes.
+4. **The messages** are `hello`, `open`, `read_window`, `recipe` and `release`, answered by `hello`, `opened`, `window`, `recipe` and `released`, or by `error`, whose `code` is any non-empty string: this version defines ten, listed in the schema, and a client treats an unknown one as `internal` (decision 6).
    A request carries a client-chosen integer `id` of at least 1 and the response echoes it; an `error` reply carries `id: null` when the request's id could not be read (an unparseable frame, invalid JSON, a missing or non-integer id), and no other message may; v0 handles one request at a time.
    `payload_bytes` is 0 on every message except `window`, where it equals `channels.length * n_samples` times 8 (`float64`) or 2 (`int16`); the JSON Schema documents that arithmetic and the zod mirror enforces it.
    `units: "digital"` returns the raw int16 with no scale or offset applied; the bound representation carries `scale` and `offset`, one entry per channel, with physical = digital * scale[c] + offset[c], so a digital client can convert.
@@ -67,7 +67,7 @@ A Zarr store is not the file, though: one recording can have several groups, and
    The `filled_ranges` items and the representations are open too.
    `hello` and `recipe` share a `type` between request and response, so each request has a marker field (`client`, `handle`) that the response never carries.
    The first draft closed requests; that was reversed on 2026-11-08 for two reasons.
-   No zod schema under `shared/contract/` may call `.strict()` (`test/contract-schemas.test.ts`: one strict schema there breaks every un-upgraded client), and the protocol's JSON Schema follows its zod mirror so the two keep giving the same verdicts.
+   No zod schema under `shared/contract/` may call `.strict()` (`test/contract-schemas.test.ts`: one strict schema there breaks every un-upgraded client), and the protocol's JSON Schema leaves its objects open too, so the two keep giving the same verdicts.
    And an older engine refusing a newer client's request is the failure open messages exist to prevent.
    Error codes are an open set (any non-empty string validates), so a client that validates against `$defs/Response` still receives a code a later version adds, and treats a code it does not know as `internal`. A client refuses a `window` whose `dtype`, `layout` or `byte_order` it does not know rather than guess at the bytes.
    A field added to a request in a minor must be safe for an older engine to ignore, and a client relies on a newer request field only when the engine's `hello` response names a version that defines it.

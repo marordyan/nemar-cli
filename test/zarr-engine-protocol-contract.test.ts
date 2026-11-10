@@ -18,8 +18,8 @@
  *    `nchans` entries (zod only);
  *  - a `Range` whose `end` is below its `start` (zod only);
  *  - the full shape of a `recipe` response (zod reuses the MCP recipe schema;
- *    the JSON Schema types only its `channel_slice` and `sample_slice`, and
- *    requires `sample_slice`, in v0).
+ *    the JSON Schema types only its `channel_slice` and `sample_slice` in v0;
+ *    the required `sample_slice` is in the shared table).
  *
  * `opened.record` uses a real neuroschema record (test/fixtures/
  * neuroschema-records). The group's rate, source rate, ntimes and duration
@@ -615,6 +615,11 @@ describe("protocol schema: Ajv and zod agree", () => {
     const schemaCodes = (protocolSchema.$defs.ErrorCode as { anyOf: { enum?: string[] }[] })
       .anyOf[0].enum as string[];
     expect([...ENGINE_ERROR_CODES]).toEqual(schemaCodes);
+    // The open branch: any non-empty string, so a later version's code still validates.
+    expect((protocolSchema.$defs.ErrorCode as { anyOf: unknown[] }).anyOf[1]).toEqual({
+      type: "string",
+      minLength: 1,
+    });
     for (const code of schemaCodes) {
       const doc = { id: 1, type: "error", code, message: "m" };
       const { jsonOk, zod } = both(doc);
@@ -1077,9 +1082,12 @@ describe("protocol schema: documented semantics", () => {
     expect(d).toContain("signal_properties.sampling_frequency");
   });
 
-  test("growth of the closed lists is described", () => {
+  test("growth of the lists is described: error codes open, payload enums closed", () => {
     const desc = protocolSchema.description;
+    expect(desc).toContain("error codes are open");
     expect(desc).toContain("treats an error code it does not know as internal");
+    expect(desc).toContain("dtype, layout and byte_order are closed");
+    expect(desc).toContain("json.dumps(..., allow_nan=False)");
     expect(desc).toContain(
       "must refuse a window whose dtype, layout or byte_order it does not know",
     );
@@ -1087,6 +1095,7 @@ describe("protocol schema: documented semantics", () => {
       "A field added to a request in a minor must be safe for an older engine to ignore",
     );
     expect(defs.ErrorCode.description).toContain("treats a code it does not know as internal");
+    expect(defs.ErrorCode.description).toContain("any non-empty string is valid");
   });
 
   test("a window echoes the request's channels, in order", () => {

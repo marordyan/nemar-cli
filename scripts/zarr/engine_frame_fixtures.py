@@ -46,7 +46,7 @@ RECORD = json.loads(
 
 
 def frame(header: dict, payload: bytes = b"") -> bytes:
-    body = json.dumps(header, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    body = json.dumps(header, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")
     pad = (-(8 + len(body))) % 8
     body += b" " * pad
     assert (8 + len(body)) % 8 == 0

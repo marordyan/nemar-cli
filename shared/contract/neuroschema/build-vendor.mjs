@@ -14,7 +14,8 @@
  * (`nsc:/<path-from-schema-root>`), all external file $refs are rewritten to the
  * referenced file's $id, and internal `#/...` refs are left untouched (2020-12
  * resolves them against each schema's own $id). ajv then addSchema()s them all
- * and validates against the dataset root.
+ * and validates against the root named by the first argument (`dataset` or
+ * `record`).
  *
  * Usage (from the nemar-cli repo root, with the neuroschema repo checked out
  * as a sibling):

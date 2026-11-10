@@ -16,8 +16,10 @@
  *  - in `opened`: unique representation ids, a bound `representation` that is
  *    listed, is `zarr` and is fully described, and `scale`/`offset` with
  *    `nchans` entries (zod only);
+ *  - a `Range` whose `end` is below its `start` (zod only);
  *  - the full shape of a `recipe` response (zod reuses the MCP recipe schema;
- *    the JSON Schema types it as a bare object in v0).
+ *    the JSON Schema types only its `channel_slice` and `sample_slice`, and
+ *    requires `sample_slice`, in v0).
  *
  * `opened.record` uses a real neuroschema record (test/fixtures/
  * neuroschema-records). The group's rate, source rate, ntimes and duration
@@ -49,10 +51,16 @@ import indexFixture from "./fixtures/zarr-index-v3.json";
 const ajv = new Ajv2020({ strict: true, allErrors: true });
 const validateJson = ajv.compile(protocolSchema as object);
 
-/** A real recipe, built the way the MCP builds one from the checked-in index fixture. */
+/** A real recipe, built the way the MCP builds one from the checked-in index
+ *  fixture, for one window (a protocol recipe always carries sample_slice). */
 const realRecipe = (() => {
   const index = zarrIndexSchema.parse(indexFixture);
-  return buildReadRecipe({ index, store: index.stores[0], groupName: "eeg_250hz" });
+  return buildReadRecipe({
+    index,
+    store: index.stores[0],
+    groupName: "eeg_250hz",
+    sampleSlice: { start: 0, end: 250 },
+  });
 })();
 
 type Doc = Record<string, unknown>;
@@ -322,12 +330,20 @@ const CASES: Case[] = [
     def: "Error",
     label: "error, a different code",
     doc: { id: 8, type: "error", code: "out_of_range", message: "start_s beyond the recording" },
-    mutate: set("code", "oops"),
-    mutation: "code not in the enum",
+    mutate: set("code", ""),
+    mutation: "an empty code",
+  },
+  {
+    def: "Error",
+    label: "error, a code this version does not define (the set is open)",
+    doc: { id: 9, type: "error", code: "rate_limited", message: "try again later" },
+    mutate: set("code", 3),
+    mutation: "code not a string",
   },
 ];
 
-/** Cases only one side can reject, or that no valid case can mutate into. */
+/** Documents both validators must reject that no one-field mutation of a valid
+ *  case above produces. */
 const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
   { label: "an unknown message type", doc: { id: 1, type: "ping" } },
   { label: "no type at all", doc: { id: 1 } },
@@ -411,6 +427,10 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
     // Not a valid request (client is empty), and a response may not carry client.
     label: "a hello response carrying client (the hello request's marker field)",
     doc: { id: 1, type: "hello", protocol: "0.1", engine: "e", max_payload_bytes: 1, client: "" },
+  },
+  {
+    label: "a recipe response without sample_slice",
+    doc: { id: 5, type: "recipe", recipe: without("sample_slice")(realRecipe as unknown as Doc) },
   },
   {
     label: "a recipe response carrying handle (the recipe request's marker field)",
@@ -592,7 +612,8 @@ describe("protocol schema: Ajv and zod agree", () => {
   }
 
   test("every error code is accepted by both, and the lists are the same", () => {
-    const schemaCodes = (protocolSchema.$defs.ErrorCode as { enum: string[] }).enum;
+    const schemaCodes = (protocolSchema.$defs.ErrorCode as { anyOf: { enum?: string[] }[] })
+      .anyOf[0].enum as string[];
     expect([...ENGINE_ERROR_CODES]).toEqual(schemaCodes);
     for (const code of schemaCodes) {
       const doc = { id: 1, type: "error", code, message: "m" };
@@ -943,6 +964,12 @@ describe("protocol schema: gaps owned by one side", () => {
       representations: [zarrRep({ ntimes: null })],
     } as unknown as Parameters<typeof boundRepresentation>[0];
     expect(() => boundRepresentation(missing)).toThrow("missing a required field");
+    const notZarr = {
+      ...OPENED,
+      representation: "source",
+      representations: [zarrRep(), { kind: "edf", id: "source" }],
+    } as unknown as Parameters<typeof boundRepresentation>[0];
+    expect(() => boundRepresentation(notZarr)).toThrow("not a listed zarr representation");
   });
 
   test("isZarrRepresentation tells the kinds apart", () => {
@@ -1003,8 +1030,8 @@ describe("protocol schema: gaps owned by one side", () => {
     expect(protocolSchema.description).toContain("that a Range's end is at least its start");
   });
 
-  test("a recipe response must carry a full MCP recipe in zod; the schema only needs an object", () => {
-    const doc = { id: 5, type: "recipe", recipe: {} };
+  test("a recipe response must carry a full MCP recipe in zod; the schema only needs sample_slice", () => {
+    const doc = { id: 5, type: "recipe", recipe: { sample_slice: { start: 0, end: 250 } } };
     expect(validateJson(doc)).toBe(true);
     expect(engineMessageSchema.safeParse(doc).success).toBe(false);
   });

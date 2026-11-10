@@ -12,8 +12,8 @@
  * unknown request field and a client an unknown response field, and both keep
  * it in the parsed value, exactly as Ajv leaves the document alone. No zod
  * schema under `shared/contract/` may be strict, which rejects unknown keys
- * (test/contract-schemas.test.ts), and the JSON Schema follows this mirror so
- * the two keep the same verdicts. A known field with a bad value is still
+ * (test/contract-schemas.test.ts); the JSON Schema leaves its objects open too,
+ * so the two keep the same verdicts. A known field with a bad value is still
  * rejected; a misspelled optional field is ignored, so a client checks the
  * answer (`opened.representation`, a window's `channels` and `dtype`, and a
  * recipe's `channel_slice`). A recipe's `channel_slice` is the half-open range
@@ -58,6 +58,7 @@ export const ENGINE_ERROR_CODES = [
   "decode_error",
   "internal",
 ] as const;
+/** The codes this version defines. The wire set is open (`engineErrorSchema`). */
 export type EngineErrorCode = (typeof ENGINE_ERROR_CODES)[number];
 
 /** Bytes per sample for each payload dtype. */
@@ -274,7 +275,9 @@ export const recipeResponseSchema = z
   .object({
     id,
     type: z.literal("recipe"),
-    recipe: readRecipeSchema,
+    // A protocol recipe always describes one window, so sample_slice is required
+    // here, though the MCP's recipe-only mode may omit it.
+    recipe: readRecipeSchema.extend({ sample_slice: readRecipeSchema.shape.sample_slice.unwrap() }),
     payload_bytes: payloadBytesZero,
   })
   .passthrough()
@@ -303,7 +306,9 @@ export const engineErrorSchema = z
     /** null only when the request's id could not be read (JSON-RPC convention). */
     id: id.nullable(),
     type: z.literal("error"),
-    code: z.enum(ENGINE_ERROR_CODES),
+    /** Open: a later version may add codes, and a client treats one it does not
+     *  know as `internal`. */
+    code: z.union([z.enum(ENGINE_ERROR_CODES), nonEmpty]),
     message: nonEmpty,
     payload_bytes: payloadBytesZero,
   })

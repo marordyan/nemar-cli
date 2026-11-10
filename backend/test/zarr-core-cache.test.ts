@@ -16,6 +16,7 @@ import { readFileSync } from "node:fs";
 import { loadLevel0ArrayMetadata } from "../../shared/zarr/array-metadata.js";
 import type { CacheKey, JsonCache } from "../../shared/zarr/interfaces.js";
 import { loadShardFooter } from "../../shared/zarr/shard-footer.js";
+import { shardEntriesToPairs } from "../../shared/zarr/sharding.js";
 import { mcpJsonCache, projectionUrl } from "../src/mcp/projection-cache.js";
 import type { RecordingToolDeps } from "../src/mcp/tool-types.js";
 import expected from "./fixtures/mcp/nm099500-expected.json";
@@ -145,13 +146,13 @@ describe("shard footer cache (shared/zarr/shard-footer.ts)", () => {
     expect(out.cacheStatus).toBe("miss");
     expect(footerRequests()).toHaveLength(1);
     expect(logged.some((l) => l.level === "warn" && l.args[0] === SCHEMA_WARNING)).toBe(true);
-    // The bad entry was overwritten with the freshly parsed footer.
-    expect(cache.store.get(cache.keyOf(footerKey(0)))).not.toEqual([
-      [-1, 240],
-      [0, 10],
-      [10, 10],
-      [20, 10],
-    ]);
+    // The bad entry was overwritten with the freshly parsed footer: compare with
+    // the real footer from a cold load, not merely "something other than bad".
+    const reference = await loadFooter(new MapJsonCache());
+    if ("error" in reference) throw new Error(reference.error);
+    expect(cache.store.get(cache.keyOf(footerKey(0)))).toEqual(
+      shardEntriesToPairs(reference.entries),
+    );
   });
 
   test("a cached footer with the wrong entry count is re-read", async () => {

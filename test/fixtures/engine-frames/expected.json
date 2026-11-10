@@ -1,0 +1,166 @@
+[
+  {
+    "file": "hello-request.bin",
+    "header": {
+      "id": 1,
+      "type": "hello",
+      "protocol": "0.1",
+      "client": "nemar-py/0.1"
+    },
+    "payload": null
+  },
+  {
+    "file": "opened.bin",
+    "header": {
+      "id": 2,
+      "type": "opened",
+      "handle": "h1",
+      "dataset_id": "nm000103",
+      "recording": "sub-NDARAA075AMK/eeg/sub-NDARAA075AMK_task-DespicableMe_eeg.set",
+      "representation": "eeg_250hz",
+      "record": {
+        "schema_version": "0.3.0",
+        "doc_type": "record",
+        "dataset": "nm000103",
+        "bids_relpath": "sub-NDARAA075AMK/eeg/sub-NDARAA075AMK_task-DespicableMe_eeg.set",
+        "modality": "EEG",
+        "datatype": "eeg",
+        "suffix": "eeg",
+        "file_extension": ".set",
+        "entities": {
+          "subject": "NDARAA075AMK",
+          "task": "DespicableMe"
+        },
+        "signal_summary": {
+          "nchans": 129,
+          "ntimes": 86069,
+          "recording_duration": 172.138,
+          "channel_type_counts": {
+            "EEG": 129
+          }
+        },
+        "provenance": {
+          "digested_at": "2026-06-07T18:42:14.996Z"
+        },
+        "signal_properties": {
+          "sampling_frequency": 500
+        }
+      },
+      "representations": [
+        {
+          "kind": "zarr",
+          "id": "eeg_250hz",
+          "store": "sub-NDARAA075AMK/eeg/sub-NDARAA075AMK_task-DespicableMe_eeg.zarr",
+          "modality": "EEG",
+          "sampling_frequency": 250,
+          "source_sampling_frequency": 500,
+          "nchans": 2,
+          "ntimes": 43034,
+          "recording_duration": 172.136,
+          "scale": [
+            0.5,
+            0.25
+          ],
+          "offset": [
+            0,
+            -1.5
+          ]
+        }
+      ]
+    },
+    "payload": null
+  },
+  {
+    "file": "window-float64.bin",
+    "header": {
+      "id": 3,
+      "type": "window",
+      "start_sample": 500,
+      "n_samples": 3,
+      "channels": [
+        0,
+        1
+      ],
+      "dtype": "float64",
+      "layout": "channel-major",
+      "byte_order": "little",
+      "filled_ranges": [],
+      "payload_bytes": 48
+    },
+    "payload": {
+      "dtype": "float64",
+      "values": [
+        [
+          -1.5,
+          0.1,
+          1e-07
+        ],
+        [
+          2.0,
+          -0.25,
+          3.5
+        ]
+      ]
+    }
+  },
+  {
+    "file": "window-int16-filled.bin",
+    "header": {
+      "id": 4,
+      "type": "window",
+      "start_sample": 100,
+      "n_samples": 4,
+      "channels": [
+        0,
+        1
+      ],
+      "dtype": "int16",
+      "layout": "channel-major",
+      "byte_order": "little",
+      "filled_ranges": [
+        {
+          "start_sample": 102,
+          "end_sample": 104
+        }
+      ],
+      "payload_bytes": 16
+    },
+    "payload": {
+      "dtype": "int16",
+      "values": [
+        [
+          -32768,
+          32767,
+          0,
+          0
+        ],
+        [
+          -1,
+          1234,
+          0,
+          0
+        ]
+      ]
+    }
+  },
+  {
+    "file": "error.bin",
+    "header": {
+      "id": 7,
+      "type": "error",
+      "code": "unknown_handle",
+      "message": "no such handle: h9"
+    },
+    "payload": null
+  },
+  {
+    "file": "error-null-id.bin",
+    "header": {
+      "id": null,
+      "type": "error",
+      "code": "invalid_message",
+      "message": "header is not valid JSON"
+    },
+    "payload": null
+  }
+]

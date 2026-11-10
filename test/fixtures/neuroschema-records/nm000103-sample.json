@@ -1,0 +1,86 @@
+[
+  {
+    "schema_version": "0.3.0",
+    "doc_type": "record",
+    "dataset": "nm000103",
+    "bids_relpath": "sub-NDARAA075AMK/eeg/sub-NDARAA075AMK_task-DespicableMe_eeg.set",
+    "modality": "EEG",
+    "datatype": "eeg",
+    "suffix": "eeg",
+    "file_extension": ".set",
+    "entities": {
+      "subject": "NDARAA075AMK",
+      "task": "DespicableMe"
+    },
+    "signal_summary": {
+      "nchans": 129,
+      "ntimes": 86069,
+      "recording_duration": 172.138,
+      "channel_type_counts": {
+        "EEG": 129
+      }
+    },
+    "provenance": {
+      "digested_at": "2026-06-07T18:42:14.996Z"
+    },
+    "signal_properties": {
+      "sampling_frequency": 500
+    }
+  },
+  {
+    "schema_version": "0.3.0",
+    "doc_type": "record",
+    "dataset": "nm000103",
+    "bids_relpath": "sub-NDARAA075AMK/eeg/sub-NDARAA075AMK_task-DiaryOfAWimpyKid_eeg.set",
+    "modality": "EEG",
+    "datatype": "eeg",
+    "suffix": "eeg",
+    "file_extension": ".set",
+    "entities": {
+      "subject": "NDARAA075AMK",
+      "task": "DiaryOfAWimpyKid"
+    },
+    "signal_summary": {
+      "nchans": 129,
+      "ntimes": 59498,
+      "recording_duration": 118.996,
+      "channel_type_counts": {
+        "EEG": 129
+      }
+    },
+    "provenance": {
+      "digested_at": "2026-06-07T18:42:14.996Z"
+    },
+    "signal_properties": {
+      "sampling_frequency": 500
+    }
+  },
+  {
+    "schema_version": "0.3.0",
+    "doc_type": "record",
+    "dataset": "nm000103",
+    "bids_relpath": "sub-NDARZY019GNZ/eeg/sub-NDARZY019GNZ_task-symbolSearch_eeg.set",
+    "modality": "EEG",
+    "datatype": "eeg",
+    "suffix": "eeg",
+    "file_extension": ".set",
+    "entities": {
+      "subject": "NDARZY019GNZ",
+      "task": "symbolSearch"
+    },
+    "signal_summary": {
+      "nchans": 129,
+      "ntimes": 133234,
+      "recording_duration": 266.468,
+      "channel_type_counts": {
+        "EEG": 129
+      }
+    },
+    "provenance": {
+      "digested_at": "2026-06-07T18:42:14.996Z"
+    },
+    "signal_properties": {
+      "sampling_frequency": 500
+    }
+  }
+]

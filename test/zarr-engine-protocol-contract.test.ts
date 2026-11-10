@@ -635,15 +635,23 @@ describe("protocol schema: Ajv and zod agree", () => {
     }
   });
 
-  test("an id of 2^53 - 1 is the largest both accept", () => {
-    for (const doc of [
-      { id: Number.MAX_SAFE_INTEGER, type: "release", handle: "h1" },
-      { id: Number.MAX_SAFE_INTEGER, type: "error", code: "internal", message: "m" },
-    ]) {
-      const { jsonOk, zod } = both(doc);
-      expect(jsonOk).toBe(true);
-      expect(zod.success).toBe(true);
+  test("on every message, an id of 2^53 - 1 is the largest both accept", () => {
+    const defs = new Set<string>();
+    for (const c of CASES) {
+      if (typeof c.doc.id !== "number") continue;
+      defs.add(c.def);
+      const atCap = both({ ...c.doc, id: Number.MAX_SAFE_INTEGER });
+      expect(atCap.jsonOk, `${c.label} at 2^53 - 1`).toBe(true);
+      expect(atCap.zod.success, `${c.label} at 2^53 - 1`).toBe(true);
+      for (const over of [2 ** 53, 1e300]) {
+        const past = both({ ...c.doc, id: over });
+        expect(past.jsonOk, `${c.label} at ${over}`).toBe(false);
+        expect(past.zod.success, `${c.label} at ${over}`).toBe(false);
+      }
     }
+    // Every message definition that carries an id is covered, Error included.
+    expect(defs.has("Error")).toBe(true);
+    expect(defs.size).toBeGreaterThanOrEqual(10);
   });
 
   test("normalizeErrorCode keeps a defined code and maps anything else to internal", () => {

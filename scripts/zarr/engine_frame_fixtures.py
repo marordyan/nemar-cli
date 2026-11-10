@@ -34,11 +34,19 @@ import struct
 from pathlib import Path
 
 MAGIC = b"NZE0"
-OUT = Path(__file__).resolve().parents[2] / "test" / "fixtures" / "engine-frames"
+ROOT = Path(__file__).resolve().parents[2]
+OUT = ROOT / "test" / "fixtures" / "engine-frames"
+# A real neuroschema record, as NEMAR publishes it (records.json of nm000103),
+# so the opened frame carries nested JSON exactly as the engine will pass it on.
+RECORD = json.loads(
+    (ROOT / "test" / "fixtures" / "neuroschema-records" / "nm000103-sample.json").read_text(
+        encoding="utf-8"
+    )
+)[0]
 
 
 def frame(header: dict, payload: bytes = b"") -> bytes:
-    body = json.dumps(header, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+    body = json.dumps(header, separators=(",", ":"), ensure_ascii=True, allow_nan=False).encode("ascii")
     pad = (-(8 + len(body))) % 8
     body += b" " * pad
     assert (8 + len(body)) % 8 == 0
@@ -65,6 +73,36 @@ FIXTURES = [
     (
         "hello-request.bin",
         {"id": 1, "type": "hello", "protocol": "0.1", "client": "nemar-py/0.1"},
+        None,
+    ),
+    (
+        "opened.bin",
+        {
+            "id": 2,
+            "type": "opened",
+            "handle": "h1",
+            "dataset_id": "nm000103",
+            "recording": RECORD["bids_relpath"],
+            "representation": "eeg_250hz",
+            "record": RECORD,
+            "representations": [
+                {
+                    "kind": "zarr",
+                    "id": "eeg_250hz",
+                    "store": RECORD["bids_relpath"].removesuffix(".set") + ".zarr",
+                    "modality": "EEG",
+                    # Whole numbers stay ints: Python would print 250.0 where
+                    # JavaScript prints 250, and the bytes must match.
+                    "sampling_frequency": 250,
+                    "source_sampling_frequency": 500,
+                    "nchans": 2,
+                    "ntimes": 43034,
+                    "recording_duration": 172.136,
+                    "scale": [0.5, 0.25],
+                    "offset": [0, -1.5],
+                }
+            ],
+        },
         None,
     ),
     (

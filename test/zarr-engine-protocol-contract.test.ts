@@ -9,12 +9,23 @@
  * table runs through Ajv (draft 2020-12) and zod, and both must give the same
  * verdict and, on success, the same parsed value.
  *
- * Two documented gaps, each tested on the side that owns it and NOT in the
+ * Documented gaps, each tested on the side that owns it and NOT in the
  * shared table (they would split the verdicts by design):
  *  - the `window` `payload_bytes` arithmetic (zod only; JSON Schema cannot
  *    express it);
+ *  - in `opened`: unique representation ids, a bound `representation` that is
+ *    listed, is `zarr` and is fully described, and `scale`/`offset` with
+ *    `nchans` entries (zod only);
+ *  - a `Range` whose `end` is below its `start` (zod only);
  *  - the full shape of a `recipe` response (zod reuses the MCP recipe schema;
- *    the JSON Schema types it as a bare object in v0).
+ *    the JSON Schema types only its `channel_slice` and `sample_slice` in v0;
+ *    the required `sample_slice` is in the shared table).
+ *
+ * `opened.record` uses a real neuroschema record (test/fixtures/
+ * neuroschema-records). The group's rate, source rate, ntimes and duration
+ * follow nm000103's index (500 Hz file, 250 Hz group), so the cases show the
+ * record and the representation disagreeing on rate as they do in production;
+ * the channel count, scale and offset are illustrative.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -24,22 +35,35 @@ import { buildReadRecipe } from "../shared/contract/mcp.js";
 import {
   ENGINE_ERROR_CODES,
   ENGINE_PROTOCOL_VERSION,
+  type EngineError,
+  type WireErrorCode,
+  boundRepresentation,
   engineMessageSchema,
   engineRequestSchema,
   engineResponseSchema,
+  isZarrRepresentation,
+  normalizeErrorCode,
+  openedSchema,
   windowSchema,
 } from "../shared/contract/zarr-engine-protocol.js";
 import { zarrIndexSchema } from "../shared/contract/zarr-index.js";
 import protocolSchema from "../shared/zarr-engine-protocol.schema.json";
+import realRecords from "./fixtures/neuroschema-records/nm000103-sample.json";
 import indexFixture from "./fixtures/zarr-index-v3.json";
 
 const ajv = new Ajv2020({ strict: true, allErrors: true });
 const validateJson = ajv.compile(protocolSchema as object);
 
-/** A real recipe, built the way the MCP builds one from the checked-in index fixture. */
+/** A real recipe, built the way the MCP builds one from the checked-in index
+ *  fixture, for one window (a protocol recipe always carries sample_slice). */
 const realRecipe = (() => {
   const index = zarrIndexSchema.parse(indexFixture);
-  return buildReadRecipe({ index, store: index.stores[0], groupName: "eeg_250hz" });
+  return buildReadRecipe({
+    index,
+    store: index.stores[0],
+    groupName: "eeg_250hz",
+    sampleSlice: { start: 0, end: 250 },
+  });
 })();
 
 type Doc = Record<string, unknown>;
@@ -64,27 +88,59 @@ const set =
   (key: string, value: unknown) =>
   (d: Doc): Doc => ({ ...d, [key]: value });
 
-const OPENED = {
+const REAL_RECORD = realRecords[0] as unknown as Doc;
+
+/** A zarr representation; the bound one has scale and offset. */
+const zarrRep = (over: Doc = {}): Doc => ({
+  kind: "zarr",
+  id: "eeg_250hz",
+  store: "sub-NDARAA075AMK/eeg/sub-NDARAA075AMK_task-DespicableMe_eeg.zarr",
+  modality: "EEG",
+  sampling_frequency: 250,
+  source_sampling_frequency: 500,
+  nchans: 4,
+  ntimes: 43034,
+  recording_duration: 172.136,
+  scale: [0.5, 0.5, 0.25, 1],
+  offset: [0, 0, -1.5, 0],
+  ...over,
+});
+
+const OPENED: Doc = {
   id: 2,
   type: "opened",
   handle: "h1",
-  dataset_id: "nm099500",
-  recording: "sub-synth/eeg/rec",
-  group: "eeg_250hz",
-  n_channels: 4,
-  sample_rate_hz: 250,
-  n_samples: 5000,
-  scale: [0.5, 0.5, 0.25, 1],
-  offset: [0, 0, -1.5, 0],
+  dataset_id: "nm000103",
+  recording: "sub-NDARAA075AMK/eeg/sub-NDARAA075AMK_task-DespicableMe_eeg.set",
+  representation: "eeg_250hz",
+  record: REAL_RECORD,
+  representations: [zarrRep()],
 };
+
+const setRep =
+  (i: number, over: Doc) =>
+  (d: Doc): Doc => {
+    const reps = [...(d.representations as Doc[])];
+    reps[i] = { ...reps[i], ...over };
+    return { ...d, representations: reps };
+  };
 
 const CASES: Case[] = [
   {
     def: "HelloRequest",
     label: "hello request",
     doc: { id: 1, type: "hello", protocol: "0.1", client: "nemar-py/0.1" },
-    mutate: set("protocol", "0.2"),
-    mutation: "protocol 0.2 (v0 matches exactly)",
+    mutate: set("protocol", "v0.1"),
+    mutation: "protocol not MAJOR.MINOR",
+  },
+  {
+    // Schema-valid on purpose: the engine, not validation, answers a version it
+    // does not speak, with unsupported_version (not invalid_message).
+    def: "HelloRequest",
+    label: "hello request naming a version the engine may not speak",
+    doc: { id: 1, type: "hello", protocol: "1.0", client: "nemar-py/2.0" },
+    mutate: set("protocol", 1),
+    mutation: "protocol a number",
   },
   {
     def: "HelloRequest",
@@ -108,42 +164,70 @@ const CASES: Case[] = [
   },
   {
     def: "OpenRequest",
-    label: "open request, group omitted",
+    label: "open request, representation omitted",
     doc: { id: 2, type: "open", dataset_id: "nm099500", recording: "sub-synth/eeg/rec" },
     mutate: set("dataset_id", "NM099500"),
     mutation: "dataset_id uppercase",
   },
   {
     def: "OpenRequest",
-    label: "open request, group given",
+    label: "open request, representation given",
     doc: {
       id: 3,
       type: "open",
       dataset_id: "nm099500",
       recording: "sub-synth/eeg/rec",
-      group: "eeg_250hz",
+      representation: "eeg_250hz",
     },
-    mutate: addUnknown,
-    mutation: "unknown extra field",
+    mutate: set("representation", ""),
+    mutation: "empty representation",
   },
   {
     def: "Opened",
-    label: "opened",
+    label: "opened with a real neuroschema record",
+    doc: OPENED,
+    mutate: setRep(0, { nchans: 0 }),
+    mutation: "nchans 0",
+  },
+  {
+    def: "Opened",
+    label: "opened with no record",
+    doc: { ...OPENED, record: null },
+    mutate: set("record", "not a record"),
+    mutation: "record a string",
+  },
+  {
+    def: "Opened",
+    label: "opened with a second, unbound zarr group (nulls where the index has none)",
     doc: {
-      id: 2,
-      type: "opened",
-      handle: "h1",
-      dataset_id: "nm099500",
-      recording: "sub-synth/eeg/rec",
-      group: "eeg_250hz",
-      n_channels: 4,
-      sample_rate_hz: 250,
-      n_samples: 5000,
-      scale: [0.5, 0.5, 0.25, 1],
-      offset: [0, 0, -1.5, 0],
+      ...OPENED,
+      representations: [
+        zarrRep(),
+        zarrRep({
+          id: "eeg_1000hz",
+          sampling_frequency: 1000,
+          source_sampling_frequency: null,
+          nchans: 2,
+          ntimes: null,
+          recording_duration: null,
+          modality: null,
+          scale: null,
+          offset: null,
+        }),
+      ],
     },
-    mutate: set("n_channels", 0),
-    mutation: "n_channels 0",
+    mutate: setRep(1, { scale: "none" }),
+    mutation: "scale a string on the unbound group",
+  },
+  {
+    def: "Opened",
+    label: "opened listing a representation of a kind v0 does not define",
+    doc: {
+      ...OPENED,
+      representations: [zarrRep(), { kind: "edf", id: "source", url: "https://example.org/x" }],
+    },
+    mutate: setRep(1, { id: "" }),
+    mutation: "empty id on the unknown kind",
   },
   {
     def: "ReadWindowRequest",
@@ -249,16 +333,45 @@ const CASES: Case[] = [
     def: "Error",
     label: "error, a different code",
     doc: { id: 8, type: "error", code: "out_of_range", message: "start_s beyond the recording" },
-    mutate: set("code", "oops"),
-    mutation: "code not in the enum",
+    mutate: set("code", ""),
+    mutation: "an empty code",
+  },
+  {
+    def: "Error",
+    label: "error, a code this version does not define (the set is open)",
+    doc: { id: 9, type: "error", code: "rate_limited", message: "try again later" },
+    mutate: set("code", 3),
+    mutation: "code not a string",
   },
 ];
 
-/** Cases only one side can reject, or that no valid case can mutate into. */
+/** Documents both validators must reject that no one-field mutation of a valid
+ *  case above produces. */
 const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
   { label: "an unknown message type", doc: { id: 1, type: "ping" } },
   { label: "no type at all", doc: { id: 1 } },
   { label: "a request without an id", doc: { type: "release", handle: "h1" } },
+  {
+    label: "hello request, protocol 0.1.2",
+    doc: { id: 1, type: "hello", protocol: "0.1.2", client: "c" },
+  },
+  { label: "hello request, protocol 1", doc: { id: 1, type: "hello", protocol: "1", client: "c" } },
+  {
+    label: "hello request, protocol with a leading zero (00.1)",
+    doc: { id: 1, type: "hello", protocol: "00.1", client: "c" },
+  },
+  {
+    label: "hello request, protocol with a leading zero (0.01)",
+    doc: { id: 1, type: "hello", protocol: "0.01", client: "c" },
+  },
+  {
+    label: "hello request, protocol empty",
+    doc: { id: 1, type: "hello", protocol: "", client: "c" },
+  },
+  {
+    label: "hello response naming another version",
+    doc: { id: 1, type: "hello", protocol: "0.2", engine: "e", max_payload_bytes: 1 },
+  },
   {
     label: "hello response without max_payload_bytes",
     doc: { id: 1, type: "hello", protocol: "0.1", engine: "e" },
@@ -271,10 +384,61 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
     label: "hello response with a fractional max_payload_bytes",
     doc: { id: 1, type: "hello", protocol: "0.1", engine: "e", max_payload_bytes: 1.5 },
   },
-  { label: "opened without scale", doc: { ...OPENED, scale: undefined } },
-  { label: "opened without offset", doc: { ...OPENED, offset: undefined } },
-  { label: "opened with a string in scale", doc: { ...OPENED, scale: ["0.5", 1, 1, 1] } },
-  { label: "opened with offset not an array", doc: { ...OPENED, offset: 0 } },
+  { label: "opened without record (null, not absent)", doc: without("record")(OPENED) },
+  { label: "opened without representations", doc: without("representations")(OPENED) },
+  { label: "opened with no representations", doc: { ...OPENED, representations: [] } },
+  { label: "opened without representation", doc: without("representation")(OPENED) },
+  { label: "opened with a record that is an array", doc: { ...OPENED, record: [REAL_RECORD] } },
+  {
+    label: "a zarr representation without scale (null, not absent)",
+    doc: setRep(0, { scale: undefined })(OPENED),
+  },
+  {
+    label: "a zarr representation without store",
+    doc: setRep(0, { store: undefined })(OPENED),
+  },
+  {
+    label: "a zarr representation with a string in scale",
+    doc: setRep(0, { scale: ["0.5", 1, 1, 1] })(OPENED),
+  },
+  {
+    label: "a zarr representation with a fractional nchans",
+    doc: setRep(0, { nchans: 1.5 })(OPENED),
+  },
+  {
+    label: "a zarr representation with a zero sampling_frequency",
+    doc: setRep(0, { sampling_frequency: 0 })(OPENED),
+  },
+  { label: "a representation without kind", doc: setRep(0, { kind: undefined })(OPENED) },
+  { label: "a zarr representation with ntimes 0", doc: setRep(0, { ntimes: 0 })(OPENED) },
+  {
+    label: "an empty window (n_samples 0)",
+    doc: {
+      id: 3,
+      type: "window",
+      start_sample: 0,
+      n_samples: 0,
+      channels: [0],
+      dtype: "float64",
+      layout: "channel-major",
+      byte_order: "little",
+      filled_ranges: [],
+      payload_bytes: 0,
+    },
+  },
+  {
+    // Not a valid request (client is empty), and a response may not carry client.
+    label: "a hello response carrying client (the hello request's marker field)",
+    doc: { id: 1, type: "hello", protocol: "0.1", engine: "e", max_payload_bytes: 1, client: "" },
+  },
+  {
+    label: "a recipe response without sample_slice",
+    doc: { id: 5, type: "recipe", recipe: without("sample_slice")(realRecipe as unknown as Doc) },
+  },
+  {
+    label: "a recipe response carrying handle (the recipe request's marker field)",
+    doc: { id: 5, type: "recipe", recipe: realRecipe as unknown as Doc, handle: "h1" },
+  },
   {
     label: "read_window request with a repeated channel",
     doc: { id: 3, type: "read_window", handle: "h", start_s: 0, duration_s: 1, channels: [1, 1] },
@@ -304,7 +468,7 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
       id: 3,
       type: "window",
       start_sample: 0,
-      n_samples: 0,
+      n_samples: 1,
       channels: [0],
       dtype: "int16",
       layout: "channel-major",
@@ -313,6 +477,10 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
     },
   },
   { label: "an error with id 0", doc: { id: 0, type: "error", code: "internal", message: "m" } },
+  {
+    label: "a request with id 2^53 (past the largest integer a double holds exactly)",
+    doc: { id: 2 ** 53, type: "release", handle: "h1" },
+  },
   {
     label: "an error with a string id",
     doc: { id: "1", type: "error", code: "internal", message: "m" },
@@ -337,20 +505,20 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
       id: null,
       type: "window",
       start_sample: 0,
-      n_samples: 0,
+      n_samples: 1,
       channels: [0],
       dtype: "float64",
       layout: "channel-major",
       byte_order: "little",
       filled_ranges: [],
-      payload_bytes: 0,
+      payload_bytes: 8,
     },
   },
   { label: "a fractional id", doc: { id: 1.5, type: "released" } },
   { label: "a string id", doc: { id: "1", type: "released" } },
   {
-    // With open responses, {client, engine} is a valid hello RESPONSE carrying an
-    // unknown field, so the old "both" row is gone; neither is still invalid.
+    // {client, engine} is a valid hello REQUEST carrying an unknown field (every
+    // message is open), so the old "both" row is gone; neither is still invalid.
     label: "hello with neither client nor engine",
     doc: { id: 1, type: "hello", protocol: "0.1" },
   },
@@ -396,25 +564,16 @@ describe("protocol schema: Ajv and zod agree", () => {
     });
   }
 
-  // Requests are closed, responses are open (ADR 0118): the engine rejects an
-  // unknown field in a request, a client ignores one in a response.
+  // Every message is open (ADR 0118): an engine ignores an unknown request
+  // field and a client an unknown response field, and both keep it.
   for (const c of CASES) {
-    const isRequest = c.def.endsWith("Request");
-    if (isRequest) {
-      test(`${c.label}: an unknown extra field is rejected by both (request)`, () => {
-        const { jsonOk, zod } = both(addUnknown(c.doc));
-        expect(jsonOk).toBe(false);
-        expect(zod.success).toBe(false);
-      });
-    } else {
-      test(`${c.label}: an unknown extra field is accepted by both and kept (response)`, () => {
-        const doc = addUnknown(c.doc);
-        const { jsonOk, zod } = both(doc);
-        expect(jsonOk, JSON.stringify(validateJson.errors)).toBe(true);
-        expect(zod.success).toBe(true);
-        if (zod.success) expect(zod.data).toEqual(doc);
-      });
-    }
+    test(`${c.label}: an unknown extra field is accepted by both and kept`, () => {
+      const doc = addUnknown(c.doc);
+      const { jsonOk, zod } = both(doc);
+      expect(jsonOk, JSON.stringify(validateJson.errors)).toBe(true);
+      expect(zod.success).toBe(true);
+      if (zod.success) expect(zod.data).toEqual(doc);
+    });
   }
 
   test("an unknown field inside a filled range is accepted by both and kept (it is part of a response)", () => {
@@ -436,6 +595,21 @@ describe("protocol schema: Ajv and zod agree", () => {
     if (zod.success) expect(zod.data).toEqual(doc);
   });
 
+  test("an unknown field inside a representation is accepted by both and kept (it is part of a response)", () => {
+    for (const doc of [
+      setRep(0, { chunk_samples: 1000 })(OPENED),
+      {
+        ...OPENED,
+        representations: [zarrRep(), { kind: "edf", id: "source", url: "https://example.org/x" }],
+      },
+    ]) {
+      const { jsonOk, zod } = both(doc);
+      expect(jsonOk, JSON.stringify(validateJson.errors)).toBe(true);
+      expect(zod.success).toBe(true);
+      if (zod.success) expect(zod.data).toEqual(doc);
+    }
+  });
+
   for (const r of REJECTED_BY_BOTH) {
     test(`${r.label}: rejected by both`, () => {
       const { jsonOk, zod } = both(r.doc);
@@ -445,8 +619,14 @@ describe("protocol schema: Ajv and zod agree", () => {
   }
 
   test("every error code is accepted by both, and the lists are the same", () => {
-    const schemaCodes = (protocolSchema.$defs.ErrorCode as { enum: string[] }).enum;
+    const schemaCodes = (protocolSchema.$defs.ErrorCode as { anyOf: { enum?: string[] }[] })
+      .anyOf[0].enum as string[];
     expect([...ENGINE_ERROR_CODES]).toEqual(schemaCodes);
+    // The open branch: any non-empty string, so a later version's code still validates.
+    expect((protocolSchema.$defs.ErrorCode as { anyOf: unknown[] }).anyOf[1]).toEqual({
+      type: "string",
+      minLength: 1,
+    });
     for (const code of schemaCodes) {
       const doc = { id: 1, type: "error", code, message: "m" };
       const { jsonOk, zod } = both(doc);
@@ -455,9 +635,47 @@ describe("protocol schema: Ajv and zod agree", () => {
     }
   });
 
-  test("the protocol version constant is the one the schema pins", () => {
-    const hello = protocolSchema.$defs.HelloRequest.properties.protocol;
-    expect(hello).toEqual({ const: ENGINE_PROTOCOL_VERSION });
+  test("on every message, an id of 2^53 - 1 is the largest both accept", () => {
+    const defs = new Set<string>();
+    for (const c of CASES) {
+      if (typeof c.doc.id !== "number") continue;
+      defs.add(c.def);
+      const atCap = both({ ...c.doc, id: Number.MAX_SAFE_INTEGER });
+      expect(atCap.jsonOk, `${c.label} at 2^53 - 1`).toBe(true);
+      expect(atCap.zod.success, `${c.label} at 2^53 - 1`).toBe(true);
+      for (const over of [2 ** 53, 1e300]) {
+        const past = both({ ...c.doc, id: over });
+        expect(past.jsonOk, `${c.label} at ${over}`).toBe(false);
+        expect(past.zod.success, `${c.label} at ${over}`).toBe(false);
+      }
+    }
+    // Every message definition that carries an id is covered, Error included.
+    expect(defs.has("Error")).toBe(true);
+    expect(defs.size).toBeGreaterThanOrEqual(10);
+  });
+
+  test("normalizeErrorCode keeps a defined code and maps anything else to internal", () => {
+    for (const code of ENGINE_ERROR_CODES) expect(normalizeErrorCode(code)).toBe(code);
+    expect(normalizeErrorCode("rate_limited")).toBe("internal");
+    expect(normalizeErrorCode("NOT_FOUND")).toBe("internal");
+    expect(normalizeErrorCode("toString")).toBe("internal");
+    // A parsed error keeps the code it was sent; normalizing is the client's step.
+    const parsed = engineMessageSchema.parse({
+      id: 1,
+      type: "error",
+      code: "rate_limited",
+      message: "m",
+    }) as EngineError;
+    const wire: WireErrorCode = parsed.code;
+    expect(wire).toBe("rate_limited");
+    expect(normalizeErrorCode(wire)).toBe("internal");
+  });
+
+  test("the protocol version constant is the one the hello response pins", () => {
+    const response = protocolSchema.$defs.HelloResponse.properties.protocol;
+    expect(response.const).toBe(ENGINE_PROTOCOL_VERSION);
+    const pattern = new RegExp(protocolSchema.$defs.HelloRequest.properties.protocol.pattern);
+    expect(pattern.test(ENGINE_PROTOCOL_VERSION)).toBe(true);
   });
 
   test("request and response unions partition the message union", () => {
@@ -466,6 +684,152 @@ describe("protocol schema: Ajv and zod agree", () => {
       const isRes = engineResponseSchema.safeParse(c.doc).success;
       expect(isReq !== isRes, c.label).toBe(true);
     }
+  });
+});
+
+describe("protocol schema: forward compatibility of requests", () => {
+  // An older engine must accept a request from a newer client that carries
+  // fields the older version does not define, and must still reject a request
+  // whose KNOWN fields are invalid. Every request case is checked both ways.
+  const requests = CASES.filter((c) => c.def.endsWith("Request"));
+
+  test("every request message type is covered", () => {
+    const covered = new Set(requests.map((c) => c.def));
+    const requestDefs = (protocolSchema.oneOf as { $ref: string }[])
+      .map((r) => r.$ref.replace("#/$defs/", ""))
+      .filter((n) => n.endsWith("Request"));
+    expect([...covered].sort()).toEqual(requestDefs.sort());
+  });
+
+  for (const c of requests) {
+    const future = { ...c.doc, since_v1_1: { mode: "fast" }, tags: ["a", "b"] };
+
+    test(`${c.label}: future fields are accepted, kept, and it stays a request`, () => {
+      const { jsonOk, zod } = both(future);
+      expect(jsonOk, JSON.stringify(validateJson.errors)).toBe(true);
+      expect(zod.success).toBe(true);
+      if (zod.success) expect(zod.data).toEqual(future);
+      expect(engineRequestSchema.safeParse(future).success).toBe(true);
+      expect(engineResponseSchema.safeParse(future).success).toBe(false);
+    });
+
+    test(`${c.label}: with future fields, ${c.mutation} is still rejected by both`, () => {
+      const bad = c.mutate(future);
+      expect(bad).not.toEqual(future);
+      const { jsonOk, zod } = both(bad);
+      expect(jsonOk).toBe(false);
+      expect(zod.success).toBe(false);
+    });
+  }
+
+  test("a required field cannot be replaced by an unknown one", () => {
+    // Open does not mean loose: dropping a required field and adding another is invalid.
+    const doc = { id: 3, type: "read_window", handle: "h1", start_seconds: 0, duration_s: 1 };
+    const { jsonOk, zod } = both(doc);
+    expect(jsonOk).toBe(false);
+    expect(zod.success).toBe(false);
+  });
+
+  test("known fields keep their types when unknown fields are present", () => {
+    const base = { id: 3, type: "read_window", handle: "h1", start_s: 0, duration_s: 1, extra: 1 };
+    for (const [key, value] of [
+      ["start_s", "0"],
+      ["duration_s", -1],
+      ["channels", [0, 0]],
+      ["units", "volts"],
+      ["handle", 7],
+      ["id", 0],
+      ["payload_bytes", 8],
+    ] as const) {
+      const { jsonOk, zod } = both({ ...base, [key]: value });
+      expect(jsonOk, key).toBe(false);
+      expect(zod.success, key).toBe(false);
+    }
+  });
+
+  test("a newer client's hello with extra fields validates, same major or not; the engine decides by version", () => {
+    for (const protocol of ["0.2", "1.1"]) {
+      const doc = { id: 1, type: "hello", protocol, client: "nemar-py/3", capabilities: ["x"] };
+      const { jsonOk, zod } = both(doc);
+      expect(jsonOk, protocol).toBe(true);
+      expect(zod.success, protocol).toBe(true);
+      expect(engineRequestSchema.safeParse(doc).success, protocol).toBe(true);
+    }
+  });
+
+  test("an open request that still names the old v0 draft field group is accepted, the field kept as unknown", () => {
+    const doc = { id: 3, type: "open", dataset_id: "nm099500", recording: "r", group: "eeg_250hz" };
+    const { jsonOk, zod } = both(doc);
+    expect(jsonOk).toBe(true);
+    expect(zod.success).toBe(true);
+    // Not a known field: it selects nothing, and opened.representation tells the client what was bound.
+    if (zod.success) expect(zod.data).toEqual(doc);
+  });
+
+  test("a request carrying the response's fields is still a request", () => {
+    // hello: client marks the request, so engine and max_payload_bytes are just unknown here.
+    const hello = {
+      id: 1,
+      type: "hello",
+      protocol: "0.1",
+      client: "c",
+      engine: "e",
+      max_payload_bytes: 9,
+    };
+    // recipe: handle marks the request, so a recipe object is just unknown here. A
+    // REAL recipe, so the zod response branch would accept it but for the handle refine.
+    const recipe = {
+      id: 5,
+      type: "recipe",
+      handle: "h1",
+      start_s: 0,
+      duration_s: 1,
+      recipe: realRecipe as unknown as Doc,
+    };
+    for (const doc of [hello, recipe]) {
+      const { jsonOk, zod } = both(doc);
+      expect(jsonOk, JSON.stringify(validateJson.errors)).toBe(true);
+      expect(zod.success).toBe(true);
+      expect(engineRequestSchema.safeParse(doc).success).toBe(true);
+      expect(engineResponseSchema.safeParse(doc).success).toBe(false);
+    }
+  });
+});
+
+describe("protocol schema: request and response entry points", () => {
+  const compileDef = (name: string) =>
+    new Ajv2020({ strict: true }).compile({
+      ...protocolSchema,
+      oneOf: undefined,
+      $ref: `#/$defs/${name}`,
+    } as object);
+  const requestRoot = compileDef("Request");
+  const responseRoot = compileDef("Response");
+
+  test("they partition the root: every case is exactly one of request or response, as in zod", () => {
+    for (const c of CASES) {
+      const isReq = requestRoot(c.doc) as boolean;
+      const isRes = responseRoot(c.doc) as boolean;
+      expect(isReq !== isRes, c.label).toBe(true);
+      expect(isReq, c.label).toBe(engineRequestSchema.safeParse(c.doc).success);
+      expect(isRes, c.label).toBe(engineResponseSchema.safeParse(c.doc).success);
+    }
+  });
+
+  test("they list the same messages as the root", () => {
+    const names = (refs: { $ref: string }[]) => refs.map((r) => r.$ref.replace("#/$defs/", ""));
+    const req = names(protocolSchema.$defs.Request.oneOf as { $ref: string }[]);
+    const res = names(protocolSchema.$defs.Response.oneOf as { $ref: string }[]);
+    expect([...req, ...res].sort()).toEqual(
+      names(protocolSchema.oneOf as { $ref: string }[]).sort(),
+    );
+  });
+
+  test("an echoed request is not an answer", () => {
+    const echoed = { id: 1, type: "release", handle: "h" };
+    expect(validateJson(echoed)).toBe(true);
+    expect(responseRoot(echoed)).toBe(false);
+    expect(engineResponseSchema.safeParse(echoed).success).toBe(false);
   });
 });
 
@@ -529,24 +893,145 @@ describe("protocol schema: gaps owned by one side", () => {
     expect(windowSchema.safeParse(window({ dtype: "int16", payload_bytes: 48 })).success).toBe(
       false,
     );
-    // An empty window carries no payload.
-    expect(windowSchema.safeParse(window({ n_samples: 0, payload_bytes: 0 })).success).toBe(true);
+    // A window is never empty: the time rule makes that out_of_range instead.
+    expect(windowSchema.safeParse(window({ n_samples: 0, payload_bytes: 0 })).success).toBe(false);
   });
 
-  test("opened scale and offset must have n_channels entries (zod)", () => {
+  test("the bound representation must be listed (zod)", () => {
     expect(engineMessageSchema.safeParse(OPENED).success).toBe(true);
-    expect(engineMessageSchema.safeParse({ ...OPENED, scale: [1, 1, 1] }).success).toBe(false);
-    expect(engineMessageSchema.safeParse({ ...OPENED, offset: [0, 0, 0, 0, 0] }).success).toBe(
+    expect(engineMessageSchema.safeParse({ ...OPENED, representation: "eeg_500hz" }).success).toBe(
       false,
     );
-    expect(engineMessageSchema.safeParse({ ...OPENED, scale: [], offset: [] }).success).toBe(false);
+    expect(validateJson({ ...OPENED, representation: "eeg_500hz" })).toBe(true);
+  });
+
+  test("representation ids must be unique (zod)", () => {
+    const doc = { ...OPENED, representations: [zarrRep(), zarrRep({ scale: null, offset: null })] };
+    expect(engineMessageSchema.safeParse(doc).success).toBe(false);
+    expect(validateJson(doc)).toBe(true);
+  });
+
+  test("a bound zarr representation must have its geometry, scale and offset (zod)", () => {
+    for (const key of ["sampling_frequency", "nchans", "ntimes", "scale", "offset"]) {
+      const doc = setRep(0, { [key]: null })(OPENED);
+      expect(engineMessageSchema.safeParse(doc).success, key).toBe(false);
+      expect(validateJson(doc), key).toBe(true);
+    }
+    // The same nulls are fine on a representation the handle is not bound to.
+    const unbound = {
+      ...OPENED,
+      representation: "eeg_1000hz",
+      representations: [
+        zarrRep({
+          sampling_frequency: null,
+          nchans: null,
+          ntimes: null,
+          scale: null,
+          offset: null,
+        }),
+        zarrRep({ id: "eeg_1000hz" }),
+      ],
+    };
+    expect(engineMessageSchema.safeParse(unbound).success).toBe(true);
+  });
+
+  test("scale and offset must have nchans entries (zod)", () => {
+    for (const over of [
+      { scale: [1, 1, 1] },
+      { offset: [0, 0, 0, 0, 0] },
+      { scale: [], offset: [] },
+    ]) {
+      const doc = setRep(0, over)(OPENED);
+      expect(engineMessageSchema.safeParse(doc).success, JSON.stringify(over)).toBe(false);
+    }
+  });
+
+  test("an unbound representation with no nchans may carry scale and offset of any length (both copies)", () => {
+    const doc = {
+      ...OPENED,
+      representations: [
+        zarrRep(),
+        zarrRep({ id: "eeg_1000hz", nchans: null, scale: [1, 2], offset: [0, 0] }),
+      ],
+    };
+    const { jsonOk, zod } = both(doc);
+    expect(jsonOk, JSON.stringify(validateJson.errors)).toBe(true);
+    expect(zod.success).toBe(true);
   });
 
   test("the JSON Schema cannot check that length and says so; Ajv accepts the mismatch", () => {
-    const desc = protocolSchema.$defs.Opened.properties.scale.description;
-    expect(desc).toContain("length equals n_channels");
+    const desc = protocolSchema.$defs.ZarrRepresentation.properties.scale.description;
+    expect(desc).toContain("nchans entries");
     expect(desc).toContain("physical = digital * scale[c] + offset[c]");
-    expect(validateJson({ ...OPENED, scale: [1, 1, 1] })).toBe(true);
+    expect(validateJson(setRep(0, { scale: [1, 1, 1] })(OPENED))).toBe(true);
+  });
+
+  test("in v0 the bound representation must be a zarr one (zod)", () => {
+    const doc = {
+      ...OPENED,
+      representation: "source",
+      representations: [zarrRep({ scale: null, offset: null }), { kind: "edf", id: "source" }],
+    };
+    expect(engineMessageSchema.safeParse(doc).success).toBe(false);
+    expect(validateJson(doc)).toBe(true);
+  });
+
+  test("boundRepresentation returns the bound zarr representation with its guaranteed fields", () => {
+    const parsed = openedSchema.parse({
+      ...OPENED,
+      representation: "eeg_1000hz",
+      representations: [
+        zarrRep({ scale: null, offset: null }),
+        zarrRep({
+          id: "eeg_1000hz",
+          sampling_frequency: 1000,
+          nchans: 2,
+          scale: [1, 2],
+          offset: [0, 0],
+        }),
+      ],
+    });
+    const bound = boundRepresentation(parsed);
+    // The non-null typing is checked where it is declared: shared/ is in the root
+    // typecheck, and the helper's return must satisfy BoundZarrRepresentation.
+    const rate: number = bound.sampling_frequency;
+    const scale: number[] = bound.scale;
+    expect(bound.id).toBe("eeg_1000hz");
+    expect(rate).toBe(1000);
+    expect(scale).toEqual([1, 2]);
+    expect(bound.nchans).toBe(2);
+  });
+
+  test("boundRepresentation refuses an opened that did not pass the schema", () => {
+    const unlisted = { ...OPENED, representation: "nope" } as unknown as Parameters<
+      typeof boundRepresentation
+    >[0];
+    expect(() => boundRepresentation(unlisted)).toThrow("not a listed zarr representation");
+    const missing = {
+      ...OPENED,
+      representations: [zarrRep({ ntimes: null })],
+    } as unknown as Parameters<typeof boundRepresentation>[0];
+    expect(() => boundRepresentation(missing)).toThrow("missing a required field");
+    const notZarr = {
+      ...OPENED,
+      representation: "source",
+      representations: [zarrRep(), { kind: "edf", id: "source" }],
+    } as unknown as Parameters<typeof boundRepresentation>[0];
+    expect(() => boundRepresentation(notZarr)).toThrow("not a listed zarr representation");
+  });
+
+  test("isZarrRepresentation tells the kinds apart", () => {
+    expect(isZarrRepresentation(zarrRep() as never)).toBe(true);
+    expect(isZarrRepresentation({ kind: "edf", id: "source" })).toBe(false);
+  });
+
+  test("the record is passed through: any object is accepted and kept by both", () => {
+    const record = { ...REAL_RECORD, extensions: { nemar: { processed: false } } };
+    const doc = { ...OPENED, record };
+    const { jsonOk, zod } = both(doc);
+    expect(jsonOk).toBe(true);
+    expect(zod.success).toBe(true);
+    if (zod.success) expect(zod.data).toEqual(doc);
   });
 
   test("the JSON Schema documents the arithmetic it cannot enforce", () => {
@@ -556,8 +1041,45 @@ describe("protocol schema: gaps owned by one side", () => {
     expect(validateJson(window({ payload_bytes: 47 }))).toBe(true);
   });
 
-  test("a recipe response must carry a full MCP recipe in zod; the schema only needs an object", () => {
-    const doc = { id: 5, type: "recipe", recipe: {} };
+  test("a recipe's channel_slice and sample_slice are Range objects in both copies", () => {
+    const withSlices = (over: Doc) => ({
+      id: 5,
+      type: "recipe",
+      recipe: { ...(realRecipe as unknown as Doc), ...over },
+    });
+    const good = withSlices({
+      sample_slice: { start: 0, end: 250 },
+      channel_slice: { start: 2, end: 6 },
+    });
+    expect(validateJson(good), JSON.stringify(validateJson.errors)).toBe(true);
+    expect(engineMessageSchema.safeParse(good).success).toBe(true);
+    for (const [label, over] of [
+      ["channel_slice as an array", { channel_slice: [2, 6] }],
+      ["channel_slice with stop instead of end", { channel_slice: { start: 2, stop: 6 } }],
+      ["channel_slice with a negative start", { channel_slice: { start: -1, end: 6 } }],
+      ["sample_slice with a fractional end", { sample_slice: { start: 0, end: 2.5 } }],
+      ["sample_slice as a string", { sample_slice: "0:250" }],
+    ] as const) {
+      const doc = withSlices(over as Doc);
+      expect(validateJson(doc), label).toBe(false);
+      expect(engineMessageSchema.safeParse(doc).success, label).toBe(false);
+    }
+  });
+
+  test("a backwards Range is rejected by zod; JSON Schema cannot compare the two fields and says so", () => {
+    const doc = {
+      id: 5,
+      type: "recipe",
+      recipe: { ...(realRecipe as unknown as Doc), channel_slice: { start: 6, end: 2 } },
+    };
+    expect(engineMessageSchema.safeParse(doc).success).toBe(false);
+    expect(validateJson(doc)).toBe(true);
+    expect(protocolSchema.$defs.Range.description).toContain("JSON Schema cannot");
+    expect(protocolSchema.description).toContain("that a Range's end is at least its start");
+  });
+
+  test("a recipe response must carry a full MCP recipe in zod; the schema only needs sample_slice", () => {
+    const doc = { id: 5, type: "recipe", recipe: { sample_slice: { start: 0, end: 250 } } };
     expect(validateJson(doc)).toBe(true);
     expect(engineMessageSchema.safeParse(doc).success).toBe(false);
   });
@@ -569,20 +1091,100 @@ describe("protocol schema: documented semantics", () => {
   test("the time rule and out_of_range are stated on both window-addressed requests", () => {
     for (const name of ["ReadWindowRequest", "RecipeRequest"]) {
       const d = defs[name].description ?? "";
-      expect(d, name).toContain("floor(start_s * sample_rate_hz + 0.5)");
-      expect(d, name).toContain("floor(duration_s * sample_rate_hz + 0.5)");
+      expect(d, name).toContain("floor(start_s * sampling_frequency + 0.5)");
+      expect(d, name).toContain("floor(duration_s * sampling_frequency + 0.5)");
       expect(d, name).toContain("out_of_range");
       expect(d, name).toContain("never returns a truncated window");
     }
   });
 
-  test("the time rule is the MCP read_window rule", () => {
-    const source = readFileSync(
-      new URL("../backend/src/mcp/tools/read-window.ts", import.meta.url),
-      "utf8",
+  test("the two window-addressed requests say what each returns", () => {
+    expect(defs.ReadWindowRequest.description).toContain("Asks for the samples of a window");
+    expect(defs.RecipeRequest.description).toContain("Asks for the read recipe of a window");
+    expect(defs.RecipeRequest.description).toContain("Nothing is read");
+  });
+
+  test("opened says the recording is always the BIDS path, and how the default is picked", () => {
+    expect(protocolSchema.$defs.Opened.properties.recording.description).toContain(
+      "Always the recording's BIDS path",
     );
-    expect(source).toContain("Math.floor(args.start_s * rate + 0.5)");
-    expect(source).toContain("Math.floor(args.duration_s * rate + 0.5)");
+    const open = protocolSchema.$defs.OpenRequest.properties.representation.description;
+    expect(open).toContain("Zarr index's group order");
+    expect(open).toContain("a recording with no zarr representation is not_found");
+    expect(protocolSchema.description).toContain("the bound representation is a zarr one");
+  });
+
+  test("the record's version stamp is not a reason to reject it", () => {
+    const d = protocolSchema.$defs.NeuroschemaRecord.description;
+    expect(d).toContain("do not reject it on the stamp");
+    // Conformance is an expectation checked on samples, not a guarantee.
+    expect(d).toContain("checked on sample published records");
+    expect(protocolSchema.$defs.HelloResponse.properties.protocol.description).toContain(
+      "a client relies on a request field only when this version defines it",
+    );
+    expect(d).toContain("signal_properties.sampling_frequency");
+  });
+
+  test("growth of the lists is described: error codes open, payload enums closed", () => {
+    const desc = protocolSchema.description;
+    expect(desc).toContain("error codes are open");
+    expect(desc).toContain("treats an error code it does not know as internal");
+    expect(desc).toContain("dtype, layout and byte_order are closed");
+    expect(desc).toContain("json.dumps(..., allow_nan=False)");
+    expect(desc).toContain(
+      "must refuse a window whose dtype, layout or byte_order it does not know",
+    );
+    expect(desc).toContain(
+      "A field added to a request in a minor must be safe for an older engine to ignore",
+    );
+    expect(defs.ErrorCode.description).toContain("treats a code it does not know as internal");
+    expect(defs.ErrorCode.description).toContain("any non-empty string is valid");
+  });
+
+  test("a window echoes the request's channels, in order", () => {
+    expect(defs.ChannelIndices.description).toContain(
+      "channels equals the request's channels exactly, in the request's order",
+    );
+  });
+
+  test("a response field added in a minor must be safe for an older client to ignore", () => {
+    expect(protocolSchema.description).toContain(
+      "a field added to a response in a minor must be safe for an older client to ignore",
+    );
+  });
+
+  test("hello versions compare as integers: no leading zeros, multi-digit parts allowed", () => {
+    for (const protocol of ["0.1", "0.10", "1.0", "10.2"]) {
+      const doc = { id: 1, type: "hello", protocol, client: "c" };
+      expect(validateJson(doc), protocol).toBe(true);
+      expect(engineMessageSchema.safeParse(doc).success, protocol).toBe(true);
+    }
+    expect(protocolSchema.$defs.HelloRequest.properties.protocol.description).toContain(
+      "compared as integers",
+    );
+  });
+
+  test("every error code is defined, with which ones are worth retrying", () => {
+    const desc = defs.ErrorCode.description ?? "";
+    for (const code of ENGINE_ERROR_CODES) expect(desc, code).toContain(`${code}:`);
+    expect(desc).toContain("a later retry may succeed");
+    expect(desc).toContain("retrying does not help");
+  });
+
+  test("hello comes first, once, and the engine survives unsupported_version", () => {
+    const desc = defs.HelloRequest.description ?? "";
+    expect(desc).toContain("any other request before a successful hello is invalid_message");
+    expect(desc).toContain("a second hello after one");
+    expect(desc).toContain("After unsupported_version the engine keeps running");
+  });
+
+  test("a channel past the end and adjacent filled ranges are described", () => {
+    expect(defs.ChannelIndices.description).toContain("an index of nchans or more is out_of_range");
+    expect(defs.ErrorCode.description).toContain("out_of_range: the window falls outside");
+    expect(defs.ErrorCode.description).toContain("a channel index is nchans or more");
+    expect(protocolSchema.$defs.Window.properties.filled_ranges.description).toContain(
+      "adjacent ranges may or may not be merged",
+    );
   });
 
   test("filled_ranges, channels and the version check are described", () => {
@@ -590,11 +1192,72 @@ describe("protocol schema: documented semantics", () => {
     for (const word of ["end-exclusive", "sorted ascending", "non-overlapping", "fill value"]) {
       expect(window, word).toContain(word);
     }
-    expect(defs.ChannelIndices.description).toContain("all store channels in ascending order");
+    expect(defs.ChannelIndices.description).toContain(
+      "all channels of the bound representation in ascending order",
+    );
     expect(defs.ChannelIndices.description).toContain("payload row i is channels[i]");
-    expect(protocolSchema.description).toContain("unsupported_version");
+    expect(protocolSchema.$defs.HelloRequest.description).toContain("unsupported_version");
+    expect(protocolSchema.$defs.HelloRequest.description).toContain("invalid_message");
+    // The version is read first, so a hello that is otherwise invalid for this
+    // version still gets unsupported_version.
+    expect(protocolSchema.$defs.HelloRequest.description).toContain(
+      "reads protocol before validating anything else",
+    );
+    expect(protocolSchema.description).toContain("reads a hello's protocol before validating");
     expect(protocolSchema.description).toContain("must check them itself");
     expect(protocolSchema.description).toContain("MUST ignore unknown fields in a response");
-    expect(protocolSchema.description).toContain("MUST reject a request with an unknown field");
+    expect(protocolSchema.description).toContain("MUST ignore unknown fields in a request");
+    expect(protocolSchema.description).toContain(
+      "a known field with an invalid value is still invalid_message",
+    );
+    // Open requests ignore a misspelled optional field, so clients must check the answer.
+    expect(protocolSchema.description).toContain(
+      "a client MUST check the answer against what it asked for",
+    );
+    for (const field of [
+      "opened.representation",
+      "channels and dtype",
+      "a recipe's channel_slice",
+    ]) {
+      expect(protocolSchema.description, field).toContain(field);
+    }
+    expect(protocolSchema.description).toContain("absent when the request named no channels");
+  });
+
+  test("the three texts agree on a recipe's channel_slice", () => {
+    // The ADR, the JSON Schema and the zod docblock carry the SAME sentence, so a
+    // client in any language can check the field; removing any clause from any of
+    // the three fails here. Backticks and line wrapping are not part of the words.
+    const SENTENCE =
+      "A recipe's channel_slice is the half-open range from the lowest requested channel " +
+      "to one past the highest, so it can include channels the request did not name, " +
+      "and it is absent when the request named no channels.";
+    const words = (s: string) => s.replace(/`/g, "").replace(/\s+/g, " ");
+    const adr = words(
+      readFileSync(
+        new URL(
+          "../.context/decisions/0118-the-zarr-read-core-is-shared-and-the-local-engine-speaks-a-versioned-protocol.md",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    // In the zod file the sentence sits in a JSDoc block: drop each line's " * ".
+    const zodFile = words(
+      readFileSync(
+        new URL("../shared/contract/zarr-engine-protocol.ts", import.meta.url),
+        "utf8",
+      ).replace(/\n\s*\*\s?/g, " "),
+    );
+    const recipe = words(protocolSchema.$defs.RecipeRequest.description);
+    for (const [name, text] of [
+      ["ADR 0118", adr],
+      ["zod docblock", zodFile],
+      ["RecipeRequest description", recipe],
+    ] as const) {
+      expect(text, name).toContain(SENTENCE);
+    }
+    // The client-check rule in decision 6 names it too.
+    expect(adr).toContain("a recipe's channel_slice (absent when the request named no channels)");
   });
 });

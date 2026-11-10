@@ -10,6 +10,67 @@
     "payload": null
   },
   {
+    "file": "opened.bin",
+    "header": {
+      "id": 2,
+      "type": "opened",
+      "handle": "h1",
+      "dataset_id": "nm000103",
+      "recording": "sub-NDARAA075AMK/eeg/sub-NDARAA075AMK_task-DespicableMe_eeg.set",
+      "representation": "eeg_250hz",
+      "record": {
+        "schema_version": "0.3.0",
+        "doc_type": "record",
+        "dataset": "nm000103",
+        "bids_relpath": "sub-NDARAA075AMK/eeg/sub-NDARAA075AMK_task-DespicableMe_eeg.set",
+        "modality": "EEG",
+        "datatype": "eeg",
+        "suffix": "eeg",
+        "file_extension": ".set",
+        "entities": {
+          "subject": "NDARAA075AMK",
+          "task": "DespicableMe"
+        },
+        "signal_summary": {
+          "nchans": 129,
+          "ntimes": 86069,
+          "recording_duration": 172.138,
+          "channel_type_counts": {
+            "EEG": 129
+          }
+        },
+        "provenance": {
+          "digested_at": "2026-06-07T18:42:14.996Z"
+        },
+        "signal_properties": {
+          "sampling_frequency": 500
+        }
+      },
+      "representations": [
+        {
+          "kind": "zarr",
+          "id": "eeg_250hz",
+          "store": "sub-NDARAA075AMK/eeg/sub-NDARAA075AMK_task-DespicableMe_eeg.zarr",
+          "modality": "EEG",
+          "sampling_frequency": 250,
+          "source_sampling_frequency": 500,
+          "nchans": 2,
+          "ntimes": 43034,
+          "recording_duration": 172.136,
+          "scale": [
+            0.5,
+            0.25
+          ],
+          "offset": [
+            0,
+            -1.5
+          ]
+        }
+      ]
+    },
+    "payload": null
+  },
+  {
     "file": "window-float64.bin",
     "header": {
       "id": 3,

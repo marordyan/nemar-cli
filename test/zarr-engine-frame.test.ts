@@ -20,6 +20,11 @@ import {
   decodeFrame,
   encodeFrame,
 } from "../shared/zarr/protocol-frame.js";
+import {
+  compileNeuroschemaRecordValidator,
+  formatAjvErrors,
+} from "./contract/neuroschema-validator.js";
+import realRecords from "./fixtures/neuroschema-records/nm000103-sample.json";
 
 const DIR = new URL("./fixtures/engine-frames/", import.meta.url);
 
@@ -77,14 +82,23 @@ function expectFrameError(kind: FrameErrorKind, fn: () => unknown) {
 }
 
 describe("golden frames written by Python", () => {
-  test("the fixture set covers hello, both window dtypes and an error", () => {
+  test("the fixture set covers hello, opened, both window dtypes and an error", () => {
     expect(expected.map((e) => e.file).sort()).toEqual([
       "error-null-id.bin",
       "error.bin",
       "hello-request.bin",
+      "opened.bin",
       "window-float64.bin",
       "window-int16-filled.bin",
     ]);
+  });
+
+  test("the opened frame carries the published neuroschema record unchanged, and it validates", () => {
+    const { header } = decodeFrame(fileBytes("opened.bin"));
+    expect(header.record).toEqual(realRecords[0]);
+    const validate = compileNeuroschemaRecordValidator();
+    const ok = validate(header.record);
+    if (!ok) throw new Error(formatAjvErrors(validate));
   });
 
   for (const exp of expected) {

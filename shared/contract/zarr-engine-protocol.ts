@@ -60,11 +60,23 @@ export const ENGINE_ERROR_CODES = [
 ] as const;
 /** The codes this version defines. The wire set is open (`engineErrorSchema`). */
 export type EngineErrorCode = (typeof ENGINE_ERROR_CODES)[number];
+/** An error code as received: a defined code or one a later version adds. The
+ *  `string & {}` keeps editors suggesting the defined codes. */
+export type WireErrorCode = EngineErrorCode | (string & {});
+
+/** The code a client acts on: a defined code unchanged, anything else
+ *  `internal`, as the protocol requires of a code the client does not know. */
+export function normalizeErrorCode(code: string): EngineErrorCode {
+  return (ENGINE_ERROR_CODES as readonly string[]).includes(code)
+    ? (code as EngineErrorCode)
+    : "internal";
+}
 
 /** Bytes per sample for each payload dtype. */
 export const ENGINE_DTYPE_BYTES = { float64: 8, int16: 2 } as const;
 
-const id = z.number().int().min(1);
+/** 1 to 2^53 - 1: a double holds every id exactly, so any client echoes it unchanged. */
+const id = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
 const handle = z.string().min(1);
 const datasetId = z.string().regex(/^[a-z]{2}[0-9]{6}$/);
 const nonEmpty = z.string().min(1);
@@ -308,7 +320,7 @@ export const engineErrorSchema = z
     type: z.literal("error"),
     /** Open: a later version may add codes, and a client treats one it does not
      *  know as `internal`. */
-    code: z.union([z.enum(ENGINE_ERROR_CODES), nonEmpty]),
+    code: z.union([z.enum(ENGINE_ERROR_CODES), nonEmpty]) as z.ZodType<WireErrorCode>,
     message: nonEmpty,
     payload_bytes: payloadBytesZero,
   })

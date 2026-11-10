@@ -85,7 +85,8 @@
     "Id": {
       "type": "integer",
       "minimum": 1,
-      "description": "Client-chosen request id; a response echoes the id of the request it answers."
+      "maximum": 9007199254740991,
+      "description": "Client-chosen request id; a response echoes the id of the request it answers. At most 2^53 - 1 (9007199254740991), the largest integer a double holds exactly, so an engine or client whose JSON parser reads numbers as doubles (JavaScript, MATLAB, many Python setups) echoes it unchanged."
     },
     "PayloadBytesZero": {
       "const": 0,

@@ -69,7 +69,7 @@ A Zarr store is not the file, though: one recording can have several groups, and
    The first draft closed requests; that was reversed on 2026-11-08 for two reasons.
    No zod schema under `shared/contract/` may call `.strict()` (`test/contract-schemas.test.ts`: one strict schema there breaks every un-upgraded client), and the protocol's JSON Schema leaves its objects open too, so the two keep giving the same verdicts.
    And an older engine refusing a newer client's request is the failure open messages exist to prevent.
-   Error codes are an open set (any non-empty string validates), so a client that validates against `$defs/Response` still receives a code a later version adds, and treats a code it does not know as `internal`. A client refuses a `window` whose `dtype`, `layout` or `byte_order` it does not know rather than guess at the bytes.
+   Error codes are an open set (any non-empty string validates), so a client that validates against `$defs/Response` still receives a code a later version adds, and treats a code it does not know as `internal` (the zod mirror's `normalizeErrorCode` does this; a parsed error keeps the code it was sent). A client refuses a `window` whose `dtype`, `layout` or `byte_order` it does not know rather than guess at the bytes.
    A field added to a request in a minor must be safe for an older engine to ignore, and a client relies on a newer request field only when the engine's `hello` response names a version that defines it.
    Likewise a field added to a response in a minor must be safe for an older client to ignore: anything that changes how a payload is read comes as a new `dtype`, `layout` or `byte_order` value, which an older client refuses, or in a new major.
 7. **Versioning.**

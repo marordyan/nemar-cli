@@ -35,11 +35,14 @@ import { buildReadRecipe } from "../shared/contract/mcp.js";
 import {
   ENGINE_ERROR_CODES,
   ENGINE_PROTOCOL_VERSION,
+  type EngineError,
+  type WireErrorCode,
   boundRepresentation,
   engineMessageSchema,
   engineRequestSchema,
   engineResponseSchema,
   isZarrRepresentation,
+  normalizeErrorCode,
   openedSchema,
   windowSchema,
 } from "../shared/contract/zarr-engine-protocol.js";
@@ -475,6 +478,10 @@ const REJECTED_BY_BOTH: { label: string; doc: Doc }[] = [
   },
   { label: "an error with id 0", doc: { id: 0, type: "error", code: "internal", message: "m" } },
   {
+    label: "a request with id 2^53 (past the largest integer a double holds exactly)",
+    doc: { id: 2 ** 53, type: "release", handle: "h1" },
+  },
+  {
     label: "an error with a string id",
     doc: { id: "1", type: "error", code: "internal", message: "m" },
   },
@@ -626,6 +633,34 @@ describe("protocol schema: Ajv and zod agree", () => {
       expect(jsonOk, code).toBe(true);
       expect(zod.success, code).toBe(true);
     }
+  });
+
+  test("an id of 2^53 - 1 is the largest both accept", () => {
+    for (const doc of [
+      { id: Number.MAX_SAFE_INTEGER, type: "release", handle: "h1" },
+      { id: Number.MAX_SAFE_INTEGER, type: "error", code: "internal", message: "m" },
+    ]) {
+      const { jsonOk, zod } = both(doc);
+      expect(jsonOk).toBe(true);
+      expect(zod.success).toBe(true);
+    }
+  });
+
+  test("normalizeErrorCode keeps a defined code and maps anything else to internal", () => {
+    for (const code of ENGINE_ERROR_CODES) expect(normalizeErrorCode(code)).toBe(code);
+    expect(normalizeErrorCode("rate_limited")).toBe("internal");
+    expect(normalizeErrorCode("NOT_FOUND")).toBe("internal");
+    expect(normalizeErrorCode("toString")).toBe("internal");
+    // A parsed error keeps the code it was sent; normalizing is the client's step.
+    const parsed = engineMessageSchema.parse({
+      id: 1,
+      type: "error",
+      code: "rate_limited",
+      message: "m",
+    }) as EngineError;
+    const wire: WireErrorCode = parsed.code;
+    expect(wire).toBe("rate_limited");
+    expect(normalizeErrorCode(wire)).toBe("internal");
   });
 
   test("the protocol version constant is the one the hello response pins", () => {

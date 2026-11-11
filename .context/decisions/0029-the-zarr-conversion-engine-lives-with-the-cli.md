@@ -7,8 +7,8 @@ hand-placed... because it must exist before the clone does"). That was accurate 
 transition moment this decision landed in, but is stale as a description of steady-state
 operation: once the clone exists, cron invokes the CLONE's own copy of the script, and the
 same `git reset --hard` that redeploys the Python driver redeploys `hallu-zarr.sh` too.
-Hand-placement is only for bootstrapping a node that has no clone yet. See AGENTS.md's Zarr
-paragraph and `https://docs.nemar.org/admin/operations/systems-inventory/` §3.3 for the corrected, current description;
+Hand-placement is only for bootstrapping a node that has no clone yet. See
+`https://docs.nemar.org/admin/operations/systems-inventory/` §3.3 for the corrected, current description;
 the decision text below is left as originally written.
 **Date:** 2026-08-22
 **Owner:** Seyed Yahya Shirazi

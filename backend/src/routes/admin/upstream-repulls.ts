@@ -26,8 +26,8 @@
  *                                        claim: the claim's age, the dataset fences, the screen
  *                                        for this administrator, the live head (writes nothing)
  *   POST /admin/repulls/:id/merged       record a merge, after reading it on GitHub
- *   POST /admin/repulls/:id/merge-trailers/accept   accept a squash merge made without its
- *                                        trailers, after reading it on GitHub, and append the one
+ *   POST /admin/repulls/:id/merge-trailers/accept   accept a squash or plain merge made without
+ *                                        its trailers, after reading it on GitHub, and append the one
  *                                        ledger line that names it to `main`
  *   POST /admin/repulls/:id/released     record a release, after reading the version row and tag
  *

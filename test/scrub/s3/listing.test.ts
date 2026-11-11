@@ -111,7 +111,9 @@ describe("listings", () => {
     async () => {
       standin = startS3Standin();
       for (let i = 0; i < 8; i++) standin.putObject(BUCKET, `q/k${i}`, one);
-      // Every listing request takes 1.5 s; four pages are 6 s, one call is allowed 4 s.
+      // Every listing request takes 1.5 s; four pages are 6 s, one call is allowed 5 s. The limit
+      // was 4 s until the real aws CLI's startup under four test workers pushed one page past it
+      // (the first dev push after sharding); a page is 1.5 s plus the CLI, so 5 s leaves 3.5 s.
       standin.stallNext("GET", 1500, 4);
       await withCtx(
         standin,
@@ -120,7 +122,7 @@ describe("listings", () => {
           expect(keys.length).toBe(8);
         },
         BUCKET,
-        4000,
+        5000,
       );
     },
     SLOW,

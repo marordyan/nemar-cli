@@ -1,0 +1,254 @@
+[
+  {
+    "test-name": "oidcc-server",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-userinfo-get",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-userinfo-post-header",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-userinfo-post-body",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-ensure-request-without-nonce-succeeds-for-code-flow",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-scope-profile",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-scope-email",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-alternate-happy-flow",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-display-page",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-display-popup",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-prompt-login",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-prompt-none-logged-in",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-max-age-1",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-max-age-10000",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-ensure-request-with-unknown-parameter-succeeds",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-id-token-hint",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-login-hint",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-ui-locales",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-claims-locales",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-ensure-request-with-acr-values-succeeds",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-codereuse",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-codereuse-30seconds",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-ensure-post-request-succeeds",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-claims-essential",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-refresh-token",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): PKCE stays mandatory (S256, no plain), and the suite's Basic modules send no code_challenge, so the authorization request is refused with invalid_request at its first step. The module cannot go further; what it would test after that is not exercised by this run."
+  },
+  {
+    "test-name": "oidcc-prompt-none-not-logged-in",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckErrorFromAuthorizationEndpointIsOneThatRequiredAUserInterface",
+    "expected-result": "failure",
+    "comment": "Decision 3a (B6 conformance run, owner-approved): the request carries no PKCE challenge, so NEMAR answers invalid_request before it decides that the person is not signed in, and the test expects login_required."
+  },
+  {
+    "test-name": "oidcc-server-client-secret-post",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "",
+    "condition": "EnsureServerConfigurationSupportsClientSecretPost",
+    "expected-result": "failure",
+    "comment": "Decision 3b (B6 conformance run, owner-approved): NEMAR refuses client_secret_post, and discovery lists only client_secret_basic, so the suite records this failure and goes on with the module."
+  },
+  {
+    "test-name": "oidcc-server-client-secret-post",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "current-block": "Verify authorization endpoint response",
+    "condition": "CheckIfAuthorizationEndpointError",
+    "expected-result": "failure",
+    "comment": "Decisions 3b and 3a (B6 conformance run, owner-approved): the suite goes on after the client_secret_post check above and sends the authorization request, which stops at the missing PKCE challenge (decision 3a), so the refusal of the secret at the token endpoint is not reached here; NEMAR's own token endpoint tests hold it."
+  }
+]

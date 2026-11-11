@@ -75,8 +75,11 @@ jobs:
           git fetch origin main
           # Regular merge (no fast-forward) preserves the release commit
           # graph and matches the project's "dev -> main uses --merge" rule
-          # in reverse.
-          git merge --no-ff origin/main -m "chore: sync dev with main after ${{ steps.tag.outputs.tag }}"
+          # in reverse. A hotfix released from main conflicts with dev on the
+          # two version files only, so the script resolves package.json and
+          # backend/package.json to main's side; the next step bumps dev. Any
+          # other conflict aborts the merge and fails the run for a person.
+          scripts/ci/sync-dev-merge.sh "chore: sync dev with main after ${{ steps.tag.outputs.tag }}"
 
       - name: Setup Bun
         if: steps.tag.outputs.skip != 'true'

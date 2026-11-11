@@ -131,7 +131,8 @@ with your own GitHub token (GH_TOKEN, else \`gh auth token\`). It never merges.
                button, say). It waits for the tag v<N.0.0> and the version row (its DOI) first.
                Then --accept-merge-trailers "<reason>" accepts a merge without its trailers, on a
                re-pull you opened, only once this run and then the Worker have read that it is
-               the squash merge of the record's own pull request, at its recorded head (or one
+               the squash merge, or GitHub's plain merge commit (two parents, the merged head
+               second), of the record's own pull request, at its recorded head (or one
                enrichment moved), on the record's base (or one enrichment moved), with the
                re-pull's tree outside .nemar/ and .github/; the Worker records your reason and,
                when the merge appended the delta scrub's ledger line, appends to the ledger on

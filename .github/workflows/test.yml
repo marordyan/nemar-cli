@@ -240,6 +240,9 @@ jobs:
             workflows:
               - '.github/workflows/**'
               - '.github/dataset-workflows/**'
+              # The composite actions every test job calls (git-annex, German locale). Without
+              # this a PR that edits only an action would skip every job and merge unverified.
+              - '.github/actions/**'
             # Zarr conversion engine (epic #1108 Phase 1 / #1109). Repatriated
             # from nemarDatasets/.github, where test-generate-zarr.yml used to
             # run these; that workflow is retired and this filter replaces it.
@@ -576,54 +579,10 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
 
-      # git-annex comes from the Ubuntu mirror, which is sometimes slow for this one package for
-      # minutes at a time: in two runs, 3 of 14 shards spent 5 to 7 minutes on a 16.6 MB download
-      # at 40 to 60 kB/s, and a retry hit the same stall. With five runners that stall is still likely
-      # in any one run and sets its wall time, so the three packages (the other dependencies are
-      # on the runner image already) are cached and installed from the cache when it is there.
-      # A cache is readable by the ref that wrote it and the refs it was cut from, so the first
-      # run on a new branch still uses the mirror. On a miss, or when the cached packages do not
-      # install, they come from the mirror: downloaded first with a limit per attempt so a stall
-      # is retried (a retry resumes the partial file), and the last attempt has none, so a slow
-      # mirror still ends in an install and not a failure. The download-only step also leaves the
-      # .deb files this job caches for the next run.
-      - name: Ubuntu release
-        id: ubuntu
-        run: echo "release=$(lsb_release -rs)" >> "$GITHUB_OUTPUT"
-
-      - name: Restore the git-annex packages
-        uses: actions/cache@v4
-        with:
-          path: ~/annex-debs
-          key: git-annex-debs-${{ runner.arch }}-${{ steps.ubuntu.outputs.release }}-v1
-
-      # The last mirror attempt below may take 30 minutes by design; this step limit
-      # still stops it at 20 so the failure names this step, not the whole job.
+      # git-annex comes from cached packages when the cache has them, else from the mirror with a
+      # bounded retry: see .github/actions/install-git-annex/action.yml.
       - name: Install git-annex
-        timeout-minutes: 20
-        run: |
-          if compgen -G "$HOME/annex-debs/git-annex_*.deb" > /dev/null \
-            && sudo dpkg -i "$HOME"/annex-debs/*.deb && git annex version > /dev/null; then
-            echo "installed git-annex from the cached packages"
-            exit 0
-          fi
-          echo "no usable cached packages; installing from the mirror"
-          for attempt in 1 2 3 4 5; do
-            limit=60
-            [ "$attempt" -eq 5 ] && limit=1800
-            if sudo timeout "$limit" apt-get update \
-              && sudo timeout "$limit" apt-get install -y --download-only git-annex; then
-              break
-            fi
-            echo "::warning::apt attempt $attempt failed or timed out"
-          done
-          sudo apt-get install -y git-annex
-          mkdir -p "$HOME/annex-debs"
-          # The cache is an optimization. A package the runner image already carries is not in
-          # apt's cache, and its missing file must not fail a job whose install just succeeded.
-          cp /var/cache/apt/archives/git-annex_*.deb /var/cache/apt/archives/git-remote-gcrypt_*.deb \
-            /var/cache/apt/archives/nocache_*.deb "$HOME/annex-debs/" \
-            || echo "::warning::not every git-annex package could be cached"
+        uses: ./.github/actions/install-git-annex
 
       - name: Install dependencies
         run: bun install
@@ -670,7 +629,12 @@ jobs:
           log="$RUNNER_TEMP/scrub-shard.log"
 
           # pipefail keeps bun's own exit status: a failing test fails this step.
-          bun run test:scrub --shard="$shard/$SHARD_TOTAL" --timings "$timings" --update-timings 2>&1 | tee "$log"
+          # --parallel=2, not one worker per core. These suites use ephemeral ports and per-process
+          # temp directories, so workers do not share state, but they spawn the real aws CLI, whose
+          # startup is slow under load: with 4 workers on the 4-vCPU runner, listing.test.ts's
+          # 4 s per-call limit was missed on the first dev push (passed in the PR run). Local shard
+          # 1/5: 256 s serial, 90 s at 4 workers, 653 pass, 0 fail.
+          bun run test:scrub --shard="$shard/$SHARD_TOTAL" --timings "$timings" --update-timings --parallel=2 2>&1 | tee "$log"
 
           esc=$(printf '\033')
           plain=$(sed -E "s/${esc}\[[0-9;]*m//g" "$log")
@@ -876,7 +840,7 @@ jobs:
     if: needs.changes.outputs.unit_pure_due == 'true'
     # A missing tool fails instead of skipping (test/scrub/helpers/require-tools.ts,
     # test/helpers/in-german.ts). This job installs git-annex ("Install git-annex"), the German
-    # locale ("Install the German locale"), Python and uv ("Setup Python", "Setup uv"); the aws CLI
+    # locale ("Start/Wait for the German locale"), Python and uv ("Setup Python", "Setup uv"); the aws CLI
     # comes with the runner image; "Tool versions" names each before a suite runs.
     env:
       NEMAR_REQUIRE_SCRUB_TOOLS: "1"
@@ -902,19 +866,17 @@ jobs:
       # Under 30 s at p95, but the Ubuntu mirror can stall on this one package for minutes
       # (see scrub-tools-shard), and #1667 saw it hang for an hour.
       - name: Install git-annex
-        timeout-minutes: 10
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git-annex
+        uses: ./.github/actions/install-git-annex
 
       # test/import-annex-uuid-preflight.test.ts and test/import-upstream-moved-guard.test.ts run git
       # in German, to show an outcome is read from a status and not from git's message. Without the
       # de_DE.UTF-8 locale git speaks English and those cases assert nothing, so under this job's
       # NEMAR_REQUIRE_SCRUB_TOOLS=1 they fail instead (test/helpers/in-german.ts). The language pack
-      # generates the locale and carries git's German catalog; the mirror was updated just above.
-      - name: Install the German locale
-        timeout-minutes: 10
-        run: sudo apt-get install -y language-pack-de-base
+      # generates the locale and carries git's German catalog; it installs in the background (see the action).
+      - name: Start the German locale install
+        uses: ./.github/actions/german-locale
+        with:
+          phase: start
 
       # test/identifier-scrub.test.ts and test/identifier-dates.test.ts read files back through
       # an independent EDF reader run by uv. Without uv here those cases skipped, and a skip
@@ -926,6 +888,19 @@ jobs:
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Install backend dependencies
+        run: cd backend && bun install
+
+      # Started after the git-annex install; it needs to be done before the tools are listed
+      # and the tests run, and the dependency installs above overlap it.
+      - name: Wait for the German locale
+        uses: ./.github/actions/german-locale
+        with:
+          phase: wait
 
       # Under this job's NEMAR_REQUIRE_SCRUB_TOOLS=1 a suite that needs a tool fails instead of
       # skipping (test/scrub/helpers/require-tools.ts). The aws CLI comes with the runner image and
@@ -940,11 +915,6 @@ jobs:
           aws --version
           locale -a | grep -ix 'de_DE.utf8'
 
-      - name: Install dependencies
-        run: bun install
-
-      - name: Install backend dependencies
-        run: cd backend && bun install
 
       # The website's transcriptions of shared/contract/account-copy.ts and
       # shared/contract/publication-review-copy.ts, so test/account-copy-parity.test.ts
@@ -991,6 +961,33 @@ jobs:
             src/lib/publication-review-copy.ts
           sparse-checkout-cone-mode: false
           ref: staging
+
+      # nemar-process's copy of the observation schema and the two documents its observer wrote (and of the
+      # Tapis execution-system template, for the queue-memory drift test), so
+      # test/compute-observation-contract.unit.test.ts can compare them with ours byte for byte (epic
+      # #2005 phase A7, ADR 0118 amendment of 2026-11-06). Without it that comparison found no checkout
+      # and skipped: the drift claim was enforced on developer machines and nowhere else.
+      #
+      # nemarOrg/nemar-process is PUBLIC, so no token is needed. Sparse, non-cone: one schema file and
+      # one fixture directory, a few kilobytes. It lands in process-copy/ at the repo root, which the
+      # unit-pure file glob does not reach.
+      #
+      # `feature/issue-1-epic-process`, the integration branch of that repository, where the copy lands
+      # through its own pull request. Move this to its `main` when that epic merges. Until the pull
+      # request that adds the schema there has merged, this step finds no such files and the test FAILS
+      # (NEMAR_REQUIRE_PROCESS_OBSERVATION_DRIFT below), which is deliberate: a broken checkout must not quietly
+      # disable the comparison.
+      - name: Check out nemar-process's observation schema and fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: nemarOrg/nemar-process
+          path: process-copy
+          sparse-checkout: |
+            observer/schema/observation-v1.schema.json
+            tests/observer/fixtures/
+            deploy/tapis/systems/exec.json.tmpl
+          sparse-checkout-cone-mode: false
+          ref: feature/issue-1-epic-process
 
       # The deployed copies of onboard-openneuro.yml, run-pr-review.yml,
       # run-publication-review.yml and run-upstream-repull.yml, for the same reason
@@ -1075,6 +1072,16 @@ jobs:
           # Same checkout, same rule, for the page-owned words of the publication
           # review (ADR 0102, #1780): a path that is not there FAILS.
           NEMAR_WEBSITE_REVIEW_COPY: website-copy/src/lib/publication-review-copy.ts
+          # The nemar-process checkout above, for the observation schema and fixtures. A path that is
+          # not there FAILS, as above.
+          NEMAR_PROCESS_OBSERVATION_DIR: process-copy
+          NEMAR_REQUIRE_PROCESS_OBSERVATION_DRIFT: "1"
+          # The same checkout, for backend/test/compute-queues.test.ts: the queues' maxMemoryMB in the
+          # execution-system template (deploy/tapis/systems/exec.json.tmpl, added to the sparse list
+          # above) are compared with QUEUE_MAX_MEMORY_MB. Without these two the comparison SKIPPED
+          # in CI, so the drift check ran on developer machines only. A missing template FAILS.
+          NEMAR_PROCESS_DIR: process-copy
+          NEMAR_REQUIRE_PROCESS_QUEUES: "1"
           NEMAR_DATASET_WORKFLOW_LIVE: dataset-workflows-live/.github/workflows/onboard-openneuro.yml
           NEMAR_PR_REVIEW_WORKFLOW_LIVE: dataset-workflows-live/.github/workflows/run-pr-review.yml
           NEMAR_PUBLICATION_REVIEW_WORKFLOW_LIVE: dataset-workflows-live/.github/workflows/run-publication-review.yml
@@ -1114,7 +1121,12 @@ jobs:
           log="$RUNNER_TEMP/unit-pure-shard.log"
 
           # pipefail keeps bun's own exit status: a failing test fails this step.
-          bun test --timings "$timings" --update-timings --shard="$shard/$SHARD_TOTAL" \
+          # --parallel=2: worker processes, each file in a fresh global (the default isolation).
+          # One shard measured locally: 167 s serial, 92 s at 2 workers, 47 s at 4. Two, not one
+          # per core: at 4 workers on the 4-vCPU runner, tests that boot a Miniflare D1 or wait on
+          # a short timeout failed under load, three different ones in three runs (the broker byte
+          # bound, the markLoaded scan, and the upstream-backfill Miniflare boot).
+          bun test --timings "$timings" --update-timings --shard="$shard/$SHARD_TOTAL" --parallel=2 \
             --reporter=junit --reporter-outfile="$out/junit.xml" "${files[@]}" 2>&1 | tee "$log"
 
           # The files this shard actually ran, from the junit report: every test file appears as
@@ -1258,19 +1270,77 @@ jobs:
             + "\n| all | \([.[].files] | add) of \(.[0].discovered) | \([.[].tests] | add) | \([.[].passed] | add) |"
           ' "${reports[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # The process tier: test files whose header says `CI TIER: process`. They spawn child processes,
+  # serve the real Worker on a loopback port or need a host tool (`openssl`), so they run here, in
+  # one job of their own, and never inside a `unit-pure` shard: that tier is split across shards
+  # and holds only tests that run inside the test process. The list comes from
+  # scripts/ci/process-files.sh and `unit-pure-files.sh` skips exactly those files, so each file
+  # runs in one tier. Same trigger as the shards (`unit_pure_due`). No secrets and no live
+  # backend; a file that needs either belongs in the integration tier. Not a required check yet:
+  # a name is added to branch protection by the owner.
+  process-tier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: changes
+    if: needs.changes.outputs.unit_pure_due == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Install backend dependencies
+        run: cd backend && bun install
+
+      - name: Tool versions
+        run: openssl version
+
+      - name: Run process-tier tests
+        run: |
+          # Written to a file first so a failing lister fails this step, and an empty list
+          # cannot become a bare `bun test` that runs the whole suite.
+          scripts/ci/process-files.sh > "$RUNNER_TEMP/process-files.txt"
+          mapfile -t files < "$RUNNER_TEMP/process-files.txt"
+          [ "${#files[@]}" -gt 0 ] || { echo "::error::no test file claims CI TIER: process"; exit 1; }
+          echo "Running ${#files[@]} process-tier test files"
+          bun test "${files[@]}"
+
   # Tier 2 (SOFT on dev, REQUIRED on main): integration tests that hit the LIVE
   # dev backend (real AWS STS / D1 / network). These flake transiently (a
   # different ~2 of ~1600 each run), so --retry=2 rides over infra hiccups while
   # a genuinely broken test still fails all 3 attempts. NOT a required check on
   # dev (a transient flake must not block a PR); the dev->main gate makes it
   # required, and nightly-tests.yml provides scheduled hard coverage + issue.
-  integration-dev:
+  # THE CHECK NAME. `integration-dev-shard` is the matrix; `integration-dev` is the gate that
+  # needs it and keeps the name this check always had. One process ran all 94 files in 20 to 27
+  # minutes, the longest job of the workflow by far (run 42259511345: 1250 s against 922 s for
+  # the slowest unit shard, itself 536 s of apt). Five files held half of it. Sharded six ways
+  # with bun's own `--shard`, balanced by test/integration-timings.json, the longest file
+  # (about 215 s) bounds the job. The shards share the dev backend exactly as concurrent
+  # pull-request runs already do (the PR and the push run overlap routinely).
+  #
+  # TO REFRESH test/integration-timings.json: every shard uploads the durations it measured as
+  # the artifact `integration-dev-shard-<n>`. From a green run:
+  #   gh run download <run-id> --pattern 'integration-dev-shard-*' --dir /tmp/id-shards
+  #   jq -S -s '{version: 1, files: (map(.files) | add)}' /tmp/id-shards/*/timings.json \
+  #     > test/integration-timings.json
+  # TO ADD A SHARD, add the next number to `matrix.shard`.
+  integration-dev-shard:
+    name: integration-dev shard ${{ matrix.shard }}/${{ strategy.job-total }}
     runs-on: ubuntu-latest
-    # The tests took about 16 min before Phases 6g and 7d (2026-10-25) and project to about
-    # 30 min on current runners with their re-pull world suites (the 6g and 7d runs of
-    # 2026-10-26). The cap is 35 min, a margin over that, the owner's choice.
-    timeout-minutes: 35
+    # A shard is expected to take 4 to 6 minutes (about 21 minutes serial, split six ways).
+    timeout-minutes: 20
     needs: changes
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
     if: needs.changes.outputs.cli == 'true' || needs.changes.outputs.tests == 'true' || needs.changes.outputs.backend == 'true' || needs.changes.outputs.shared == 'true'
     env:
       TEST_API_URL: https://nemar-api-dev.sccn-org.workers.dev
@@ -1299,10 +1369,7 @@ jobs:
       # Under 30 s at p95, but the Ubuntu mirror can stall on this one package for minutes
       # (see scrub-tools-shard), and #1667 saw it hang for an hour.
       - name: Install git-annex
-        timeout-minutes: 10
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git-annex
+        uses: ./.github/actions/install-git-annex
 
       # Under this job's NEMAR_REQUIRE_SCRUB_TOOLS=1 the live suites that drive the real aws CLI
       # against a loopback S3 stand-in fail instead of skipping. The aws CLI comes with the runner
@@ -1320,8 +1387,22 @@ jobs:
       - name: Install backend dependencies
         run: cd backend && bun install
 
-      - name: Run live-backend integration tests (--retry for transient flakes)
+      - name: Run live-backend integration tests (shard ${{ matrix.shard }}/${{ strategy.job-total }}, --retry for transient flakes)
+        env:
+          SHARD_INDEX: ${{ strategy.job-index }}
+          SHARD_TOTAL: ${{ strategy.job-total }}
+          SHARD_LABEL: ${{ matrix.shard }}
         run: |
+          set -euo pipefail
+          shard=$((SHARD_INDEX + 1))
+          if [ "$shard" != "$SHARD_LABEL" ]; then
+            echo "::error::matrix.shard must be 1..N in order: job $SHARD_INDEX is labeled $SHARD_LABEL, so a slice of the suite would run twice or never"
+            exit 1
+          fi
+          # Each shard starts one second after the one before it, so six runners do not open
+          # their first requests, token mints and CLI spawns against the shared dev backend in
+          # the same instant. The live files are the ones that flaked under load before.
+          sleep "$SHARD_INDEX"
           # Every non-e2e file that DOES hit the live dev backend, including
           # cli.test.ts (runCli spawns the binary against the backend).
           shopt -s nullglob
@@ -1343,7 +1424,58 @@ jobs:
           # and spawn the CLI via `bun run src/index.ts`; cold D1 reads and the
           # per-invocation transpile can momentarily exceed 5s, surfacing as
           # 5000ms timeouts / exit-143 SIGTERMs rather than real failures (#672).
-          bun test --retry=2 --timeout 30000 "${files[@]}"
+          out="$RUNNER_TEMP/integration-dev-shard-out"
+          mkdir -p "$out"
+          cp test/integration-timings.json "$out/timings.json"
+          log="$RUNNER_TEMP/integration-dev-shard.log"
+          # pipefail keeps bun's own exit status: a failing test fails this step.
+          bun test --retry=2 --timeout 30000 --timings "$out/timings.json" --update-timings \
+            --shard="$shard/$SHARD_TOTAL" "${files[@]}" 2>&1 | tee "$log"
+
+          # An empty shard is not an error to bun ("Ran 0 tests across 0 files", exit 0), so
+          # read the run's own header and summary, as unit-pure-shard does.
+          esc=$(printf '\033')
+          plain=$(sed -E "s/${esc}\[[0-9;]*m//g" "$log")
+          header=$(grep -E -m1 '^--shard=[0-9]+/[0-9]+: running [0-9]+/[0-9]+ test files' <<<"$plain" || true)
+          summary=$(grep -E '^Ran [0-9]+ tests? across [0-9]+ files?' <<<"$plain" | tail -1 || true)
+          if [ -z "$header" ] || [ -z "$summary" ]; then
+            echo "::error::bun printed no shard header or run summary, so what this shard ran is unknown"
+            exit 1
+          fi
+          read -r planned discovered < <(sed -E 's#^--shard=[0-9]+/[0-9]+: running ([0-9]+)/([0-9]+) test files.*#\1 \2#' <<<"$header")
+          read -r tests ran < <(sed -E 's#^Ran ([0-9]+) tests? across ([0-9]+) files?.*#\1 \2#' <<<"$summary")
+          if [ "$ran" -lt 1 ] || [ "$tests" -lt 1 ] || [ "$ran" != "$planned" ] || [ "$discovered" != "${#files[@]}" ]; then
+            echo "::error::shard $shard/$SHARD_TOTAL planned $planned of $discovered files, ran $ran files and $tests tests; the list had ${#files[@]}"
+            exit 1
+          fi
+          echo "shard $shard/$SHARD_TOTAL: $tests tests across $ran of $discovered files" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload how long each file took
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-dev-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/integration-dev-shard-out/timings.json
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+
+  # The check named `integration-dev`. See THE CHECK NAME above. `if: always()` so a failed or
+  # cancelled shard still reaches this job and turns it red, and the second term skips it exactly
+  # when the shards were not due.
+  integration-dev:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [changes, integration-dev-shard]
+    if: always() && (needs.changes.outputs.cli == 'true' || needs.changes.outputs.tests == 'true' || needs.changes.outputs.backend == 'true' || needs.changes.outputs.shared == 'true')
+    steps:
+      - name: Every shard must have succeeded
+        env:
+          SHARDS_RESULT: ${{ needs.integration-dev-shard.result }}
+        run: |
+          if [ "$SHARDS_RESULT" != "success" ]; then
+            echo "::error::integration-dev-shard finished as '$SHARDS_RESULT', not 'success'"
+            exit 1
+          fi
 
   # Python script tests for scripts/emit_manifest.py + helpers ran here
   # under #557 (the central manifest workflow). Those scripts now live in
@@ -1514,12 +1646,12 @@ jobs:
           deno-version: v2.x
 
       # Same mirror stall as git-annex elsewhere; inside this job's 10-minute limit.
-      - name: Install DataLad and git-annex
+      - name: Install git-annex
+        uses: ./.github/actions/install-git-annex
+
+      - name: Install DataLad
         timeout-minutes: 8
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git-annex
-          pip install datalad
+        run: pip install datalad
 
       - name: Configure git
         run: |

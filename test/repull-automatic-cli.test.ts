@@ -123,6 +123,7 @@ import {
 import {
   ADMIN_KEY,
   type RepullWorld,
+  type WorldPoint,
   enrichedMetadata,
   startRepullWorld,
 } from "./helpers/repull-pr-world";
@@ -157,7 +158,11 @@ beforeAll(async () => {
 afterAll(() => {
   w?.stop();
   release?.cleanup();
-  for (const d of temps) rmSync(d, { recursive: true, force: true });
+  for (const d of temps) {
+    // The kept copy of a world's annex directory holds read-only objects.
+    Bun.spawnSync(["chmod", "-R", "u+w", d]);
+    rmSync(d, { recursive: true, force: true });
+  }
 });
 
 beforeEach(async () => {
@@ -325,8 +330,47 @@ const ghWrites = () => w.gh.seen.filter((s) => s.method !== "GET");
 const s3Writes = () =>
   w.s3.log.filter((e) => !["GetObject", "HeadObject", "ListObjectsV2"].includes(e.op));
 
+/**
+ * The world as the first real `opened()` left it, for the cases that only start from a record at
+ * `pr_open` (the finish and the settle suites). The first caller drives the real plan and execute
+ * through the CLI; every later caller is put back at that point (`restore(point)`, the world's own
+ * mechanism for "a suite whose cases all start further on"), instead of driving the same two CLI
+ * runs again. Besides the world's refs, bucket, database and pull requests, the point holds what
+ * the runs leave on disk: the runner's files (the plan, the event, the marker) and the CLI's own
+ * `repull` directory under the config directory.
+ */
+interface OpenedPoint {
+  point: WorldPoint;
+  claim: Claim;
+  row: RecordRow;
+  runnerDir: string;
+  repullDir: string | null;
+}
+let openedPoint: OpenedPoint | null = null;
+
+/** Make `to` a copy of `from`, permissions included (annex objects are read-only). */
+function copyTree(from: string, to: string): void {
+  Bun.spawnSync(["chmod", "-R", "u+w", to]);
+  rmSync(to, { recursive: true, force: true });
+  const r = Bun.spawnSync(["cp", "-a", from, to]);
+  if (r.exitCode !== 0) throw new Error(`cp -a ${from} ${to}: ${r.stderr.toString()}`);
+}
+
 /** Plan and execute a first dispatch to `pr_open`. */
 async function opened(): Promise<{ c: Claim; row: RecordRow }> {
+  const saved = openedPoint;
+  if (saved) {
+    await w.restore(saved.point);
+    w.workerEnv.AUTO_REPULL_ENABLED = "1";
+    for (const name of readdirSync(saved.runnerDir)) {
+      copyTree(join(saved.runnerDir, name), join(runner, name));
+    }
+    const repullDir = join(w.configDir, "repull");
+    Bun.spawnSync(["chmod", "-R", "u+w", repullDir]);
+    rmSync(repullDir, { recursive: true, force: true });
+    if (saved.repullDir) copyTree(saved.repullDir, repullDir);
+    return { c: saved.claim, row: saved.row };
+  }
   const c = await claimOpen();
   writeEvent(c);
   const plan = await auto(planArgs(c));
@@ -335,6 +379,14 @@ async function opened(): Promise<{ c: Claim; row: RecordRow }> {
   expect(exec.exitCode, exec.all).toBe(0);
   const row = repullRows()[0];
   if (!row) throw new Error("no record");
+  const repullDir = join(w.configDir, "repull");
+  const keep = mkdtempSync(join(tmpdir(), "nemar-repull-auto-opened-"));
+  temps.push(keep);
+  const runnerDir = join(keep, "runner");
+  copyTree(runner, runnerDir);
+  const repullCopy = existsSync(repullDir) ? join(keep, "repull") : null;
+  if (repullCopy) copyTree(repullDir, repullCopy);
+  openedPoint = { point: await w.save(), claim: c, row, runnerDir, repullDir: repullCopy };
   return { c, row };
 }
 

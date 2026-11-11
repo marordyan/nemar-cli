@@ -198,6 +198,12 @@ export async function deleteDatasetCascade(
         .bind(datasetId),
       db.prepare("DELETE FROM upstream_repull_dispatches WHERE dataset_id = ?").bind(datasetId),
       db.prepare("DELETE FROM upstream_repulls WHERE dataset_id = ?").bind(datasetId),
+      // NEMAR's own pipeline stamps (migration 0117) have no foreign key and go with the dataset. The
+      // JOB rows and the ledger of the runs stay, by design (design section 9): they are the record of
+      // what was spent, and carry no dataset-level data.
+      db
+        .prepare("DELETE FROM compute_pipeline_stamps WHERE dataset_id = ?")
+        .bind(datasetId),
       db.prepare("DELETE FROM datasets WHERE dataset_id = ?").bind(datasetId),
     ]);
 

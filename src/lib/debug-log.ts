@@ -196,9 +196,13 @@ export function redactHeaders(headers: Record<string, string>): Record<string, s
  *  attach the log to an issue, so the path from "a docs page 404'd" to "a live
  *  credential in a public issue" was two steps. Add the exact key, not a
  *  prefix: a `*session*` wildcard would also redact `session_id` and
- *  `expires_at`-style diagnostics that are the reason the log exists. */
+ *  `expires_at`-style diagnostics that are the reason the log exists.
+ *
+ *  `client[_-]?secret` is the OpenID Connect provider's client secret (epic #2014 phase #2016):
+ *  `POST /admin/oidc/clients` and `.../rotate-secret` return it once, under that key, and it
+ *  authenticates a client at the token endpoint. `client_id` is public and is not matched. */
 const SENSITIVE_BODY_KEY_RE =
-  /^(api[_-]?key|apikey|password|token|secret|access[_-]?key(_id)?|secret[_-]?access[_-]?key|session|session[_-]?token|authorization|ssh[_-]?key|private[_-]?key|device[_-]?code|dispatch[_-]?token)$/i;
+  /^(api[_-]?key|apikey|password|token|secret|access[_-]?key(_id)?|secret[_-]?access[_-]?key|session|session[_-]?token|authorization|ssh[_-]?key|private[_-]?key|device[_-]?code|dispatch[_-]?token|client[_-]?secret)$/i;
 
 const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 

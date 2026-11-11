@@ -4,7 +4,6 @@ description: "Data plane paths need v1.0.0, not 1.0.0; a bare-version 404 is a p
 metadata: 
   node_type: memory
   type: project
-  originSessionId: feb870a5-d2bd-421c-b0db-8061cdd93a33
   modified: 2026-09-18T02:30:11.653Z
 ---
 
@@ -16,8 +15,8 @@ you are probing.
 **Why:** I read a 404 on `/nm099998/1.0.0/dataset_description.json` as evidence the anonymous
 fixture's broker path was broken, which would have been a real defect in ADR 0066's git-file
 broker. Probing exemplar `xx099900` in both forms showed the control 404s on `1.0.0` and 200s
-on `v1.0.0`, so the fault was in my URL. Hosts: `data-test.nemar.org` on dev
-(`DATA_HOSTNAME`), `data.nemar.org` in production.
+on `v1.0.0`, so the fault was in my URL. The production host is `data.nemar.org`;
+the dev data host is set by `DATA_HOSTNAME`.
 
 **How to apply:** Before diagnosing any data-plane 404, re-run the same request against a
 public control dataset. If the control 404s too, fix the request, not the code. Same discipline

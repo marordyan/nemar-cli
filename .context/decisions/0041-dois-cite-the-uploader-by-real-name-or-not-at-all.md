@@ -90,6 +90,6 @@ for a half-filled name. There is no username fallback anywhere.
   dashboard does not render a block reason).
 - Migration `0051_user_real_name.sql` -- the columns, and ORCID as their source.
 - ADR 0007 (EZID is the sole registrar). DOI permanence itself is a standing
-  core principle in AGENTS.md ("DOIs are permanent and require explicit
-  confirmation"), not something ADR 0007 states.
+  principle, stated on the DOI and versioning page
+  (`https://docs.nemar.org/platform/doi-and-versioning/`), not something ADR 0007 states.
 - ADR 0026 (the precedent for a typed, itemised publish-block reason).

@@ -73,6 +73,7 @@
 import { tombstoneUserCascade } from "../db/user-tombstone.js";
 import type { Bindings } from "../types/bindings.js";
 import { isNonProductionEnv } from "./environment.js";
+import { attemptDueLogouts, logFirstAttempt } from "./oidc-logout.js";
 
 /**
  * Accounts one run may tombstone. Oldest first; the rest wait for the next daily run.
@@ -181,7 +182,8 @@ export const TEST_ACCOUNT_SWEEP_NOT_RUN: Readonly<TestAccountSweepResult> = Obje
  * with `errors` set and the tally of what was already done kept.
  */
 export async function sweepCiTestAccounts(
-  env: Pick<Bindings, "DB" | "ENVIRONMENT">,
+  env: Pick<Bindings, "DB" | "ENVIRONMENT"> &
+    Partial<Pick<Bindings, "API_BASE_URL" | "OIDC_SECRET" | "OIDC_LOGOUT_DEV_HOSTS">>,
 ): Promise<TestAccountSweepResult> {
   // Repeated from the call site on purpose: the guarantee must not depend on who calls this.
   if (!isNonProductionEnv(env)) return { ...TEST_ACCOUNT_SWEEP_NOT_RUN };
@@ -232,6 +234,17 @@ export async function sweepCiTestAccounts(
       "[test-account-sweep] candidate read failed:",
       err instanceof Error ? err.message : err,
     );
+  }
+
+  // The clients that registered a back-channel logout address were queued inside each tombstone's
+  // batch (ADR 0119 rule 12). This sweep runs only outside production, where the first attempt is
+  // fenced: a delivery goes only to a loopback address or a host the owner listed, and every other is
+  // recorded `fenced`, so a deleted test account never reaches a real partner. There is no retry tick
+  // outside production, so this is the attempt a swept account's deliveries get. Best effort, and
+  // bounded to one run of the sender.
+  if (result.tombstoned > 0) {
+    // The sender never throws: a fault shows in its tally, and is logged as a fixed word and a count.
+    logFirstAttempt(await attemptDueLogouts(env as Parameters<typeof attemptDueLogouts>[0]));
   }
 
   console.log(

@@ -166,7 +166,7 @@ export interface GitHubStandin {
   beforeClose: ((dataset: string, number: number) => Promise<void>) | null;
   /** When true, a merge PUT is applied and then answered 502: the answer lost on the way back. */
   lostMergeAnswers: boolean;
-  /** The commit a tag names (`GET .../commits/tags/<tag>`, asked as `vnd.github.sha`), or null. */
+  /** The commit a tag names (`GET .../commits/refs/tags/<tag>`, asked as `vnd.github.sha`), or null. */
   resolveTag: ((dataset: string, tag: string) => Promise<string | null>) | null;
   /**
    * GitHub's comparison of `base...head`: its word (`identical`, `ahead`, ...), or the fields a
@@ -326,7 +326,19 @@ export function startGitHubStandin(): GitHubStandin {
 
       // The re-pull's release reads (a tag's commit, a comparison) when a suite answers them from
       // its bare origin; ahead of the naming rule's comparison, which would answer otherwise.
-      const tag = url.pathname.match(/^\/repos\/nemarDatasets\/([^/]+)\/commits\/tags\/(.+)$/);
+      // `commits/tags/<tag>` is what GitHub refuses (422); only the full ref resolves.
+      if (
+        req.method === "GET" &&
+        /^\/repos\/nemarDatasets\/[^/]+\/commits\/tags\//.test(url.pathname)
+      ) {
+        return Response.json(
+          { message: `No commit found for SHA: ${url.pathname.split("/commits/")[1]}` },
+          { status: 422 },
+        );
+      }
+      const tag = url.pathname.match(
+        /^\/repos\/nemarDatasets\/([^/]+)\/commits\/refs\/tags\/(.+)$/,
+      );
       if (req.method === "GET" && tag && state.resolveTag) {
         const sha = await state.resolveTag(tag[1] as string, decodeURIComponent(tag[2] as string));
         if (!sha) return Response.json({ message: "No commit found" }, { status: 422 });

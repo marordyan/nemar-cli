@@ -18,20 +18,20 @@ The `nemar dataset list` command showed ALL datasets (including private ones) to
 ```bash
 $ nemar whoami
 Authenticated
-  Username: cool-vibers
-  Email:    syshriazi@icloud.com
+  Username: <user B>
+  Email:    <contact email>
 
 $ nemar dataset list
 Datasets (12):  # Shows ALL datasets, including private ones owned by others!
 
 ID          Name                            Owner        Status
 ---------------------------------------------------------------
-nm099999    E2E Test Dataset                yahya        active
-nm000151    R3_mini_L100_bdf                cool-vibers  active
-nm000150    BIDS_test                       cool-vibers  active
-nm000149    My second NEMAR EEG Dataset...  arnodelorme  active  # SHOULD NOT SEE
-nm000148    My NEMAR EEG Dataset ds0026...  arnodelorme  active  # SHOULD NOT SEE
-nm000147    BIDS_test                       yahya        active  # SHOULD NOT SEE
+nm099999    E2E Test Dataset                <owner>      active
+nm000151    R3_mini_L100_bdf                <user B>     active
+nm000150    BIDS_test                       <user B>     active
+nm000149    My second NEMAR EEG Dataset...  <user C>     active  # SHOULD NOT SEE
+nm000148    My NEMAR EEG Dataset ds0026...  <user C>     active  # SHOULD NOT SEE
+nm000147    BIDS_test                       <owner>      active  # SHOULD NOT SEE
 ...
 ```
 

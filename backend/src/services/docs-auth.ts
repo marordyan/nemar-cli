@@ -223,7 +223,9 @@ export const DOCS_MINT_CONSUME_SQL = `DELETE FROM docs_grants
 /**
  * Revoke every docs session belonging to one account. Binds: userId.
  *
- * THREE CALLERS: `/auth/logout`, an admin role demotion, and
+ * THREE CALLERS: `/auth/logout` (which runs it once for EACH distinct account behind
+ * every session cookie the request carries, under either name, so it is still one
+ * caller), an admin role demotion, and
  * {@link revokeDocsCredentials} below, which runs after an API key is revoked
  * because a docs session can be minted from a key
  * (`POST /auth/docs/cli-session`). Without it, signing out of nemar.org
@@ -253,7 +255,9 @@ export const DOCS_REVOKE_ALL_SQL = `UPDATE web_sessions
  * still create access, not only the access that exists.
  *
  * FIVE CALLERS, and the count is the point: every path that ends or downgrades
- * this credential runs this statement -- `/auth/logout`, `finalizeRevocation`, a
+ * this credential runs this statement -- `/auth/logout` (once per distinct account
+ * behind every session cookie the request carries, still one caller),
+ * `finalizeRevocation`, a
  * role demotion, the tombstone cascade (`tombstoneUserCascade`, the one
  * function both the owner-only soft delete and the scheduled sweep of
  * live-test accounts run, so it counts once), and {@link revokeDocsCredentials}
@@ -262,7 +266,9 @@ export const DOCS_REVOKE_ALL_SQL = `UPDATE web_sessions
  * deletes the `users` row. A sixth path that ends a credential needs this line
  * too.
  * The private site's grants have their own table and their own count
- * (`PRIVATE_GRANTS_PURGE_SQL` in `services/private-auth.ts`).
+ * (`PRIVATE_GRANTS_PURGE_SQL` in `services/private-auth.ts`), and the OpenID Connect grants have
+ * theirs (`OIDC_END_CALLERS` in `services/oidc-cascade.ts`): a path that ends a credential for good
+ * counts in each list it belongs to, and a test holds each list to the code.
  */
 export const DOCS_GRANTS_PURGE_SQL = "DELETE FROM docs_grants WHERE user_id = ?";
 
@@ -288,6 +294,12 @@ export const DOCS_GRANTS_PURGE_SQL = "DELETE FROM docs_grants WHERE user_id = ?"
  * (`services/ticket-assignment.ts`) in the same batch, which drops the person's support
  * tickets, away window, read markers and queue references; key revocation alone does not, because the
  * person is still an admin. A new path that removes an admin needs both sets.
+ * TWO of those three paths, `finalizeRevocation` and the tombstone cascade, also run
+ * `computeReleaseStatements` (`services/compute-release.ts`, epic #2005 phase A8), which ends the
+ * account's compute: a role demotion does not (compute is not an admin's standing), and key revocation
+ * does not (a job's identity is the account's, not a key's; the person still has the account, so a
+ * stolen key's jobs already submitted keep running until a cancel or an administrative revoke). A new
+ * path that ends a whole account needs that set too.
  *
  * The by-id routes also run it when their revoke changed nothing (a
  * concurrent revoke of the same key won the race), because it is idempotent
@@ -304,6 +316,11 @@ export const DOCS_GRANTS_PURGE_SQL = "DELETE FROM docs_grants WHERE user_id = ?"
  * The private site's sessions are deliberately NOT ended here: one is never
  * minted from a key, so a key's end has nothing of that scope to reach (ADR
  * 0079, `PRIVATE_REVOKE_ALL_SQL`).
+ *
+ * Nor are an account's OpenID Connect grants and tokens: a grant is not minted from a key and
+ * depends on none, so they are not ended here (ADR 0119 rule 12). The paths that DO end them have
+ * their own list and count, `OIDC_END_CALLERS` in `services/oidc-cascade.ts`; the two paths that end
+ * every credential, `finalizeRevocation` and the tombstone cascade, run both sets in their one batch.
  *
  * BEST EFFORT, DELIBERATELY. The key is already revoked by the time this runs;
  * a failure here must not turn a successful revocation into an error, which

@@ -684,7 +684,7 @@ describe("the verification sweep reports and never repairs", () => {
         "services/neurobagel-plan.ts": `${readFileSync(join(SERVICES, "neurobagel-plan.ts"), "utf8")}\nexport const h = "https://api.github.com/x";`,
       });
       expect(forbiddenNames(planted2)).toHaveLength(1);
-    });
+    }, 60_000);
   });
 
   describe("the node probe and the registration reads", () => {

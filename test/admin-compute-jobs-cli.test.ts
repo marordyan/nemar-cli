@@ -1,0 +1,761 @@
+/**
+ * `nemar admin compute jobs` (cancel and advance: phase A5, #2010; list, record, report, access-report,
+ * hold, release-hold and the ACCESS re-queue: phase A7, #2012; ADR 0118), driven through the
+ * real entry point against the REAL routes: the Worker's admin router behind its real authentication and
+ * admin middleware, over real SQLite carrying every migration, Miniflare's R2 through the Worker's own
+ * bindings and the Tapis stand-in behind it (which recorded nothing from a real tenant), served on a
+ * loopback port and reached through TEST_API_URL. What the command prints is what the route answers.
+ *
+ * The properties, each with a test of its own: `advance` submits a created job and says so; `--json`
+ * prints the Worker's answer and nothing else on standard output; `cancel` ends a job that never started;
+ * a platform failure is shown as an information flag, never a refund; a malformed id is refused before
+ * anything is sent; an unknown job, a member's key and no key at all exit 1; an answer with keys the CLI
+ * does not know is shown, not refused (the schema is open); and no token, address or identity is printed.
+ *
+ * CI TIER: integration, like the other CLI suites that start the binary against a local server.
+ */
+
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawn } from "bun";
+import { recordKey } from "../backend/src/services/compute-records";
+import {
+  COMPUTE_KEYS,
+  type ComputeWho,
+  makeComputeApp,
+  seedComputeUsers,
+} from "../backend/test/helpers/compute-app";
+import { endedJob } from "../backend/test/helpers/compute-ended";
+import {
+  type LifecycleFixture,
+  MINUTE,
+  jobTokenSeenByTapis,
+  launchSpecEnvSeenByTapis,
+  makeJob,
+  reread,
+  setTapisTimes,
+  startLifecycleFixture,
+} from "../backend/test/helpers/compute-lifecycle-fixture";
+import { launchSecretForms } from "../backend/test/helpers/launch-secret-forms";
+import { RECORDS_RESULT_MANIFEST_FILE, formatSu } from "../shared/contract/compute";
+import {
+  ComputeJobAdminResponseSchema,
+  ComputeRecordResponseSchema,
+} from "../shared/contract/compute-admin";
+
+const CLI_ENTRY = join(import.meta.dir, "..", "src", "index.ts");
+const REPO_ROOT = join(import.meta.dir, "..");
+const handle = makeComputeApp();
+
+let fx: LifecycleFixture;
+let configDir: string;
+/** Requests the server saw (the `/notices` call of the CLI is not counted). */
+let seen: string[] = [];
+let augment = false;
+
+const server = Bun.serve({
+  port: 0,
+  fetch: async (req) => {
+    const url = new URL(req.url);
+    if (url.pathname === "/notices") return Response.json({ notices: [] });
+    seen.push(`${req.method} ${url.pathname}`);
+    const res = await handle(req, fx.env());
+    if (augment && res.ok) {
+      const body = (await res.json()) as Record<string, any>;
+      body.future_top_level = { added: "by a newer worker" };
+      if (body.job) body.job.future_nested = 7;
+      return Response.json(body, { status: res.status });
+    }
+    return res;
+  },
+});
+const API = `http://127.0.0.1:${server.port}`;
+
+beforeAll(async () => {
+  fx = await startLifecycleFixture();
+}, 120_000);
+
+afterAll(async () => {
+  server.stop(true);
+  await fx?.dispose();
+}, 30_000);
+
+beforeEach(async () => {
+  await fx.reset();
+  await seedComputeUsers(fx.harness.db);
+  seen = [];
+  augment = false;
+  configDir = mkdtempSync(join(tmpdir(), "nemar-compute-jobs-cli-"));
+});
+
+afterEach(() => {
+  rmSync(configDir, { recursive: true, force: true });
+});
+
+interface Ran {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+async function runCli(
+  who: ComputeWho | null,
+  args: string[],
+  group: string[] = ["jobs"],
+): Promise<Ran> {
+  if (who === null) {
+    rmSync(join(configDir, "config.json"), { force: true });
+  } else {
+    writeFileSync(
+      join(configDir, "config.json"),
+      JSON.stringify({
+        activeAccount: "computecli",
+        accounts: { computecli: { apiKey: COMPUTE_KEYS[who] } },
+      }),
+    );
+  }
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries({
+    ...process.env,
+    NEMAR_CONFIG_DIR: configDir,
+    TEST_API_URL: API,
+    NEMAR_NO_UPDATE_CHECK: "1",
+    NO_COLOR: "1",
+    FORCE_COLOR: undefined,
+    CLICOLOR_FORCE: undefined,
+  })) {
+    if (v !== undefined) env[k] = v;
+  }
+  const proc = spawn({
+    cmd: ["bun", "run", CLI_ENTRY, "admin", "compute", ...group, ...args],
+    cwd: REPO_ROOT,
+    env,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stdout = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+  return { stdout, stderr, exitCode: await proc.exited };
+}
+
+describe("advance", () => {
+  test("its help says the submit is refused while compute is switched off, and what stays", async () => {
+    const r = await runCli("admin", ["advance", "--help-all"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("The submit is refused while compute is switched off");
+    expect(r.stdout).toContain("compute_disabled");
+  });
+
+  test("it submits a created job and prints the job as the Worker shows it", async () => {
+    const made = await makeJob(fx);
+    const r = await runCli("admin", ["advance", made.job.id]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("outcome: submitted (submit: submitted)");
+    expect(r.stdout).toContain(`job ${made.job.id}`);
+    expect(r.stdout).toContain("state: submitted (Tapis PENDING)");
+    expect(r.stdout).toContain("held 4 SU, charged 0 SU, not settled");
+    expect(r.stdout).toContain("flags: none");
+    expect((await reread(made.env, made.job.id)).state).toBe("submitted");
+    expect(seen).toEqual([`POST /admin/compute/jobs/${made.job.id}/advance`]);
+  });
+
+  test("--json prints the Worker's answer, and only that, on standard output", async () => {
+    const made = await makeJob(fx);
+    const r = await runCli("admin", ["advance", made.job.id, "--json"]);
+    expect(r.exitCode).toBe(0);
+    const body = JSON.parse(r.stdout);
+    expect(ComputeJobAdminResponseSchema.safeParse(body).success).toBe(true);
+    expect(body).toMatchObject({ ok: true, outcome: "submitted", job: { state: "submitted" } });
+    expect(r.stderr.trim()).toBe("");
+  });
+
+  test("a platform failure is shown as an information flag, with its charge, and no refund", async () => {
+    const made = await makeJob(fx);
+    await runCli("admin", ["advance", made.job.id]);
+    const uuid = (await reread(made.env, made.job.id)).tapis_uuid as string;
+    fx.tapis.advance(uuid, "RUNNING");
+    await runCli("admin", ["advance", made.job.id]);
+    fx.tapis.advance(uuid, "FAILED", "JOB_LAUNCH_FAILURE");
+    setTapisTimes(fx, uuid, 30 * MINUTE, 0);
+    const r = await runCli("admin", ["advance", made.job.id]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("failure: launch_failed");
+    expect(r.stdout).toContain(
+      "platform failure: yes (NEMAR caused it; compensate by a manual grant if warranted)",
+    );
+    expect(r.stdout).toContain("held 4 SU, charged 2 SU, settled");
+    expect(r.stdout.toLowerCase()).not.toContain("refund");
+  });
+
+  test("an answer with keys the CLI does not know is shown, not refused", async () => {
+    const made = await makeJob(fx);
+    augment = true;
+    const r = await runCli("admin", ["advance", made.job.id]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("outcome: submitted");
+  });
+});
+
+describe("cancel", () => {
+  test("it ends a job that never started, and says so", async () => {
+    const made = await makeJob(fx);
+    const r = await runCli("owner", ["cancel", made.job.id]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("outcome: cancel_requested");
+    expect(r.stdout).toContain("state: cancelled");
+    expect((await reread(made.env, made.job.id)).cancel_reason).toBe("admin");
+  });
+
+  test("a job that has already ended otherwise exits 1", async () => {
+    const made = await makeJob(fx);
+    await runCli("admin", ["advance", made.job.id]);
+    const uuid = (await reread(made.env, made.job.id)).tapis_uuid as string;
+    fx.tapis.advance(uuid, "FAILED", "JOB_LAUNCH_FAILURE");
+    await runCli("admin", ["advance", made.job.id]);
+    const r = await runCli("admin", ["cancel", made.job.id]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout + r.stderr).toContain("already ended");
+  });
+});
+
+describe("refusals", () => {
+  test("a malformed id is refused before anything is sent", async () => {
+    for (const id of ["nope", "job_XYZ", "JOB_0123456789ABCDEF01234567"]) {
+      for (const verb of ["cancel", "advance"]) {
+        const r = await runCli("admin", [verb, id]);
+        expect([id, verb, r.exitCode]).toEqual([id, verb, 1]);
+        expect(r.stdout + r.stderr).toContain("not a job id");
+      }
+    }
+    expect(seen).toEqual([]);
+  });
+
+  test("an unknown job, a member's key and no key at all exit 1", async () => {
+    const made = await makeJob(fx);
+    for (const verb of ["cancel", "advance"]) {
+      expect((await runCli("admin", [verb, "job_000000000000000000000000"])).exitCode).toBe(1);
+      expect((await runCli("member", [verb, made.job.id])).exitCode).toBe(1);
+      expect((await runCli(null, [verb, made.job.id])).exitCode).toBe(1);
+    }
+    expect((await reread(made.env, made.job.id)).state).toBe("created");
+  });
+});
+
+describe("what is printed", () => {
+  test("no token, address, specification or identity is on standard output or standard error", async () => {
+    const made = await makeJob(fx);
+    const first = await runCli("admin", ["advance", made.job.id]);
+    const uuid = (await reread(made.env, made.job.id)).tapis_uuid as string;
+    const token = jobTokenSeenByTapis(fx, uuid);
+    // The value Tapis holds carries the token, and the plain token is not a substring of it.
+    const launchValue = launchSpecEnvSeenByTapis(fx, uuid);
+    fx.tapis.advance(uuid, "RUNNING");
+    const second = await runCli("admin", ["advance", made.job.id, "--json"]);
+    const user = fx.harness.db
+      .query("SELECT username, email FROM users WHERE id = ?")
+      .get(made.accountId) as { username: string; email: string };
+    for (const out of [first, second]) {
+      const all = out.stdout + out.stderr;
+      for (const word of [
+        ...launchSecretForms(token, launchValue),
+        fx.tapis.url,
+        "NEMAR_LAUNCH_SPEC",
+        "analyse",
+        user.email,
+        user.username,
+      ]) {
+        expect([word, all.includes(word)]).toEqual([word, false]);
+      }
+    }
+  });
+});
+
+// --- Phase A7 (#2012): reporting, holds, ACCESS reports and the observer --------------------------------------------
+
+const sql = {
+  one: <T>(q: string, ...p: unknown[]) => fx.harness.db.query(q).get(...(p as never[])) as T,
+  all: <T>(q: string, ...p: unknown[]) => fx.harness.db.query(q).all(...(p as never[])) as T[],
+  run: (q: string, ...p: unknown[]) => fx.harness.db.run(q, p as never[]),
+};
+
+/** What the seeded people carry that no administrator's command may print. */
+const IDENTITY = [
+  "Ada",
+  "Lovelace",
+  "@example.org",
+  "0000-0002",
+  "Freedonia",
+  "Analytical Engines",
+];
+const clean = (out: Ran) => {
+  for (const word of IDENTITY)
+    expect([word, (out.stdout + out.stderr).includes(word)]).toEqual([word, false]);
+};
+
+describe("list", () => {
+  test("filters by flag and prints one line a job with its flags, and nothing that names a person", async () => {
+    const a = await makeJob(fx);
+    const b = await makeJob(fx);
+    sql.run("UPDATE compute_jobs SET flag_unreserved = 1 WHERE id = ?", b.job.id);
+    const flagged = await runCli("admin", ["list", "--flag", "unreserved"]);
+    expect(flagged.exitCode).toBe(0);
+    expect(flagged.stdout).toContain(b.job.id);
+    expect(flagged.stdout).not.toContain(a.job.id);
+    expect(flagged.stdout).toContain("[unreserved]");
+    clean(flagged);
+    const all = await runCli("admin", ["list"]);
+    expect(all.stdout.indexOf(b.job.id)).toBeLessThan(all.stdout.indexOf(a.job.id));
+    clean(all);
+    expect(seen).toEqual(["GET /admin/compute/jobs", "GET /admin/compute/jobs"]);
+  });
+
+  test("--json prints the Worker's answer and only that; a page names the cursor that continues it", async () => {
+    await makeJob(fx);
+    await makeJob(fx);
+    const r = await runCli("admin", ["list", "--limit", "1", "--json"]);
+    expect(r.exitCode).toBe(0);
+    const body = JSON.parse(r.stdout);
+    expect(body.jobs).toHaveLength(1);
+    expect(body.next_after).not.toBeNull();
+    expect(r.stderr.trim()).toBe("");
+    const text = await runCli("admin", ["list", "--limit", "1"]);
+    expect(text.stdout).toContain(`More: --after ${body.next_after}`);
+  });
+
+  test("an option that is not valid is refused before anything is sent", async () => {
+    for (const args of [
+      ["--flag", "weird"],
+      ["--state", "nope"],
+      ["--limit", "0"],
+      ["--limit", "201"],
+      ["--account", "x"],
+      ["--after", "-1"],
+    ]) {
+      const r = await runCli("admin", ["list", ...args]);
+      expect([args.join(" "), r.exitCode]).toEqual([args.join(" "), 1]);
+    }
+    expect(seen).toEqual([]);
+  });
+
+  test("--unmatched lists Expanse's rows that no job claims", async () => {
+    sql.run(
+      `INSERT INTO compute_sacct_rows (slurm_job_id, run_id, partition, state, elapsed_seconds, alloc_nodes, alloc_cpus, alloc_gpus, alloc_mem_mb)
+       VALUES ('88001', '11111111-2222-3333-4444-555555555555', 'shared', 'COMPLETED', 600, 1, 4, 0, 8000)`,
+    );
+    const r = await runCli("admin", ["list", "--unmatched"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("1 row(s) of Expanse's accounting match no job");
+    expect(r.stdout).toContain("88001");
+  });
+
+  test("a member and no key at all exit 1", async () => {
+    expect((await runCli("member", ["list"])).exitCode).toBe(1);
+    expect((await runCli(null, ["list"])).exitCode).toBe(1);
+  });
+});
+
+describe("record", () => {
+  test("shows a job by its NEMAR id, its Tapis uuid and its Slurm id, the same job each time", async () => {
+    const j = await endedJob(fx, 30);
+    const outs = [];
+    for (const ref of [j.job.id, j.uuid, j.job.slurm_job_id as string]) {
+      const r = await runCli("admin", ["record", ref]);
+      expect([ref, r.exitCode]).toEqual([ref, 0]);
+      outs.push(r.stdout);
+      expect(r.stdout).toContain(`job ${j.job.id}`);
+      expect(r.stdout).toContain("ledger:");
+      expect(r.stdout).toContain("hold");
+      expect(r.stdout).toContain("provenance: {");
+      expect(r.stdout).toContain("manifest: 1 file(s), 8 bytes");
+      clean(r);
+    }
+    expect(new Set(outs.map((o) => o.length)).size).toBe(1);
+  });
+
+  test("a missing record, an unreadable one and an empty one are printed as three different things", async () => {
+    // No records yet: both are missing, and the line says so (it used to say `none` for every cause).
+    const bare = await makeJob(fx);
+    const missing = await runCli("admin", ["record", bare.job.id]);
+    expect(missing.exitCode).toBe(0);
+    expect(missing.stdout).toContain("provenance: missing");
+    expect(missing.stdout).toContain("manifest: missing");
+
+    // Present but broken: not JSON for provenance, not an object for the manifest.
+    const broken = await endedJob(fx, 30);
+    await fx.harness.records.put(recordKey(broken.job.id, "provenance.json"), "not json {");
+    await fx.harness.records.put(recordKey(broken.job.id, RECORDS_RESULT_MANIFEST_FILE), "[1, 2]");
+    const unreadable = await runCli("admin", ["record", broken.job.id]);
+    expect(unreadable.stdout).toContain("provenance: unreadable");
+    expect(unreadable.stdout).toContain("manifest: unreadable");
+    expect(unreadable.stdout).not.toContain("provenance: none");
+
+    // Present and empty is a value, not an absence.
+    const empty = await endedJob(fx, 30);
+    await fx.harness.records.put(recordKey(empty.job.id, "provenance.json"), "{}");
+    await fx.harness.records.put(
+      recordKey(empty.job.id, RECORDS_RESULT_MANIFEST_FILE),
+      JSON.stringify({ files: [] }),
+    );
+    const present = await runCli("admin", ["record", empty.job.id]);
+    expect(present.stdout).toContain("manifest: 0 file(s), 0 bytes");
+    expect(present.stdout).not.toContain("provenance: missing");
+    expect(present.stdout).not.toContain("provenance: unreadable");
+    // The launcher's file names ride along, and the answer parses.
+    expect(present.stdout).toContain("launcher files:");
+    const asJson = await runCli("admin", ["record", broken.job.id, "--json"]);
+    expect(ComputeRecordResponseSchema.safeParse(JSON.parse(asJson.stdout)).success).toBe(true);
+    expect(JSON.parse(asJson.stdout)).toMatchObject({
+      provenance_status: "unreadable",
+      manifest_status: "unreadable",
+    });
+  });
+
+  test("--identity refuses an administrator, needs a reason, and for the owner prints the snapshot (MUTATION: let an administrator read it)", async () => {
+    const made = await makeJob(fx);
+    const noReason = await runCli("owner", ["record", made.job.id, "--identity"]);
+    expect(noReason.exitCode).toBe(1);
+    expect(noReason.stdout + noReason.stderr).toContain("--reason is required");
+    expect(seen).toEqual([]);
+    const shortReason = await runCli("owner", [
+      "record",
+      made.job.id,
+      "--identity",
+      "--reason",
+      "short",
+    ]);
+    expect(shortReason.exitCode).toBe(1);
+    expect(seen).toEqual([]);
+
+    const admin = await runCli("admin", [
+      "record",
+      made.job.id,
+      "--identity",
+      "--reason",
+      "an administrator asking",
+    ]);
+    expect(admin.exitCode).toBe(1);
+    expect(admin.stdout + admin.stderr).toContain("Only an owner");
+    clean(admin);
+    expect(
+      sql.one<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM audit_log WHERE action = 'compute.record.read'",
+      ).n,
+    ).toBe(0);
+
+    const owner = await runCli("owner", [
+      "record",
+      made.job.id,
+      "--identity",
+      "--reason",
+      "subject access request",
+    ]);
+    expect(owner.exitCode).toBe(0);
+    expect(JSON.parse(owner.stdout)).toMatchObject({
+      name: "Ada Lovelace",
+      account_id: made.accountId,
+    });
+    expect(
+      sql.one<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM audit_log WHERE action = 'compute.record.read'",
+      ).n,
+    ).toBe(1);
+    const spec = await runCli("owner", [
+      "record",
+      made.job.id,
+      "--spec",
+      "--reason",
+      "checking the request",
+      "--json",
+    ]);
+    expect(JSON.parse(spec.stdout)).toMatchObject({ name: "spec.json", kind: "bytes" });
+  });
+
+  test("--identity and --spec together, and a reason with neither, are refused before anything is sent", async () => {
+    const made = await makeJob(fx);
+    expect(
+      (
+        await runCli("owner", [
+          "record",
+          made.job.id,
+          "--identity",
+          "--spec",
+          "--reason",
+          "a perfectly fine reason",
+        ])
+      ).exitCode,
+    ).toBe(1);
+    expect(
+      (await runCli("owner", ["record", made.job.id, "--reason", "a perfectly fine reason"]))
+        .exitCode,
+    ).toBe(1);
+    expect(seen).toEqual([]);
+  });
+
+  test("an unknown reference exits 1", async () => {
+    const r = await runCli("admin", ["record", "job_000000000000000000000000"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout + r.stderr).toContain("no such job");
+  });
+
+  test("an answer with keys the CLI does not know is shown, not refused (the parse is open)", async () => {
+    const made = await makeJob(fx);
+    augment = true;
+    const r = await runCli("admin", ["record", made.job.id]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain(`job ${made.job.id}`);
+  });
+});
+
+describe("report and access-report", () => {
+  test("report totals an account in a range, and --csv prints comma-separated values and nothing else", async () => {
+    const a = await makeJob(fx);
+    sql.run(
+      "UPDATE compute_jobs SET charged_milli = 1500, created_at = '2026-10-05 10:00:00' WHERE id = ?",
+      a.job.id,
+    );
+    const text = await runCli("admin", [
+      "report",
+      "--account",
+      String(a.accountId),
+      "--from",
+      "2026-10-01",
+      "--to",
+      "2026-10-31",
+    ]);
+    expect(text.exitCode).toBe(0);
+    // The job is held and unsettled: the total says so, so a running account does not look cheaper.
+    expect(text.stdout).toMatch(
+      /1 job\(s\), 1\.5 SU charged, 1 not settled \([0-9.]+ SU still held\)/,
+    );
+    expect(text.stdout).toContain("(not settled,");
+    clean(text);
+    const csv = await runCli("admin", [
+      "report",
+      "--account",
+      String(a.accountId),
+      "--from",
+      "2026-10-01",
+      "--to",
+      "2026-10-31",
+      "--csv",
+    ]);
+    const lines = csv.stdout.trim().split("\n");
+    expect(lines[0]).toBe(
+      "id,created_at,ended_at,state,partition,pool,source,su_charged,settled,su_held,flags",
+    );
+    const held = sql.one<{ h: number }>(
+      "SELECT held_milli AS h FROM compute_jobs WHERE id = ?",
+      a.job.id,
+    ).h;
+    expect(held).toBeGreaterThan(0);
+    expect(lines[1]).toBe(
+      `${a.job.id},2026-10-05 10:00:00,,created,shared,cpu,cli,1.5,no,${formatSu(held)},`,
+    );
+    expect(lines).toHaveLength(2);
+    expect(csv.stderr.trim()).toBe("");
+  });
+
+  test("report refuses a bad account, bad dates, and --csv with --json, before anything is sent", async () => {
+    for (const args of [
+      ["--account", "x", "--from", "2026-10-01", "--to", "2026-10-31"],
+      ["--account", "1", "--from", "Oct", "--to", "2026-10-31"],
+      ["--account", "1", "--from", "2026-10-01", "--to", "2026-10-31", "--csv", "--json"],
+    ]) {
+      expect([args.join(" "), (await runCli("admin", ["report", ...args])).exitCode]).toEqual([
+        args.join(" "),
+        1,
+      ]);
+    }
+    expect(
+      (await runCli("admin", ["report", "--from", "2026-10-01", "--to", "2026-10-31"])).exitCode,
+    ).toBe(1);
+    expect(seen).toEqual([]);
+  });
+
+  test("access-report counts a person once however many jobs, and --csv ends with a total", async () => {
+    const a = await makeJob(fx);
+    const a2 = await makeJob(fx);
+    const b = await makeJob(fx);
+    const gateway = sql.one<{ gateway_user: string }>(
+      "SELECT gateway_user FROM compute_jobs WHERE id = ?",
+      a.job.id,
+    ).gateway_user;
+    sql.run(
+      "UPDATE compute_jobs SET gateway_user = ?, account_id = ? WHERE id = ?",
+      gateway,
+      a.accountId,
+      a2.job.id,
+    );
+    for (const [i, j] of [a, a2, b].entries())
+      sql.run(
+        "UPDATE compute_jobs SET slurm_job_id = ?, remote_submitted_at = '2026-11-15 12:00:00' WHERE id = ?",
+        `${6000 + i}`,
+        j.job.id,
+      );
+    const text = await runCli("admin", ["access-report", "--quarter", "2026Q4"]);
+    expect(text.exitCode).toBe(0);
+    expect(text.stdout).toContain("2026Q4: 2 distinct user(s), 3 job(s)");
+    expect(text.stdout).not.toContain("gw_");
+    const csv = await runCli("admin", ["access-report", "--quarter", "2026Q4", "--csv"]);
+    expect(csv.stdout.trim().split("\n")).toEqual([
+      "quarter,partition,source,distinct_users,jobs",
+      "2026Q4,shared,cli,2,3",
+      "2026Q4,total,total,2,3",
+    ]);
+    for (const q of ["2026Q5", "2026", "x"]) {
+      expect((await runCli("admin", ["access-report", "--quarter", q])).exitCode).toBe(1);
+    }
+  });
+});
+
+describe("holds", () => {
+  test("the owner places and releases one on a job; an administrator is refused; the target is checked locally", async () => {
+    const made = await makeJob(fx);
+    const target = `job:${made.job.id}`;
+    const refused = await runCli("admin", ["hold", target, "--reason", "legal_request"]);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stdout + refused.stderr).toContain("Only an owner");
+    const placed = await runCli("owner", ["hold", target, "--reason", "legal_request"]);
+    expect(placed.exitCode).toBe(0);
+    expect(placed.stdout).toContain(`placed on ${target}`);
+    const second = await runCli("owner", ["hold", target, "--reason", "legal_request"]);
+    expect(second.exitCode).toBe(1);
+    expect(second.stdout + second.stderr).toContain("already under a hold");
+    const listed = await runCli("admin", ["holds"]);
+    expect(listed.stdout).toContain(`job:${made.job.id}`);
+    expect((await runCli("admin", ["release-hold", target])).exitCode).toBe(1);
+    const released = await runCli("owner", ["release-hold", target]);
+    expect(released.exitCode).toBe(0);
+    expect(released.stdout).toContain("released");
+    expect((await runCli("owner", ["release-hold", target])).exitCode).toBe(1);
+    expect((await runCli("admin", ["holds"])).stdout).toContain("No active holds.");
+    seen = [];
+    for (const bad of ["job:nope", "account:0", "account:abc", "team:1", "job", "account:1:2"]) {
+      expect([
+        bad,
+        (await runCli("owner", ["hold", bad, "--reason", "legal_request"])).exitCode,
+      ]).toEqual([bad, 1]);
+      expect((await runCli("owner", ["release-hold", bad])).exitCode).toBe(1);
+    }
+    expect((await runCli("owner", ["hold", target, "--reason", "Not A Word"])).exitCode).toBe(1);
+    expect(seen).toEqual([]);
+  });
+
+  test("an account hold is placed by number", async () => {
+    const made = await makeJob(fx);
+    const r = await runCli("owner", [
+      "hold",
+      `account:${made.accountId}`,
+      "--reason",
+      "legal_request",
+      "--json",
+    ]);
+    expect(r.exitCode).toBe(0);
+    expect(JSON.parse(r.stdout).hold).toMatchObject({
+      scope: "account",
+      ref: String(made.accountId),
+    });
+  });
+});
+
+describe("holds listing", () => {
+  test("a list that is cut says so and a list that is not does not", async () => {
+    const none = await runCli("admin", ["holds"]);
+    expect(none.stdout).toContain("No active holds.");
+    expect(none.stdout).not.toContain("The list is cut");
+    for (let i = 1; i <= 201; i++) {
+      sql.run(
+        "INSERT INTO compute_legal_holds (scope, ref, reason, placed_by) VALUES ('account', ?, 'legal_request', 1)",
+        String(i),
+      );
+    }
+    const cut = await runCli("admin", ["holds"]);
+    expect(cut.exitCode).toBe(0);
+    expect(cut.stdout).toContain("The list is cut at the oldest 200 active holds");
+    expect(cut.stdout.trim().split("\n")).toHaveLength(201);
+    const asJson = await runCli("admin", ["holds", "--json"]);
+    expect(JSON.parse(asJson.stdout).truncated).toBe(true);
+  }, 60_000);
+});
+
+describe("ACCESS reports", () => {
+  const FAILED = "job_00000000000000000000000a";
+  function seed() {
+    sql.run(
+      `INSERT INTO compute_access_reports (job_id, state, attempts, last_error_code) VALUES
+         (?, 'failed', 1, 'outcome_unknown'), ('job_00000000000000000000000b', 'failed', 0, 'no_gateway_user'),
+         ('job_00000000000000000000000c', 'pending', 0, NULL)`,
+      FAILED,
+    );
+  }
+
+  test("the failed ones are listed with their fixed word and counted by word", async () => {
+    seed();
+    const r = await runCli("admin", ["access-reports"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("failed ACCESS reports: no_gateway_user 1, outcome_unknown 1");
+    expect(r.stdout).toContain(`${FAILED}  failed  attempts 1  outcome_unknown`);
+    expect(r.stdout).not.toContain("job_00000000000000000000000c");
+    expect((await runCli("admin", ["access-reports", "--state", "weird"])).exitCode).toBe(1);
+  });
+
+  test("the re-queue needs --confirmed-not-recorded (nothing is sent without it), the owner, and a failed report", async () => {
+    seed();
+    const missing = await runCli("owner", ["requeue-access-report", FAILED]);
+    expect(missing.exitCode).toBe(1);
+    expect(missing.stdout + missing.stderr).toContain("--confirmed-not-recorded");
+    expect(seen).toEqual([]);
+    const admin = await runCli("admin", [
+      "requeue-access-report",
+      FAILED,
+      "--confirmed-not-recorded",
+    ]);
+    expect(admin.exitCode).toBe(1);
+    expect(admin.stdout + admin.stderr).toContain("Only an owner");
+    expect(
+      sql.one<{ state: string }>(
+        "SELECT state FROM compute_access_reports WHERE job_id = ?",
+        FAILED,
+      ).state,
+    ).toBe("failed");
+    const ok = await runCli("owner", ["requeue-access-report", FAILED, "--confirmed-not-recorded"]);
+    expect(ok.exitCode).toBe(0);
+    expect(ok.stdout).toContain("pending again");
+    expect(ok.stdout).toContain("outcome_unknown");
+    expect(
+      sql.one<{ state: string }>(
+        "SELECT state FROM compute_access_reports WHERE job_id = ?",
+        FAILED,
+      ).state,
+    ).toBe("pending");
+    // A report that is not failed has nothing to re-queue.
+    const again = await runCli("owner", [
+      "requeue-access-report",
+      FAILED,
+      "--confirmed-not-recorded",
+    ]);
+    expect(again.exitCode).toBe(1);
+    expect(
+      (await runCli("owner", ["requeue-access-report", "nope", "--confirmed-not-recorded"]))
+        .exitCode,
+    ).toBe(1);
+  });
+});
+
+describe("observer mint", () => {
+  test("prints the run and the token once, and the token is not stored", async () => {
+    const r = await runCli("admin", ["mint"], ["observer"]);
+    expect(r.exitCode).toBe(0);
+    const token = /token (\S+)/.exec(r.stdout)?.[1] ?? "";
+    expect(token).toMatch(/^[0-9a-f-]{36}\.[0-9a-f]{64}$/);
+    expect(JSON.stringify(sql.all("SELECT * FROM compute_observer_runs"))).not.toContain(
+      token.split(".")[1] as string,
+    );
+    const json = await runCli("admin", ["mint", "--json"], ["observer"]);
+    expect(JSON.parse(json.stdout)).toMatchObject({ expires_in_minutes: 60 });
+    expect((await runCli("member", ["mint"], ["observer"])).exitCode).toBe(1);
+  });
+});

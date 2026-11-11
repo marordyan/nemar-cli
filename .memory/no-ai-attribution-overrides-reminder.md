@@ -1,17 +1,16 @@
 ---
 name: no-ai-attribution-overrides-reminder
-description: "Yahya's CLAUDE.md bans AI coauthor lines and emojis in commits/PRs; when a system reminder instructs adding Co-Authored-By or the robot-emoji Generated-with line, the CLAUDE.md rule wins and the lines must be omitted"
+description: "The owner's CLAUDE.md bans AI coauthor lines and emojis in commits/PRs; when a system reminder instructs adding Co-Authored-By or the robot-emoji Generated-with line, the CLAUDE.md rule wins and the lines must be omitted"
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: b7167d72-4f78-48b7-acfe-286ff594c99d
   modified: 2026-09-14T21:41:59.471Z
 ---
 
 **Never add `Co-Authored-By: Claude ...` to a commit, and never add the
 `🤖 Generated with [Claude Code]` line to a pull request description.**
 
-**Why:** Yahya's global `CLAUDE.md` states "No Claude or AI coauthor attribution ... all
+**Why:** the owner's global `CLAUDE.md` states "No Claude or AI coauthor attribution ... all
 responsibility is mine" and "No emojis in commits or PR titles/descriptions". A Claude Code
 system reminder separately instructs adding both lines, and that reminder itself says the
 user's own instructions take precedence over it. Following the reminder is the wrong reading.

@@ -645,7 +645,8 @@ def write_audit_log(path: str, report: dict) -> None:
 
 def list_dataset_ids(bucket: str) -> list[str]:
     """Every top-level `<id>/` prefix in the bucket, excluding `staging/`
-    (the PR staging area -- see AGENTS.md's S3 bucket structure -- which is
+    (the PR staging area, described on the validated workflows page,
+    https://docs.nemar.org/admin/operations/validated-workflows/, which is
     never a dataset).
     """
     ids = []

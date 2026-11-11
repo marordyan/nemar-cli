@@ -560,11 +560,15 @@ describe("the route: the gate, then the bytes", () => {
     //
     // What is worth pinning is the memory claim -- a 16 MB body is not drained
     // into a 128 MB isolate, which is a kill that cannot be caught and logged
-    // -- so the bound is an eighth of the body, far above any socket buffer
-    // and far below draining. Cancellation itself cannot be asserted from
-    // here: the server-side stream's cancel() is a different object and a real
-    // HTTP server does not reliably forward the client's abort to it.
-    expect(pushed).toBeLessThan(TOTAL / 8);
+    // -- so the bound is half of the body, far above any socket buffer
+    // and far below draining. It was an eighth, then a quarter, until the pure shards ran four
+    // worker processes on a 4-vCPU runner, where 42 chunks were produced
+    // before the cancel was noticed (the count scales with machine load, as
+    // above), so the bound has headroom; 128 of 256 still shows the body was not
+    // drained. Cancellation itself cannot be asserted from here: the
+    // server-side stream's cancel() is a different object and a real HTTP
+    // server does not reliably forward the client's abort to it.
+    expect(pushed).toBeLessThan(TOTAL / 2);
   });
 
   test("above the buffer ceiling it streams, with NO declared length", async () => {

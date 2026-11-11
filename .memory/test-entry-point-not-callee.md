@@ -4,7 +4,6 @@ description: Tests that call a helper instead of the orchestration entry point c
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 1eaa8ab3-9ce1-49dc-ae4a-fa6309aec33a
   modified: 2026-08-25T08:05:40.583Z
 ---
 

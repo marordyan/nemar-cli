@@ -7,6 +7,10 @@
  * counted: a staging or "test" environment, a wrong or missing token, a token that
  * is not configured, an empty string. The per-route budgets honor the same two
  * environment-level bypasses and nothing more.
+ *
+ * One more thing is not counted, and it is a PATH, not a caller: the OpenID Connect discovery document
+ * and the signing keys' public set (ADR 0119; `OIDC_PUBLIC_DOCUMENT_PATHS`). It is pinned, with the
+ * request refused on a path that is not exempt, in `oidc-discovery.test.ts`.
  */
 
 import { describe, expect, test } from "bun:test";

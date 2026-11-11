@@ -17,6 +17,7 @@ import path from "node:path";
 import type { ZarrVerifiedFile } from "../../../scripts/scrub/contract";
 import type { ArchivesDroppedFile } from "../../../scripts/scrub/s3/archives-stage";
 import { type S3Standin, type Snapshot, startS3Standin } from "../helpers/s3-standin";
+import { settleAll } from "./concurrency";
 import { expectStopped } from "./refusal";
 import {
   BUCKET,
@@ -46,6 +47,13 @@ import {
 afterAll(removeTempDirs);
 
 let standin: S3Standin;
+/**
+ * The stand-ins the scenarios of one test spread over: `pool[0]` is `standin`. A scenario that is
+ * independent of its siblings runs against its own, so up to POOL real CLI runs are in flight
+ * at once and no more (the CI runners have four cores and other files run beside this one).
+ */
+const POOL = 3;
+let pool: S3Standin[] = [];
 let snap: Snapshot;
 /** The working directory as runbook step 14 leaves it: every proof there, each for this plan. */
 let proven: string;
@@ -101,9 +109,26 @@ beforeAll(async () => {
   writeGitVerified(built.dir);
   proven = built.dir;
   snap = standin.snapshot();
+  pool = [standin, ...Array.from({ length: POOL - 1 }, () => startS3Standin())];
 }, SLOW);
 
-afterAll(() => standin?.stop());
+afterAll(() => {
+  for (const s of pool) s.stop();
+});
+
+/**
+ * Run independent scenarios, at most POOL at a time, each against a stand-in of its own that
+ * `seeded(s)` restores. Every scenario of a round settles before the test fails, so no CLI run
+ * outlives the test that started it; the first failure is the one reported.
+ */
+async function concurrently<T>(
+  items: T[],
+  run: (item: T, s: S3Standin) => Promise<void>,
+): Promise<void> {
+  for (let i = 0; i < items.length; i += POOL) {
+    await settleAll(items.slice(i, i + POOL).map((item, j) => run(item, pool[j] as S3Standin)));
+  }
+}
 
 interface Seeded {
   dir: string;
@@ -113,36 +138,36 @@ interface Seeded {
   bystanders: Record<string, string[]>;
 }
 
-async function seeded(): Promise<Seeded> {
-  standin.restore(snap);
+async function seeded(s: S3Standin = standin): Promise<Seeded> {
+  s.restore(snap);
   const dir = copyDir(proven);
   const ids = [
-    standin.putObject(BUCKET, A, body("zip one")),
-    standin.putObject(BUCKET, A, body("zip two")),
-    standin.putObject(BUCKET, B, body("zip b")),
-    standin.putDeleteMarker(BUCKET, B),
-    standin.putObject(BUCKET, C, body("zip c1")),
-    standin.putDeleteMarker(BUCKET, C),
-    standin.putObject(BUCKET, C, body("zip c2")),
+    s.putObject(BUCKET, A, body("zip one")),
+    s.putObject(BUCKET, A, body("zip two")),
+    s.putObject(BUCKET, B, body("zip b")),
+    s.putDeleteMarker(BUCKET, B),
+    s.putObject(BUCKET, C, body("zip c1")),
+    s.putDeleteMarker(BUCKET, C),
+    s.putObject(BUCKET, C, body("zip c2")),
   ];
-  for (const k of BYSTANDERS.slice(0, 2)) standin.putObject(BUCKET, k, body("not an archive"));
-  standin.putObject(BUCKET, BYSTANDERS[3] as string, body("another dataset"));
+  for (const k of BYSTANDERS.slice(0, 2)) s.putObject(BUCKET, k, body("not an archive"));
+  s.putObject(BUCKET, BYSTANDERS[3] as string, body("another dataset"));
   const bystanders: Record<string, string[]> = {};
   for (const k of BYSTANDERS) {
-    bystanders[k] = standin.versions(BUCKET, k).map((v) => v.versionId);
+    bystanders[k] = s.versions(BUCKET, k).map((v) => v.versionId);
   }
-  standin.log.length = 0;
+  s.log.length = 0;
   return { dir, ids, bystanders };
 }
 
 const bystanderIds = (key: string) => standin.versions(BUCKET, key).map((v) => v.versionId);
 
 /** Every archive version and marker is still there, and nothing was deleted. */
-function expectArchivesIntact(ids: string[]) {
-  expect(deleteRequests(standin)).toBe(0);
-  expect(
-    [A, B, C].flatMap((k) => standin.versions(BUCKET, k).map((v) => v.versionId)).sort(),
-  ).toEqual([...ids].sort());
+function expectArchivesIntact(ids: string[], s: S3Standin = standin) {
+  expect(deleteRequests(s)).toBe(0);
+  expect([A, B, C].flatMap((k) => s.versions(BUCKET, k).map((v) => v.versionId)).sort()).toEqual(
+    [...ids].sort(),
+  );
 }
 
 describe("drop-archives", () => {
@@ -326,13 +351,19 @@ describe("drop-archives: every proof of the scrub must be there first (runbook s
   ];
 
   /** Refused with exactly `word` in both modes, the dry run still counting the archives. */
-  async function refusedBoth(dir: string, ids: string[], word: string, label = word) {
-    const dry = await runScrub(standin, dropArgs(dir));
+  async function refusedBoth(
+    dir: string,
+    ids: string[],
+    word: string,
+    label = word,
+    s: S3Standin = standin,
+  ) {
+    const dry = await runScrub(s, dropArgs(dir));
     expectStopped(dry, 3, word, `dry run: ${label}`);
     expect(dry.stdout, label).toContain("would delete versions=5 markers=2 across 3 keys");
-    const exec = await runScrub(standin, dropArgs(dir, ["--execute"]));
+    const exec = await runScrub(s, dropArgs(dir, ["--execute"]));
     expectStopped(exec, 3, word, `execute: ${label}`);
-    expectArchivesIntact(ids);
+    expectArchivesIntact(ids, s);
     expect(has(dir, "archives-dropped.json"), label).toBe(false);
     return dry;
   }
@@ -358,22 +389,19 @@ describe("drop-archives: every proof of the scrub must be there first (runbook s
   test(
     "each proof is required on its own",
     async () => {
-      for (const [file, word] of PROOFS) {
-        const { dir, ids } = await seeded();
-        rmSync(path.join(dir, file));
-        await refusedBoth(dir, ids, word, file);
-      }
       // The files the proofs are bound to: the assembly both S3 proofs name, the keymap the git
       // proof names, and the zarr plan the Zarr proof names.
-      for (const [file, word] of [
+      const required: Array<readonly [string, string]> = [
+        ...PROOFS,
         ["assembled.json", "assembled.json-missing"],
         ["keymap.json", "keymap.json-missing"],
         ["zarr-plan.json", "zarr-not-scrubbed"],
-      ] as const) {
-        const { dir, ids } = await seeded();
+      ];
+      await concurrently(required, async ([file, word], s) => {
+        const { dir, ids } = await seeded(s);
         rmSync(path.join(dir, file));
-        await refusedBoth(dir, ids, word, file);
-      }
+        await refusedBoth(dir, ids, word, file, s);
+      });
     },
     SLOW,
   );
@@ -383,7 +411,7 @@ describe("drop-archives: every proof of the scrub must be there first (runbook s
     async () => {
       // Another plan of the same dataset, with its own Zarr proof and git proof made by the same
       // means as the real ones: the proofs are well formed and name the wrong plan.json.
-      let { dir, ids } = await seeded();
+      const { dir, ids } = await seeded();
       const other = tempDir("other-plan");
       const replan = await runScrub(standin, planArgs(other));
       expect(replan.exitCode, replan.all).toBe(0);
@@ -395,9 +423,10 @@ describe("drop-archives: every proof of the scrub must be there first (runbook s
       cpSync(path.join(dir, "keymap.json"), path.join(other, "keymap.json"));
       writeGitVerified(other);
 
-      const swap = (file: string) => cpSync(path.join(other, file), path.join(dir, file));
-      swap("zarr-verified.json");
-      swap("zarr-plan.json");
+      const swap = (to: string, file: string) =>
+        cpSync(path.join(other, file), path.join(to, file));
+      swap(dir, "zarr-verified.json");
+      swap(dir, "zarr-plan.json");
       const zarrDry = await refusedBoth(
         dir,
         ids,
@@ -406,57 +435,82 @@ describe("drop-archives: every proof of the scrub must be there first (runbook s
       );
       expect(zarrDry.stdout).toContain("zarr-not-scrubbed: for another plan.json");
 
-      ({ dir, ids } = await seeded());
-      swap("git-verified.json");
-      const gitDry = await refusedBoth(dir, ids, "git-proof-stale", "git proof of another plan");
-      expect(gitDry.stdout).toContain("git-proof-stale: names another plan.json");
-
-      // A verify of the local rewrite is not a verify of what was pushed.
-      ({ dir, ids } = await seeded());
-      writeGitVerified(dir, { mode: "local" });
-      await refusedBoth(dir, ids, "git-proof-stale", "local git proof");
-      // Another keymap.
-      ({ dir, ids } = await seeded());
-      writeGitVerified(dir, { keymapSha256: "b".repeat(64) });
-      await refusedBoth(dir, ids, "git-proof-stale", "git proof of another keymap");
-      // Another git plan, when a git-plan.json is in the working directory.
-      ({ dir, ids } = await seeded());
-      writeFileSync(path.join(dir, "git-plan.json"), '{"version":1}\n');
-      const gitPlanDry = await refusedBoth(
-        dir,
-        ids,
-        "git-proof-stale",
-        "git proof of another git plan",
-      );
-      expect(gitPlanDry.stdout).toContain("git-proof-stale: names another git-plan.json");
-
       // The S3 proofs name the bytes of another assembly.
-      ({ dir, ids } = await seeded());
       const otherAssembly = sha256(
-        Buffer.from(`${readFileSync(path.join(dir, "assembled.json"), "utf8")}\n`),
+        Buffer.from(`${readFileSync(path.join(proven, "assembled.json"), "utf8")}\n`),
       );
-      writeJson(dir, "verified.json", {
-        ...readJson<Record<string, unknown>>(dir, "verified.json"),
-        assembledSha256: otherAssembly,
+      // Each scenario starts from a fresh copy of the proven directory and breaks one proof.
+      const scenarios: Array<{
+        label: string;
+        word: string;
+        prepare: (dir: string) => void;
+        expectDry?: string;
+      }> = [
+        {
+          label: "git proof of another plan",
+          word: "git-proof-stale",
+          prepare: (d) => swap(d, "git-verified.json"),
+          expectDry: "git-proof-stale: names another plan.json",
+        },
+        {
+          // A verify of the local rewrite is not a verify of what was pushed.
+          label: "local git proof",
+          word: "git-proof-stale",
+          prepare: (d) => writeGitVerified(d, { mode: "local" }),
+        },
+        {
+          label: "git proof of another keymap",
+          word: "git-proof-stale",
+          prepare: (d) => writeGitVerified(d, { keymapSha256: "b".repeat(64) }),
+        },
+        {
+          // Another git plan, when a git-plan.json is in the working directory.
+          label: "git proof of another git plan",
+          word: "git-proof-stale",
+          prepare: (d) => writeFileSync(path.join(d, "git-plan.json"), '{"version":1}\n'),
+          expectDry: "git-proof-stale: names another git-plan.json",
+        },
+        {
+          label: "verified.json of another assembly",
+          word: "verified-stale",
+          prepare: (d) =>
+            writeJson(d, "verified.json", {
+              ...readJson<Record<string, unknown>>(d, "verified.json"),
+              assembledSha256: otherAssembly,
+            }),
+        },
+        {
+          label: "re-hash of another assembly",
+          word: "new-hash-verified-stale",
+          prepare: (d) => writeHashVerified(d, { assembledSha256: otherAssembly }),
+        },
+        // Another dataset, proof by proof.
+        {
+          label: "re-hash of another dataset",
+          word: "proof-wrong-dataset",
+          prepare: (d) => writeHashVerified(d, { dataset: "xx090412" }),
+        },
+        {
+          label: "git proof of another dataset",
+          word: "proof-wrong-dataset",
+          prepare: (d) => writeGitVerified(d, { dataset: "xx090412" }),
+        },
+        {
+          label: "zarr proof of another dataset",
+          word: "zarr-not-scrubbed",
+          prepare: (d) =>
+            writeJson(d, "zarr-verified.json", {
+              ...readJson<ZarrVerifiedFile>(d, "zarr-verified.json"),
+              dataset: "xx090412",
+            }),
+        },
+      ];
+      await concurrently(scenarios, async (sc, s) => {
+        const fresh = await seeded(s);
+        sc.prepare(fresh.dir);
+        const dry = await refusedBoth(fresh.dir, fresh.ids, sc.word, sc.label, s);
+        if (sc.expectDry) expect(dry.stdout, sc.label).toContain(sc.expectDry);
       });
-      await refusedBoth(dir, ids, "verified-stale", "verified.json of another assembly");
-      ({ dir, ids } = await seeded());
-      writeHashVerified(dir, { assembledSha256: otherAssembly });
-      await refusedBoth(dir, ids, "new-hash-verified-stale", "re-hash of another assembly");
-
-      // Another dataset, proof by proof.
-      ({ dir, ids } = await seeded());
-      writeHashVerified(dir, { dataset: "xx090412" });
-      await refusedBoth(dir, ids, "proof-wrong-dataset", "re-hash of another dataset");
-      ({ dir, ids } = await seeded());
-      writeGitVerified(dir, { dataset: "xx090412" });
-      await refusedBoth(dir, ids, "proof-wrong-dataset", "git proof of another dataset");
-      ({ dir, ids } = await seeded());
-      writeJson(dir, "zarr-verified.json", {
-        ...readJson<ZarrVerifiedFile>(dir, "zarr-verified.json"),
-        dataset: "xx090412",
-      });
-      await refusedBoth(dir, ids, "zarr-not-scrubbed", "zarr proof of another dataset");
     },
     SLOW,
   );
@@ -464,32 +518,59 @@ describe("drop-archives: every proof of the scrub must be there first (runbook s
   test(
     "a proof is read by the contract's strict parser",
     async () => {
-      // A field the contract does not name: not the file git-scrub writes.
-      let { dir, ids } = await seeded();
-      writeJson(dir, "git-verified.json", {
-        ...readJson<Record<string, unknown>>(dir, "git-verified.json"),
-        more: 1,
+      const scenarios: Array<{
+        label: string;
+        word: string;
+        prepare: (dir: string) => void;
+        expectDry?: string;
+      }> = [
+        {
+          // A field the contract does not name: not the file git-scrub writes.
+          label: "git proof with an extra field",
+          word: "git-proof-invalid",
+          prepare: (d) =>
+            writeJson(d, "git-verified.json", {
+              ...readJson<Record<string, unknown>>(d, "git-verified.json"),
+              more: 1,
+            }),
+        },
+        {
+          // A verify proof without its counts.
+          label: "verified.json without counts",
+          word: "verified.json-invalid",
+          prepare: (d) => {
+            const noCounts = Object.entries(readJson<Record<string, unknown>>(d, "verified.json"));
+            writeJson(
+              d,
+              "verified.json",
+              Object.fromEntries(noCounts.filter(([k]) => k !== "counts")),
+            );
+          },
+        },
+        {
+          // Not JSON at all.
+          label: "re-hash not JSON",
+          word: "new-hash-verified.json-unparseable",
+          prepare: (d) => writeFileSync(path.join(d, "new-hash-verified.json"), "{"),
+        },
+        {
+          // A Zarr proof whose counts do not add up.
+          label: "zarr counts",
+          word: "zarr-not-scrubbed",
+          prepare: (d) =>
+            writeJson(d, "zarr-verified.json", {
+              ...readJson<ZarrVerifiedFile>(d, "zarr-verified.json"),
+              counts: { stores: 5, docs: 5, rewritten: 1, untouched: 1 },
+            }),
+          expectDry: "zarr-not-scrubbed: zarr-verified.json unreadable or invalid",
+        },
+      ];
+      await concurrently(scenarios, async (sc, s) => {
+        const { dir, ids } = await seeded(s);
+        sc.prepare(dir);
+        const dry = await refusedBoth(dir, ids, sc.word, sc.label, s);
+        if (sc.expectDry) expect(dry.stdout, sc.label).toContain(sc.expectDry);
       });
-      await refusedBoth(dir, ids, "git-proof-invalid", "git proof with an extra field");
-      // A verify proof without its counts.
-      ({ dir, ids } = await seeded());
-      const noCounts = Object.entries(readJson<Record<string, unknown>>(dir, "verified.json"));
-      writeJson(dir, "verified.json", Object.fromEntries(noCounts.filter(([k]) => k !== "counts")));
-      await refusedBoth(dir, ids, "verified.json-invalid", "verified.json without counts");
-      // Not JSON at all.
-      ({ dir, ids } = await seeded());
-      writeFileSync(path.join(dir, "new-hash-verified.json"), "{");
-      await refusedBoth(dir, ids, "new-hash-verified.json-unparseable", "re-hash not JSON");
-      // A Zarr proof whose counts do not add up.
-      ({ dir, ids } = await seeded());
-      writeJson(dir, "zarr-verified.json", {
-        ...readJson<ZarrVerifiedFile>(dir, "zarr-verified.json"),
-        counts: { stores: 5, docs: 5, rewritten: 1, untouched: 1 },
-      });
-      const zarrDry = await refusedBoth(dir, ids, "zarr-not-scrubbed", "zarr counts");
-      expect(zarrDry.stdout).toContain(
-        "zarr-not-scrubbed: zarr-verified.json unreadable or invalid",
-      );
     },
     SLOW,
   );
@@ -497,29 +578,32 @@ describe("drop-archives: every proof of the scrub must be there first (runbook s
   test(
     "a no-zarr proof stands only while no Zarr object is current",
     async () => {
-      // The proof of an empty prefix, for this plan, while a store root is current: refused.
-      let { dir, ids } = await seeded();
-      writeJson(dir, "zarr-verified.json", {
-        ...readJson<ZarrVerifiedFile>(dir, "zarr-verified.json"),
-        found: "no-zarr",
-        stores: [],
-        counts: { stores: 0, docs: 0, rewritten: 0, untouched: 0 },
+      await concurrently(["over-a-store", "empty-prefix"] as const, async (scenario, s) => {
+        const { dir, ids } = await seeded(s);
+        if (scenario === "over-a-store") {
+          // The proof of an empty prefix, for this plan, while a store root is current: refused.
+          writeJson(dir, "zarr-verified.json", {
+            ...readJson<ZarrVerifiedFile>(dir, "zarr-verified.json"),
+            found: "no-zarr",
+            stores: [],
+            counts: { stores: 0, docs: 0, rewritten: 0, untouched: 0 },
+          });
+          const dry = await refusedBoth(dir, ids, "zarr-not-scrubbed", "no-zarr over a store", s);
+          expect(dry.stdout).toContain("says no-zarr while Zarr objects are current");
+          return;
+        }
+        // A dataset with no Zarr copy: the zarr stage proves no-zarr, and that is enough.
+        for (const v of [...s.versions(BUCKET, ZARR_ROOT)]) {
+          s.dropVersion(BUCKET, ZARR_ROOT, v.versionId);
+        }
+        const zarr = await runScrub(s, ["zarr", "--dir", dir, "--execute"]);
+        expect(zarr.exitCode, zarr.all).toBe(0);
+        expect(readJson<ZarrVerifiedFile>(dir, "zarr-verified.json").found).toBe("no-zarr");
+        s.log.length = 0;
+        const r = await runScrub(s, dropArgs(dir, ["--execute"]));
+        expect(r.exitCode, r.all).toBe(0);
+        expect(batchDeleted(s).length).toBe(7);
       });
-      const dry = await refusedBoth(dir, ids, "zarr-not-scrubbed", "no-zarr over a store");
-      expect(dry.stdout).toContain("says no-zarr while Zarr objects are current");
-
-      // A dataset with no Zarr copy: the zarr stage proves no-zarr, and that is enough.
-      ({ dir, ids } = await seeded());
-      for (const v of [...standin.versions(BUCKET, ZARR_ROOT)]) {
-        standin.dropVersion(BUCKET, ZARR_ROOT, v.versionId);
-      }
-      const zarr = await runScrub(standin, ["zarr", "--dir", dir, "--execute"]);
-      expect(zarr.exitCode, zarr.all).toBe(0);
-      expect(readJson<ZarrVerifiedFile>(dir, "zarr-verified.json").found).toBe("no-zarr");
-      standin.log.length = 0;
-      const r = await runScrub(standin, dropArgs(dir, ["--execute"]));
-      expect(r.exitCode, r.all).toBe(0);
-      expect(batchDeleted(standin).length).toBe(7);
     },
     SLOW,
   );

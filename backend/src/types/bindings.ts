@@ -1,4 +1,5 @@
 import type { CloudflareSendEmail } from "../services/email";
+import type { ClaimAccount } from "../services/oidc-claims";
 import type { WebSessionUser } from "../services/web-session";
 import type { MaintenanceMode } from "./maintenance";
 
@@ -57,6 +58,62 @@ export interface Bindings {
   /** The public federation's address (its node directory). Optional: the registration check
    *  reports `unchecked`, never healthy, while it is unset. */
   NEUROBAGEL_FEDERATION_URL?: string;
+
+  // Compute gateway storage (epic #2005 phase A3, ADR 0118 decision 7): two PRIVATE R2 buckets,
+  // reached by the Worker through these bindings and, for the few things a binding cannot do (a
+  // presigned PUT for one file of one job, a presigned GET, a server-side copy), through R2's S3
+  // interface (services/compute-s3.ts). `nemar-compute-records` and `nemar-compute-results` in
+  // production, `...-dev` in [env.dev]. The records bucket is locked by prefix and the results bucket
+  // expires its objects: both are bucket configuration, never code. Optional: with no binding a job
+  // cannot be made (`compute_disabled`).
+  COMPUTE_RECORDS?: R2Bucket;
+  COMPUTE_RESULTS?: R2Bucket;
+  /** The two buckets' names, which a binding hides and the S3 interface needs. Plain variables, set in
+   *  [vars] and in [env.dev.vars] both (variables do not inherit). */
+  COMPUTE_RECORDS_BUCKET_NAME?: string;
+  COMPUTE_RESULTS_BUCKET_NAME?: string;
+  /** Worker SECRETS, set by the owner: one R2 API token per environment (Object Read & Write on its
+   *  two buckets) and the account endpoint, which is never written in this repository. */
+  COMPUTE_R2_ACCESS_KEY_ID?: string;
+  COMPUTE_R2_SECRET_ACCESS_KEY?: string;
+  COMPUTE_R2_S3_ENDPOINT?: string;
+
+  // The compute gateway's two dark switches (epic #2005 phase A4, ADR 0118 decision 8;
+  // services/compute-switches.ts). Each reads as on only when it is exactly "1", and compute only in
+  // exactly `production` or `development` (the dev Worker runs against its own Tapis tenant with its
+  // own credentials; every compute schedule stays production-only). Deliberately absent from every
+  // table of wrangler-sccn.toml, and compute-switches-flag.test.ts pins that: the owner turns them
+  // on in a reviewed change that edits that test. A Worker secret of the same name takes effect too,
+  // so `GET /admin/compute/status` is what says what the Worker reads.
+  COMPUTE_ENABLED?: string; // "1" lets compute run (production or development only)
+  COMPUTE_PIPELINES_DISPATCH_ENABLED?: string; // "1" lets NEMAR's own pipelines dispatch (needs COMPUTE_ENABLED)
+
+  // The Tapis tenant the compute gateway submits to (epic #2005 phase A4, services/tapis/config.ts).
+  // Worker secrets or owner-set variables, NEVER in wrangler-sccn.toml: a tenant name is not public.
+  // Dev and production use SEPARATE tenants' credentials, because dev D1 shares real users and the
+  // GitHub org. TAPIS_AUTH_STRATEGY picks how the Worker authenticates, with no code change:
+  //   "password": the account TAPIS_USERNAME / TAPIS_PASSWORD signs in with the password grant;
+  //   "service": TAPIS_SERVICE_TOKEN (a Tokens API service credential) mints a user token per
+  //              username, and TAPIS_USERNAME is then optional (the user `status` probes with).
+  TAPIS_BASE_URL?: string; // the tenant's base address, https, no path needed
+  TAPIS_TENANT_ID?: string;
+  TAPIS_AUTH_STRATEGY?: string; // "password" | "service"; anything else is unconfigured
+  TAPIS_USERNAME?: string;
+  TAPIS_PASSWORD?: string;
+  TAPIS_SERVICE_TOKEN?: string;
+  /** The key of the ACCESS gateway-attributes API (reporting every tenant job under a pseudonym).
+   *  Owner-set Worker secret, absent from wrangler-sccn.toml (compute-switches-flag.test.ts pins that).
+   *  `runAccessReportCron` (services/access-attributes.ts) sends it in a header and never logs or stores
+   *  it; `GET /admin/compute/status` reports only whether it is set. Unset, reports wait `unconfigured`. */
+  ACCESS_GATEWAY_ATTRIBUTES_KEY?: string;
+  /** The name ACCESS knows the cluster by in the gateway-attributes interface (the design's question 14),
+   *  an owner-set Worker secret like the key and pinned absent from wrangler-sccn.toml the same way. */
+  ACCESS_RESOURCE_NAME?: string;
+  /** NEMAR's own runtime image for a `python` job (epic #2005 phase A5, services/compute-lifecycle.ts):
+   *  a digest-pinned reference, `[docker://]registry/path@sha256:<64 hex>`. Owner-set, like the Tapis
+   *  names, and absent from wrangler-sccn.toml (compute-switches-flag.test.ts pins that). Unset, a
+   *  `python` job stays `created` and is submitted once it is set; an `image` job brings its own. */
+  COMPUTE_RUNTIME_IMAGE?: string;
 
   // Environment variables
   ENVIRONMENT: "production" | "development" | "staging" | "test";
@@ -158,12 +215,33 @@ export interface Bindings {
    *  admin account is on DEV_EMAIL_ALLOWLIST, so the recipient fence alone
    *  does not stop admin mail from reaching them. */
   DEV_ADMIN_NOTIFICATIONS?: string;
-  /** Domain attribute for the web-dashboard session cookie (#569).
+  /** Domain attribute for the legacy web-dashboard session cookie (#569) and for the ORCID state
+   *  and pending cookies.
    *  Set to "app.nemar.org" in production and left empty in dev so
    *  the cookie is host-only for *.workers.dev. The dashboard moves
    *  to app.nemar.org per nemarOrg/website#46; flip this env var at
-   *  cutover without redeploying code. */
+   *  cutover without redeploying code.
+   *
+   *  Once `HOST_PREFIXED_SESSION_COOKIE` is on this no longer scopes the SESSION cookie: a
+   *  `__Host-` cookie carries no `Domain`, and a browser refuses one that does. It still scopes
+   *  the ORCID state and pending cookies and the clears of the legacy session cookie. */
   WEB_SESSION_COOKIE_DOMAIN?: string;
+  /** "1" issues the app session cookie as `__Host-nemar_session` (host-only, no Domain) and
+   *  clears the legacy `nemar_session`; anything else, or unset, keeps today's header byte for
+   *  byte (ADR 0119 decision 10). READING accepts both names whatever this says. Set in
+   *  `[env.dev.vars]` only: production turns it on after the website's reader and the API have
+   *  both released, which is the owner's act, and a test pins that no other table names it.
+   *
+   *  Release notes. The flag is REVERSIBLE. Turned off again, a request that carries no
+   *  `__Host-nemar_session` gets exactly today's headers, byte for byte; a request that carries one
+   *  gets the same headers plus a clear of it, so the cookie issued while the flag was on is
+   *  removed at the next sign-in, sign-out or slide. The clear matters because the reader prefers
+   *  a `__Host-` cookie: without it, a person who signs out and in again after the flag is turned
+   *  off would stay signed out until that cookie expires.
+   *
+   *  The OpenID Connect authorization routes (`/auth/oidc/*`) also answer 404 until this is "1"
+   *  and `OIDC_SECRET` is set: set both. Only a `__Host-` session may approve a grant. */
+  HOST_PREFIXED_SESSION_COOKIE?: string;
   /** Sandbox (xx) dataset-ID allocation partition, decimal strings (epic #923).
    *  Prevents repo-name collisions in the shared nemarDatasets org between
    *  prod- and dev/test-created sandbox datasets. Prod sets CEILING="89999"
@@ -189,6 +267,23 @@ export interface Bindings {
   EZID_SANDBOX_PASSWORD?: string;
   GITHUB_WEBHOOK_SECRET?: string; // HMAC secret for /webhooks/github signature verification (GitHub App push deliveries)
   NEMAR_WEBHOOK_TOKEN?: string; // Bearer token for /publish-version-doi and /llm-enrich (X-Webhook-Token header from dataset workflows)
+  /** Worker SECRET (never a var): the key the OpenID Connect provider's private signing keys are
+   *  encrypted under at rest (epic #2014 phase #2016; ADR 0119). Must be `nmsso-` and a random
+   *  body, 32 characters or more in all (`isOidcSecret`, `shared/oidc.ts`), or the provider is off: discovery, the key set and the owner routes then answer 404, as if they did
+   *  not exist (`services/oidc-config.ts`, `oidcSecret` is the one reader). The owner sets it; an agent never does.
+   *  Changing it makes every stored key unreadable, and there is no re-encryption path yet.
+   *  The authorization routes (`/auth/oidc/*`) and the `/oauth` token, userinfo, revocation and
+   *  introspection endpoints also answer 404 until `HOST_PREFIXED_SESSION_COOKIE` is "1": set both. */
+  OIDC_SECRET?: string;
+  /** A VAR, optional, and read only outside production (epic #2014 phase #2019; ADR 0119 rule 15):
+   *  the comma-separated hostnames, exact and case-insensitive, that a dev or staging Worker may send
+   *  a back-channel logout to besides a loopback address (`localhost`, `127.0.0.1`, `[::1]`). The dev
+   *  Worker shares real accounts and a partner's registered address may be a real host, so by default
+   *  a delivery to anything else is recorded `fenced` and never sent. The production Worker ignores it
+   *  and sends to the https hosts the registry validated; it is absent from `wrangler-sccn.toml`, and
+   *  setting it on a dev Worker is the owner's act, for a deliberate test against a partner's staging
+   *  host. */
+  OIDC_LOGOUT_DEV_HOSTS?: string;
   /** Prod-only mirror target for dev-OWNED GitHub deliveries (epic #923;
    *  widened from dev-range to dev-owned by #1440, so it now also carries the
    *  reserved `nm` fixtures). When set on the PRODUCTION worker, a push to a
@@ -274,7 +369,10 @@ export interface Bindings {
   // unchanged so a deploy does not silently enable screening. With the publication review on
   // (PUBLICATION_REVIEW_ENABLED, below) it is not dispatched for a request the review covers.
   PRESCREEN_ENABLED?: string; // "true" enables the dispatch on publish request
-  PRESCREEN_CALLBACK_SECRET?: string; // Workers secret; HMAC key for prescreen callback
+  PRESCREEN_CALLBACK_SECRET?: string; // Workers secret; the ONE HMAC key for every callback token:
+  // prescreen and pull-request review callbacks, and the compute gateway's job token (inside each
+  // running job's launch spec), Tapis webhook address and observer token. Rotating it kills all of
+  // them: drain running compute jobs first (compute-tokens.ts, ADR 0118 A5 amendment item 5).
 
   // Dataset pull-request review (ADR 0092). When PR_REVIEW_ENABLED is "1", a pull request opened
   // or updated against `main` of a dataset repository is reviewed by a model and the result is
@@ -439,14 +537,16 @@ export interface Variables {
   // Optional: routes that don't use optionalAuthMiddleware never set this.
   authAttempted?: true;
   /** Set by `authMiddleware`: which credential resolved `user`.
-   *  "token" = Authorization: Bearer (CLI path), "cookie" =
-   *  `nemar_session` (web dashboard path). `cliVersionGuard` uses this
+   *  "token" = Authorization: Bearer (CLI path), "cookie" = the session
+   *  cookie, `__Host-nemar_session` or the legacy `nemar_session` (web
+   *  dashboard path). `cliVersionGuard` uses this
    *  to exempt browser clients, which fetch current site code on every
    *  page load and so cannot be version-stale the way an installed CLI
    *  binary can. */
   authMethod?: "token" | "cookie";
-  /** Set by `webSessionMiddleware` (#569) when a valid `nemar_session`
-   *  cookie resolves to an active row. Distinct from `user` (bearer
+  /** Set by `webSessionMiddleware` (#569) when a valid session cookie
+   *  (`__Host-nemar_session` or the legacy `nemar_session`) resolves to an
+   *  active row. Distinct from `user` (bearer
    *  API token auth) — a single request can carry both in principle,
    *  though in practice the dashboard never sends a bearer header.
    *  `role` is validated against the `UserRole` union at the DB
@@ -468,4 +568,25 @@ export interface Variables {
    *  need to write a fresh Set-Cookie use this when sliding the
    *  expiry — the value itself is unchanged. */
   webSessionCookieId?: string;
+  /** The name that value was read under (`__Host-nemar_session` or the legacy `nemar_session`).
+   *  The expiry slide re-issues the cookie only from a value read under the `__Host-` name: that
+   *  cookie is minted by a sign-in and never from a legacy value (ADR 0119 decision 10). */
+  webSessionCookieName?: string;
+  /** Set by `oidcBearer` (epic #2014 phase #2018, ADR 0119): the OpenID Connect access token that
+   *  authenticated the request, read live. Only the OIDC resource routes carry `oidcBearer`; every
+   *  other route refuses such a token (`resolveApiKeyUser`'s `oidc_token`). */
+  oidcToken?: OidcTokenContext;
+}
+
+/**
+ * What `oidcBearer` knows of a live access token: the client it was issued to, the account it names
+ * (null for a client credentials token) with the account's claim columns as they were read in the
+ * same statement that found the token active, its scopes and its audience.
+ */
+export interface OidcTokenContext {
+  tokenId: number;
+  client: { id: number; clientId: string };
+  user: (ClaimAccount & { id: number }) | null;
+  scopes: string[];
+  audience: string;
 }

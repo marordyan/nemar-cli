@@ -66,7 +66,7 @@ export type UploadGateBody =
 
 /**
  * Which client is uploading. "cli" is the bearer-token path, "web" the
- * dashboard's `nemar_session` cookie.
+ * dashboard's session cookie.
  */
 export type UploadChannel = "cli" | "web";
 

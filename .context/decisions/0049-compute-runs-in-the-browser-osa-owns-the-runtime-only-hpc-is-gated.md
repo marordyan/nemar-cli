@@ -12,6 +12,9 @@ so a first load is 18.9 MB.
 Adding scipy, the next thing a preprocessing step needs, brings it to 35.2 MB, scipy alone being 16.3 MB.
 The verdict stands; the cost it accepted is smaller than it said.
 
+**Amendment 2026-11-03:** Stage 3, HPC submission, is specified by [ADR 0118](0118-the-compute-gateway-records-every-tenant-job-and-keeps-the-ledger-in-expanse-service-units.md): who runs a job, who holds its record and how time is counted.
+The verdict stands.
+
 Supersedes ADR 0025.
 The parts of 0025 that still hold are restated here so this document is the single current statement;
 0025 is kept for its history.

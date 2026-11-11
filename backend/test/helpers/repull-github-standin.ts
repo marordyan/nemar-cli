@@ -8,10 +8,11 @@
  *  - `GET /repos/nemarDatasets/<id>/pulls/<n>`: an entry of `pulls` (`<id>#<n>`), or, with
  *    `defaultHead` set, an open, unmerged pull request at that head from the release branch the
  *    repull-rows fixtures record (`release/v2.0.0` for #7, `release/v2.0.1` for #8);
- *  - `GET .../commits/tags/<tag>`: the commit in `tags` (`<id>@<tag>`) as a bare id when the
+ *  - `GET .../commits/refs/tags/<tag>`: the commit in `tags` (`<id>@<tag>`) as a bare id when the
  *    request asks for `application/vnd.github.sha`, as `{ sha }` otherwise; 422 when absent;
  *  - `GET .../compare/<base>...<head>`: `{ status }` from `compares` (`<id>:<base>...<head>`),
- *    `ahead` by default, or that HTTP status when the entry is a number;
+ *    `identical` for equal ids and `ahead` otherwise by default, or that HTTP status when the entry is
+ *    a number;
  *  - `POST /repos/nemarDatasets/.github/dispatches`: recorded in `dispatches`, answered
  *    `dispatchStatus`;
  *  - `GET .../git/ref/heads/main`: the commit in `mainRefs` (`<id>`) as a ref object, or that HTTP
@@ -294,7 +295,15 @@ export function startRepullGitHub(o: { defaultHead?: string | null } = {}): Repu
         for (const k of a.omit ?? []) delete body[k];
         return json(body);
       }
-      m = /^\/repos\/nemarDatasets\/([a-z]{2}\d{6})\/commits\/tags\/(.+)$/.exec(url.pathname);
+      // GitHub does not read `tags/<tag>` as a ref here: it takes it for a commit id and answers
+      // 422. The stand-in said otherwise until the first production re-pull release (2026-11-08).
+      if (/^\/repos\/nemarDatasets\/[a-z]{2}\d{6}\/commits\/tags\//.test(url.pathname)) {
+        return json(
+          { message: `No commit found for SHA: ${url.pathname.split("/commits/")[1]}` },
+          422,
+        );
+      }
+      m = /^\/repos\/nemarDatasets\/([a-z]{2}\d{6})\/commits\/refs\/tags\/(.+)$/.exec(url.pathname);
       if (m) {
         const sha = gh.tags[`${m[1]}@${decodeURIComponent(m[2] as string)}`];
         if (!sha) return json({ message: "No commit found" }, 422);
@@ -341,7 +350,8 @@ export function startRepullGitHub(o: { defaultHead?: string | null } = {}): Repu
           url.pathname,
         );
       if (m) {
-        const answer = gh.compares[`${m[1]}:${m[2]}...${m[3]}`] ?? "ahead";
+        const answer =
+          gh.compares[`${m[1]}:${m[2]}...${m[3]}`] ?? (m[2] === m[3] ? "identical" : "ahead");
         return typeof answer === "number"
           ? json({ message: "no" }, answer)
           : json({ status: answer });

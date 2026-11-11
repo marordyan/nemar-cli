@@ -138,6 +138,8 @@ export async function resolvePrincipal(
     // `last_used_at` touch awaited inside it.
     const resolved = await resolveApiKeyUser(env, value, { withProfile: true });
     switch (resolved.kind) {
+      // An OpenID Connect token names no principal here (ADR 0119 rule 4).
+      case "oidc_token":
       case "malformed":
       case "unknown":
         return INVALID;

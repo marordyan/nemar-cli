@@ -5,8 +5,9 @@
  *
  * `POST /me/upload-access/request` (ADR 0042, #1253) lives here rather than in
  * auth-web.ts for one reason: this router mounts `authMiddleware`, which
- * accepts BOTH the CLI's bearer token and the dashboard's `nemar_session`
- * cookie, and the request has to be makeable from either. The auth-web routes
+ * accepts BOTH the CLI's bearer token and the dashboard's session cookie
+ * (`__Host-nemar_session`, or the legacy `nemar_session`), and the request has to
+ * be makeable from either. The auth-web routes
  * mount `webSessionMiddleware` and are cookie-only by design.
  */
 

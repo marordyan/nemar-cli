@@ -26,5 +26,5 @@ All Cloudflare resources run in the **SCCN** account. Every operation goes throu
 
 ## Receipts
 
-- `.context/` infra notes; AGENTS.md "Backend Infrastructure"
+- `.context/` infra notes; `https://docs.nemar.org/admin/operations/systems-inventory/` and `.rules/environments.md` (formerly AGENTS.md "Backend Infrastructure")
 - #883 — zombie personal-account workers destroying prod repos, resolved 2026-07-01

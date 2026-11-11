@@ -154,8 +154,8 @@ export const HED_SWEEP_STAMP_ONLY_SQL =
 /**
  * Bound on how many findings an UN-NARROWED `POST /admin/doctor/fix` call
  * (no `dataset_id`) applies in one Worker invocation (issue #1135). The
- * 2026-08-23 nm000225 incident (see AGENTS.md's manifest-healing note and
- * the memory it left behind) hit this exact shape: the missing-manifest
+ * 2026-08-23 nm000225 incident (see the memory it left behind,
+ * .memory/manifest-healing-dispatch-over-rest.md) hit this exact shape: the missing-manifest
  * check's remediation calls GitHub REST + S3 per finding, and a
  * catalog-wide call re-scans (up to ~800 GETs) AND fixes everything in one
  * request, which starves under GitHub App rate limits and the Worker's

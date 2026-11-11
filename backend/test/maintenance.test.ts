@@ -24,6 +24,13 @@ function buildApp(): Hono<AppEnv> {
   app.post("/webhooks/github", (c) => c.json({ received: true }));
   app.post("/auth/login", (c) => c.json({ logged_in: true }));
   app.post("/auth/resend-verification", (c) => c.json({ resent: true }));
+  app.post("/compute/jobs/:id/bundle", (c) => c.json({ launcher: "bundle" }));
+  app.post("/compute/jobs/:id/outputs", (c) => c.json({ launcher: "outputs" }));
+  app.post("/compute/jobs/:id/outputs/complete", (c) => c.json({ launcher: "complete" }));
+  app.put("/compute/jobs/:id/outputs", (c) => c.json({ sneaky: true }));
+  app.post("/compute/jobs/:id/cancel", (c) => c.json({ cancelled: true }));
+  app.post("/compute/jobs/:id/links", (c) => c.json({ links: [] }));
+  app.post("/compute/jobs/:id/outputs/other", (c) => c.json({ sneaky: true }));
   app.get("/", (c) => c.json({ name: "NEMAR API" }));
   return app;
 }
@@ -145,6 +152,52 @@ describe("maintenanceMode: read-only", () => {
   });
 });
 
+// Round 1 of #2041: a job already running on a cluster must be able to hand in its results while the
+// API is read-only. The three launcher callbacks are open by EXACT shape (a real job id, POST); nothing
+// else under /compute/jobs is.
+describe("maintenanceMode: read-only and the compute launcher's callbacks", () => {
+  const app = buildApp();
+  const JOB = `job_${"0f".repeat(12)}`;
+
+  test.each(["bundle", "outputs", "outputs/complete"])(
+    "POST /compute/jobs/<job>/%s -> 200 (the launcher still delivers)",
+    async (leaf) => {
+      const res = await hit(app, "read-only", `/compute/jobs/${JOB}/${leaf}`, "POST");
+      expect(res.status).toBe(200);
+    },
+  );
+
+  test.each([
+    ["POST", `/compute/jobs/${JOB}/cancel`],
+    ["POST", `/compute/jobs/${JOB}/links`],
+    ["POST", `/compute/jobs/${JOB}/outputs/other`],
+    ["POST", "/compute/jobs/not-a-job-id/outputs"],
+    ["POST", `/compute/jobs/${JOB.toUpperCase()}/outputs`],
+    ["POST", `/compute/jobs/${JOB}x/outputs`],
+    ["PUT", `/compute/jobs/${JOB}/outputs`],
+  ])("%s %s -> 503 (only the three callbacks, by exact shape and POST)", async (method, path) => {
+    const res = await hit(app, "read-only", path, method);
+    expect(res.status).toBe(503);
+  });
+});
+
+// The API is mounted at `/` and at `/nemar`, and this middleware sees the full path. The pattern is
+// anchored at `/compute`, so the other spelling is refused in read-only: safe (it never opens), and
+// unused (the launcher's address is `API_BASE_URL`, which has no prefix). This pins the documented
+// behavior (ADR 0118, item 11 of the A5 amendment) so a change to it is a decision and not an accident.
+describe("maintenanceMode: read-only and the /nemar spelling of the launcher's callbacks", () => {
+  const app = buildApp();
+  const JOB = `job_${"0f".repeat(12)}`;
+
+  test.each(["bundle", "outputs", "outputs/complete"])(
+    "POST /nemar/compute/jobs/<job>/%s -> 503 (not matched, so not opened)",
+    async (leaf) => {
+      const res = await hit(app, "read-only", `/nemar/compute/jobs/${JOB}/${leaf}`, "POST");
+      expect(res.status).toBe(503);
+    },
+  );
+});
+
 describe("maintenanceMode: full", () => {
   const app = buildApp();
 
@@ -161,6 +214,14 @@ describe("maintenanceMode: full", () => {
     const res = await hit(app, "full", "/datasets", "POST");
     expect(res.status).toBe(503);
   });
+
+  test.each(["bundle", "outputs", "outputs/complete"])(
+    "POST /compute/jobs/<job>/%s -> 503 (full refuses the launcher too)",
+    async (leaf) => {
+      const res = await hit(app, "full", `/compute/jobs/job_${"0f".repeat(12)}/${leaf}`, "POST");
+      expect(res.status).toBe(503);
+    },
+  );
 
   test("POST /admin/approve -> 503 (admin blocked in full)", async () => {
     const res = await hit(app, "full", "/admin/approve", "POST");

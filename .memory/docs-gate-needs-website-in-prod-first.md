@@ -4,7 +4,6 @@ description: "docs.nemar.org/admin gate and its sign-in page live in repos with 
 metadata: 
   node_type: memory
   type: project
-  originSessionId: 204e7518-a6e6-4201-aac1-ba92f39fe849
   modified: 2026-09-13T10:05:06.447Z
 ---
 
@@ -14,7 +13,7 @@ different cadences. Getting the order wrong locks the admin docs shut with no wa
 - `nemarOrg/docs` is a git-connected Cloudflare Pages project: **merging to `main` IS the deploy**,
   immediately.
 - `nemarOrg/website` hosts the sign-in page at `app.nemar.org/auth/docs/authorize`, and merging a PR
-  only reaches `staging` / `test.nemar.org`. Production needs the separate promotion described in
+  only reaches the `staging` branch and its test deployment. Production needs the separate promotion described in
   [[website-release-prepare-first]].
 - The backend routes (`/auth/docs/{grant,exchange,verify}`) ship with nemar-cli releases.
 
@@ -29,8 +28,9 @@ exactly that reason; do not remove the condition. See [[docs-are-the-retrieval-s
 
 **How to apply:** website to production first, verify `curl -o /dev/null -w '%{http_code}'
 https://app.nemar.org/auth/docs/authorize` is a redirect and not 404, and only then merge the docs
-gate. Immediately after the docs merge run `bun run probe:gate` against `docs.nemar.org` — never a
-preview, because Cloudflare Access covers this Pages project's preview deployments (and only those),
-so an anonymous probe of a preview reports on Access rather than on the gate. The same ordering
+gate. Immediately after the docs merge run `bun run probe:gate` against `docs.nemar.org`, never a
+preview, because preview deployments are protected by a different mechanism than production (read
+the Pages project's access policy in the Cloudflare dashboard to see it), so an anonymous probe of a
+preview reports on that mechanism rather than on the gate. The same ordering
 applies to phase 3, which moves runbooks behind the gate. See [[verify-fix-against-known-broken]]:
 that probe accepted 404 as "refused" and so passed against a completely ungated site until fixed.

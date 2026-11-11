@@ -21,7 +21,7 @@
  * CI TIER: integration, like the other CLI suites that start the binary against a local server.
  */
 
-import type { Database } from "bun:sqlite";
+import { Database } from "bun:sqlite";
 import {
   afterAll,
   beforeAll,
@@ -533,17 +533,92 @@ function nonGetGitHub(): string[] {
 
 const XX_RACE = "xx099971";
 
+/** The step a case starts from: the record as `--until <stage>` leaves it. */
+type Stage = "prepared" | "copied" | "registered";
+
+/**
+ * The world at the end of one `--until` run: the refs, the bucket and its log, the database, the
+ * CLI's `repull` directory (the plan, the working clone; permissions kept), and the API writes.
+ */
+interface StagePoint {
+  plan: string;
+  world: World;
+  db: Uint8Array;
+  repull: string;
+  s3Log: S3Standin["log"];
+  apiWrites: string[];
+  /** The keys under the dataset's prefix before the run, for the case that diffs against them. */
+  keysBefore: Set<string>;
+}
+
+/** Make `to` a copy of `from`, permissions included (annex objects are read-only). */
+function copyRepullTree(from: string, to: string): void {
+  Bun.spawnSync(["chmod", "-R", "u+w", to]);
+  rmSync(to, { recursive: true, force: true });
+  const r = Bun.spawnSync(["cp", "-a", from, to]);
+  if (r.exitCode !== 0) throw new Error(`cp -a ${from} ${to}: ${r.stderr.toString()}`);
+}
+
 describe.skipIf(!awsInstalled)("execute through the pull request", () => {
   const XX = XX_RACE;
   let fx: RepullFixture;
   let world: World;
+  // The cases that start from a record already at prepared, copied or registered do not each drive
+  // the CLI up to it: each stage is reached once, from the fixture, by the real plan and the real
+  // `execute --until <stage>` (the same single run those cases used to make), and a case is put
+  // back at that point. The `--until` cases below still drive the CLI from the start themselves.
+  const stages = new Map<Stage, StagePoint>();
+  let stageDir = "";
   beforeAll(async () => {
     fx = await buildRepullFixture({ datasetId: XX, s3 });
     origins.set(XX, fx.originRepo);
     world = await snapshotWorld(fx);
+    stageDir = mkdtempSync(join(tmpdir(), "nemar-repull-stages-"));
+    for (const stage of ["prepared", "copied", "registered"] as const) {
+      await restoreWorld(fx, world);
+      const keysBefore = new Set(s3.keys("nemar", `${XX}/objects/`));
+      const plan = await makePlan(fx);
+      const run = await execute(fx, plan, ["--until", stage]);
+      expect(run.exitCode, run.all).toBe(0);
+      expect(repullRows()[0]?.status).toBe(stage);
+      const repull = join(stageDir, `${stage}-repull`);
+      copyRepullTree(join(configDir, "repull"), repull);
+      stages.set(stage, {
+        plan,
+        world: await snapshotWorld(fx),
+        db: db.serialize(),
+        repull,
+        s3Log: [...s3.log],
+        apiWrites: [...apiWrites],
+        keysBefore,
+      });
+    }
   });
-  afterAll(() => fx?.cleanup());
+  afterAll(() => {
+    fx?.cleanup();
+    if (stageDir) {
+      Bun.spawnSync(["chmod", "-R", "u+w", stageDir]);
+      rmSync(stageDir, { recursive: true, force: true });
+    }
+  });
   beforeEach(async () => restoreWorld(fx, world));
+
+  /** Put the world where `execute --until <stage>` left it, and name the plan it ran. */
+  async function atStage(stage: Stage): Promise<StagePoint> {
+    const point = stages.get(stage);
+    if (!point) throw new Error(`stage ${stage} was not reached`);
+    await restoreRefs(fx.originRepo, point.world.origin);
+    await restoreRefs(fx.upstreamRepo, point.world.upstream);
+    s3.restore(point.world.s3);
+    s3.log.push(...point.s3Log);
+    apiWrites.length = 0;
+    apiWrites.push(...point.apiWrites);
+    apiHook = null;
+    db = Database.deserialize(point.db);
+    gh.reset();
+    copyRepullTree(point.repull, join(configDir, "repull"));
+    return point;
+  }
 
   test("a full run reaches pr_open: copied by version, registered at nemar-s3 only, branch pushed, pull request opened", async () => {
     const plan = await makePlan(fx);
@@ -793,8 +868,7 @@ describe.skipIf(!awsInstalled)("execute through the pull request", () => {
   });
 
   test("another release pull request open refuses release-pr-open, and opens nothing", async () => {
-    const plan = await makePlan(fx);
-    expect((await execute(fx, plan, ["--until", "registered"])).exitCode).toBe(0);
+    const { plan } = await atStage("registered");
     gh.pulls[`${XX}#9`] = { sha: "1".repeat(40), headRef: "release/v1.1.0" };
     const run = await execute(fx, plan);
     expect(run.exitCode, run.all).toBe(3);
@@ -803,8 +877,7 @@ describe.skipIf(!awsInstalled)("execute through the pull request", () => {
   });
 
   test("a release branch enrichment moved is reused; one holding another commit is branch-foreign", async () => {
-    const plan = await makePlan(fx);
-    expect((await execute(fx, plan, ["--until", "registered"])).exitCode).toBe(0);
+    const { plan } = await atStage("registered");
     const synth = repullRows()[0]?.synth_sha as string;
     const work = workPaths(configDir, XX, digestOf(plan)).repo;
     const ref = "refs/heads/release/v2.0.0";
@@ -837,8 +910,7 @@ describe.skipIf(!awsInstalled)("execute through the pull request", () => {
   });
 
   test("main moved by a README commit is main-moved before the push; by an enrichment commit it is not", async () => {
-    const plan = await makePlan(fx);
-    expect((await execute(fx, plan, ["--until", "copied"])).exitCode).toBe(0);
+    const { plan } = await atStage("copied");
     const main = (await gitIn(fx.originRepo, ["rev-parse", "refs/heads/main"])).trim();
     await commitOnto(fx.originRepo, "refs/heads/main", "README.md", "Edited after the copy.\n");
     const moved = await execute(fx, plan);
@@ -861,8 +933,7 @@ describe.skipIf(!awsInstalled)("execute through the pull request", () => {
   });
 
   test("a key the tree names that the bucket lacks refuses held-key-absent before anything is pushed", async () => {
-    const plan = await makePlan(fx);
-    expect((await execute(fx, plan, ["--until", "copied"])).exitCode).toBe(0);
+    const { plan } = await atStage("copied");
     const annex = (await gitIn(fx.originRepo, ["rev-parse", "refs/heads/git-annex"])).trim();
     // The location log says nemar-s3 holds it; the bucket does not (#1396).
     s3.putDeleteMarker("nemar", `${XX}/objects/${fx.keys.flaggedNemar}`);
@@ -876,8 +947,7 @@ describe.skipIf(!awsInstalled)("execute through the pull request", () => {
   });
 
   test("a pinned version upstream stopped serving refuses pin-absent and leaves the record prepared with why", async () => {
-    const plan = await makePlan(fx);
-    expect((await execute(fx, plan, ["--until", "prepared"])).exitCode).toBe(0);
+    const { plan } = await atStage("prepared");
     s3.dropVersion("openneuro.org", `${UPSTREAM_ID}/${PATHS.addedEdf}`, fx.pins.addedEdf as string);
     const run = await execute(fx, plan);
     expect(run.exitCode, run.all).toBe(3);
@@ -889,9 +959,7 @@ describe.skipIf(!awsInstalled)("execute through the pull request", () => {
 
   test("an object prepare uploaded that is gone by the copy refuses copy-unverified, and nothing is registered", async () => {
     const prefix = `${XX}/objects/`;
-    const before = new Set(s3.keys("nemar", prefix));
-    const plan = await makePlan(fx);
-    expect((await execute(fx, plan, ["--until", "prepared"])).exitCode).toBe(0);
+    const { plan, keysBefore: before } = await atStage("prepared");
     const uploaded = s3.keys("nemar", prefix).filter((k) => !before.has(k));
     expect(uploaded.length).toBeGreaterThan(0);
     s3.putDeleteMarker("nemar", uploaded[0] as string);
@@ -904,8 +972,7 @@ describe.skipIf(!awsInstalled)("execute through the pull request", () => {
   });
 
   test("an upstream tag that moved since the plan refuses upstream-tag-moved", async () => {
-    const plan = await makePlan(fx);
-    expect((await execute(fx, plan, ["--until", "copied"])).exitCode).toBe(0);
+    const { plan } = await atStage("copied");
     await gitIn(fx.upstreamRepo, ["tag", "-f", TAG_B, TAG_A]);
     const run = await execute(fx, plan);
     expect(run.exitCode, run.all).toBe(3);
@@ -931,8 +998,7 @@ describe.skipIf(!awsInstalled)("execute through the pull request", () => {
   });
 
   test("an upstream tag that moved before the pull request step refuses there, with no branch pushed and no pull request", async () => {
-    const plan = await makePlan(fx);
-    expect((await execute(fx, plan, ["--until", "registered"])).exitCode).toBe(0);
+    const { plan } = await atStage("registered");
     await gitIn(fx.upstreamRepo, ["tag", "-f", TAG_B, TAG_A]);
     const run = await execute(fx, plan);
     expect(run.exitCode, run.all).toBe(3);
@@ -943,8 +1009,7 @@ describe.skipIf(!awsInstalled)("execute through the pull request", () => {
   });
 
   test("a copy manifest that is not the one recorded at prepared refuses manifest-mismatch before any copy", async () => {
-    const plan = await makePlan(fx);
-    expect((await execute(fx, plan, ["--until", "prepared"])).exitCode).toBe(0);
+    const { plan } = await atStage("prepared");
     db.run("UPDATE upstream_repulls SET manifest_digest = ?", [`sha256:${"0".repeat(64)}`]);
     const run = await execute(fx, plan);
     expect(run.exitCode, run.all).toBe(3);
@@ -955,8 +1020,7 @@ describe.skipIf(!awsInstalled)("execute through the pull request", () => {
   });
 
   test("a remote.log that names another prefix than <id>/objects/ cannot move the write boundary", async () => {
-    const plan = await makePlan(fx);
-    expect((await execute(fx, plan, ["--until", "prepared"])).exitCode).toBe(0);
+    const { plan } = await atStage("prepared");
     const work = workPaths(configDir, XX, digestOf(plan)).repo;
     await rewriteRemoteLog(work, `fileprefix=${XX}/objects/`, "fileprefix=nm000103/objects/");
     s3.log.length = 0;
@@ -969,8 +1033,7 @@ describe.skipIf(!awsInstalled)("execute through the pull request", () => {
   });
 
   test("a git-annex branch that moves between the registration's fetch and its push is written again on top, and proved", async () => {
-    const plan = await makePlan(fx);
-    expect((await execute(fx, plan, ["--until", "copied"])).exitCode).toBe(0);
+    const { plan } = await atStage("copied");
     const before = (await gitIn(fx.originRepo, ["rev-parse", "refs/heads/git-annex"])).trim();
     const counter = await installAnnexRace(fx, plan, 1);
     const run = await execute(fx, plan, ["--until", "registered"]);
@@ -993,8 +1056,7 @@ describe.skipIf(!awsInstalled)("execute through the pull request", () => {
   });
 
   test("a git-annex branch that moves under every registration push stops at the cap, leaves the record copied, and a later run completes", async () => {
-    const plan = await makePlan(fx);
-    expect((await execute(fx, plan, ["--until", "copied"])).exitCode).toBe(0);
+    const { plan } = await atStage("copied");
     const counter = await installAnnexRace(fx, plan, 100);
     const run = await execute(fx, plan, ["--until", "registered"]);
     expect(run.exitCode, run.all).toBe(3);
@@ -1009,8 +1071,7 @@ describe.skipIf(!awsInstalled)("execute through the pull request", () => {
   });
 
   test("a registration origin undoes after accepting it is caught by the proof, not reported as done", async () => {
-    const plan = await makePlan(fx);
-    expect((await execute(fx, plan, ["--until", "copied"])).exitCode).toBe(0);
+    const { plan } = await atStage("copied");
     // Origin accepts the push, then puts its git-annex branch back where it was.
     const hookFile = join(fx.originRepo, "hooks", "post-receive");
     mkdirSync(join(fx.originRepo, "hooks"), { recursive: true });
@@ -1053,8 +1114,7 @@ describe.skipIf(!awsInstalled)("execute through the pull request", () => {
   });
 
   test("a dataset that became anonymous is refused before anything, on a record past prepared too", async () => {
-    const plan = await makePlan(fx);
-    expect((await execute(fx, plan, ["--until", "copied"])).exitCode).toBe(0);
+    const { plan } = await atStage("copied");
     // An unpublished row may be made anonymous (ADR 0065); the record is past prepared already.
     db.run("UPDATE datasets SET first_published_at = NULL, anonymous = 1 WHERE dataset_id = ?", [
       XX,

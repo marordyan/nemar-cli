@@ -1,7 +1,7 @@
 /**
  * `nemar admin repull resume <id> --accept-merge-trailers "<reason>"`: the acceptance of a re-pull's
- * squash merge made without its trailers (epic #1046; ADR 0111, the amendment of 2026-10-29; issue
- * #1996), as the release step takes it on from `merged` or `patch_merged` (`release.ts`).
+ * squash merge, or plain merge commit of its pull request, made without its trailers (epic #1046;
+ * ADR 0111, the amendments of 2026-10-29 and 2026-11-09; issue #1996), as the release step takes it on from `merged` or `patch_merged` (`release.ts`).
  *
  * The merge gate writes the squash message so that its last paragraph is the re-pull commit's
  * trailers, which the privacy ledger's fresh-clone proof (ADR 0085) reads; a merge made with
@@ -16,9 +16,11 @@
  *    Worker's, sent with the trailers);
  *  - its pull request on GitHub: from the record's release branch into `main` of the dataset's own
  *    repository (`pr-foreign`), merged, with the record's merge commit (`merge-mismatch`);
- *  - the merge commit: one parent (`merge-not-squash`), the record's base or an enrichment-shaped
- *    descendant of it (`merge-parent-foreign`); the merged head, the recorded head or an
- *    enrichment-shaped descendant of it (`merge-head-foreign`);
+ *  - the merge commit: one parent, or two with the merged head second (`merge-not-squash`,
+ *    `merge-second-parent-foreign`; ADR 0111, the amendment of 2026-11-09, which takes GitHub's
+ *    plain merge of the pull request as well as a squash); the first or only parent being the
+ *    record's base or an enrichment-shaped descendant of it (`merge-parent-foreign`); the merged
+ *    head, the recorded head or an enrichment-shaped descendant of it (`merge-head-foreign`);
  *  - its tree, the record's commit outside `.nemar/**` and `.github/**` (`merge-tree-mismatch`),
  *    the comparison the release makes for the tag (`tagTreeVersus`); N.0.1 needs its gated head
  *    (`tree-anchor-missing`);
@@ -40,7 +42,9 @@ import { NEMAR_DATASETS_ORG, isOwnDatasetRepo } from "../../../shared/nemar-app.
 import {
   LEDGER_REPO_PATH,
   type LedgerWord,
+  type MergeShape,
   acceptedMergesOf,
+  classifyMergeParents,
   ledgerChange,
   ledgerLines,
   ledgerWordOf,
@@ -147,6 +151,7 @@ async function fetchSpan(scratch: OriginScratch, to: string, refs: string[]): Pr
 
 /** What this run verified, said before the Worker is asked. */
 interface Verified {
+  shape: MergeShape;
   number: number;
   branch: string;
   mergedHead: string;
@@ -213,13 +218,10 @@ async function verifyLocally(
   if (parents === null) {
     throw refused("merge-unreadable", `The merge commit ${short(merge)} could not be read.`);
   }
-  if (parents.length !== 1) {
-    throw denied(
-      "merge-not-squash",
-      `The merge commit ${short(merge)} has ${parents.length} parents; a squash merge has one.`,
-    );
-  }
-  const parent = parents[0] as string;
+  // One parent (a squash) or two with the merged head second (GitHub's plain merge), and no other.
+  const shaped = classifyMergeParents(parents, p.headSha, short(merge));
+  if (!shaped.ok) throw denied(shaped.code, shaped.message);
+  const parent = shaped.first;
   const base = (pr === "n0" ? row.base_sha : row.patch_base_sha) as string;
   if (parent !== base) {
     const verdict = await enrichmentOnlySince(scratch.dir, base, parent);
@@ -292,6 +294,7 @@ async function verifyLocally(
     );
   }
   return {
+    shape: shaped.shape,
     number,
     branch,
     mergedHead: p.headSha,
@@ -310,8 +313,8 @@ function verifiedLines(row: RepullRow, pr: RepullPullRequest, v: Verified): stri
   const base = (pr === "n0" ? row.base_sha : row.patch_base_sha) as string;
   return [
     "Verified by this run, with your GitHub token and NEMAR's repository:",
-    `  - it is GitHub's squash merge of pull request #${v.number} (${v.branch} into main of ${NEMAR_DATASETS_ORG}/${row.dataset_id}), merged at ${short(v.mergedHead)}, ${v.headMoved ? `which enrichment moved the recorded head ${short(recordedHead)} to` : "the recorded head"};`,
-    `  - its one parent ${short(v.parent)} is ${v.parentMoved ? `the record's base ${short(base)} moved by enrichment only` : "the record's base"};`,
+    `  - it is ${v.shape === "squash" ? "GitHub's squash merge" : "a plain merge commit"} of pull request #${v.number} (${v.branch} into main of ${NEMAR_DATASETS_ORG}/${row.dataset_id}), merged at ${short(v.mergedHead)}, ${v.headMoved ? `which enrichment moved the recorded head ${short(recordedHead)} to` : "the recorded head"};`,
+    `  - its ${v.shape === "squash" ? "one parent" : `first parent (its second is the merged head ${short(v.mergedHead)})`} ${short(v.parent)} is ${v.parentMoved ? `the record's base ${short(base)} moved by enrichment only` : "the record's base"};`,
     `  - its tree is the re-pull's ${pr === "n0" ? "commit" : "gated N.0.1 head"} ${short(v.anchor)} outside .nemar/ and .github/;`,
     `  - it ${ledgerPhrase(v.ledger)};`,
     "  - the re-pull is one an administrator opened.",

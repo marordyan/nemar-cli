@@ -4,7 +4,6 @@ description: "nemar-cli `bun test` from repo root runs test/ AND backend/test/ i
 metadata: 
   node_type: memory
   type: project
-  originSessionId: 1eaa8ab3-9ce1-49dc-ae4a-fa6309aec33a
   modified: 2026-09-01T19:09:05.297Z
 ---
 

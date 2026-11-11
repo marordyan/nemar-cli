@@ -579,11 +579,14 @@ export async function recordRepullReleased(
     };
   }
   const tag = `v${version}`;
-  // The commit the tag names, as its bare id: an annotated tag is peeled to its commit.
+  // The commit the tag names, as its bare id: an annotated tag is peeled to its commit. The ref is
+  // spelled in full: GitHub answers 422 ("No commit found for SHA: tags/v2.0.0") to the short
+  // `tags/<tag>` form, which the first two production re-pulls met (2026-11-08). The full form was
+  // checked by hand against nemarDatasets/on003645 and on004362, whose tags answer their merge commits.
   const tagRead = await githubRead(
     env,
     row.dataset_id,
-    `/commits/tags/${encodeURIComponent(tag)}`,
+    `/commits/refs/tags/${encodeURIComponent(tag)}`,
     "application/vnd.github.sha",
   );
   if (!tagRead.ok) return tagRead.refusal;

@@ -1063,7 +1063,7 @@ function toFiniteNonNegativeNumber(value: unknown): number | null {
  * 2. `index.stores` lists only recordings that CONVERTED. ADR 0027 made zarr
  *    discovery raw-only, so `stores` + `failures` + `pending` is the complete
  *    raw set for a dataset converted since that landed. This does NOT describe
- *    every dataset in the bucket today: AGENTS.md's Zarr section is explicit
+ *    every dataset in the bucket today: ADR 0027 is explicit
  *    that stores published under `derivatives/`/`sourcedata/`/`code/` before
  *    the raw-only cutover are a separate, still-in-progress purge, and some
  *    are still served -- an unpurged legacy dataset's `stores` can include a

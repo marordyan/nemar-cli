@@ -8,11 +8,13 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { PARTNER_HOSTS, isPartnerHost } from "../../shared/partner-hosts";
 import {
   WEBSITE_PAGES_HOSTS,
   isNemarWebOrigin,
   isWebsitePagesHost,
 } from "../src/services/cors-origins";
+import { isAllowedOrigin } from "../src/services/web-session";
 
 describe("isWebsitePagesHost", () => {
   test("allows each project's apex and its preview subdomains", () => {
@@ -87,5 +89,75 @@ describe("isNemarWebOrigin", () => {
     // That one stays inline in index.ts: the zarr fork must not inherit it.
     expect(isNemarWebOrigin("osc.earth")).toBe(false);
     expect(isNemarWebOrigin("www.osc.earth")).toBe(false);
+  });
+});
+
+describe("isPartnerHost (ADR 0119, decision 9)", () => {
+  test("names compute.nemar.org and nothing else yet", () => {
+    expect([...PARTNER_HOSTS]).toEqual(["compute.nemar.org"]);
+  });
+
+  test("matches a partner host and every subdomain of one, in any case", () => {
+    for (const host of [
+      "compute.nemar.org",
+      "x.compute.nemar.org",
+      "a.b.compute.nemar.org",
+      "COMPUTE.nemar.org",
+      "Compute.Nemar.Org",
+    ]) {
+      expect(isPartnerHost(host)).toBe(true);
+    }
+  });
+
+  test("matches the fully qualified spelling with a trailing dot", () => {
+    expect(isPartnerHost("compute.nemar.org.")).toBe(true);
+    expect(isPartnerHost("x.compute.nemar.org.")).toBe(true);
+  });
+
+  test("does not match NEMAR's own hosts, a lookalike or the parent zone", () => {
+    for (const host of [
+      "app.nemar.org",
+      "api.nemar.org",
+      "nemar.org",
+      "notcompute.nemar.org",
+      "compute-nemar.org",
+      "compute.nemar.org.evil.example",
+      "evilcompute.nemar.org",
+      "nemar.org.compute.example",
+      "",
+    ]) {
+      expect(isPartnerHost(host)).toBe(false);
+    }
+  });
+});
+
+describe("a partner host is not a NEMAR web origin", () => {
+  test("isNemarWebOrigin refuses the partner host and its subdomains, which end in .nemar.org", () => {
+    for (const host of ["compute.nemar.org", "x.compute.nemar.org", "COMPUTE.nemar.org"]) {
+      expect(isNemarWebOrigin(host)).toBe(false);
+    }
+  });
+
+  test("isAllowedOrigin refuses the partner host and its subdomains", () => {
+    for (const origin of [
+      "https://compute.nemar.org",
+      "https://x.compute.nemar.org",
+      "https://COMPUTE.nemar.org",
+      "https://compute.nemar.org:8443",
+    ]) {
+      expect(isAllowedOrigin(origin)).toBe(false);
+    }
+  });
+
+  test("both checks are otherwise unchanged", () => {
+    for (const host of ["nemar.org", "app.nemar.org", "test.nemar.org", "notcompute.nemar.org"]) {
+      expect(isNemarWebOrigin(host)).toBe(true);
+      expect(isAllowedOrigin(`https://${host}`)).toBe(true);
+    }
+    expect(isAllowedOrigin("http://localhost:4321")).toBe(true);
+    expect(isAllowedOrigin("http://127.0.0.1:8787")).toBe(true);
+    expect(isAllowedOrigin("https://evil.example")).toBe(false);
+    expect(isAllowedOrigin(null)).toBe(false);
+    expect(isAllowedOrigin("not a url")).toBe(false);
   });
 });

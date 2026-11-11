@@ -4,7 +4,6 @@ description: "Implementer agents briefed from a numbered plan write \"(decision 
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 0f33834a-28ae-4fc8-b46d-31227beabe37
   modified: 2026-09-07T07:22:11.041Z
 ---
 

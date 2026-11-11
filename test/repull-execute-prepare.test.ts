@@ -18,7 +18,7 @@
  * against the real bucket behave as against the stand-in, and how GitHub lists open pull requests.
  */
 
-import type { Database } from "bun:sqlite";
+import { Database } from "bun:sqlite";
 import {
   afterAll,
   beforeAll,
@@ -673,10 +673,25 @@ describe.skipIf(!awsInstalled)("preparing the default delta", () => {
       nestedGitattributesB: true,
     });
   });
-  afterAll(() => fx?.cleanup());
+  afterAll(() => {
+    fx?.cleanup();
+    if (kept) removeTree(kept.dir);
+  });
   let originBefore: string;
 
-  beforeEach(async () => {
+  // Every case starts from the same finished preparation. It is made ONCE, by the real plan and
+  // the real execute, and each case is put back at that point: the database, the CLI's `repull`
+  // directory (permissions included), the bucket and the logs the cases read. The cases that
+  // change something (a record edited, a clone removed, a lock) change their own copy.
+  let kept: {
+    dir: string;
+    db: Uint8Array;
+    s3: ReturnType<S3Standin["snapshot"]>;
+    s3Log: S3Standin["log"];
+    apiWrites: string[];
+  } | null = null;
+
+  beforeAll(async () => {
     await reset();
     seedMirror(XX_A);
     planPath = await makePlan(fx);
@@ -684,6 +699,32 @@ describe.skipIf(!awsInstalled)("preparing the default delta", () => {
     first = await execute(fx, planPath);
     const digest = JSON.parse(readFileSync(planPath, "utf8")).digest as string;
     paths = workPaths(configDir, XX_A, digest);
+    const dir = mkdtempSync(join(tmpdir(), "nemar-repull-prepared-"));
+    const copy = Bun.spawnSync(["cp", "-a", join(configDir, "repull"), join(dir, "repull")]);
+    if (copy.exitCode !== 0) throw new Error(`cp -a: ${copy.stderr.toString()}`);
+    kept = {
+      dir,
+      db: db.serialize(),
+      s3: s3.snapshot(),
+      s3Log: [...s3.log],
+      apiWrites: [...apiWrites],
+    };
+  });
+
+  beforeEach(async () => {
+    if (!kept) throw new Error("the preparation did not run");
+    failTransitions = false;
+    environment = "test";
+    db = Database.deserialize(kept.db);
+    gh.reset();
+    s3.restore(kept.s3);
+    s3.log.length = 0;
+    s3.log.push(...kept.s3Log);
+    apiWrites.length = 0;
+    apiWrites.push(...kept.apiWrites);
+    removeTree(join(configDir, "repull"));
+    const copy = Bun.spawnSync(["cp", "-a", join(kept.dir, "repull"), join(configDir, "repull")]);
+    if (copy.exitCode !== 0) throw new Error(`cp -a: ${copy.stderr.toString()}`);
   });
 
   test("the row is prepared with the commit, its tree, the manifest's digest and counts", async () => {

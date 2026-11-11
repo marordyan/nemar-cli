@@ -219,6 +219,20 @@ const MODULE_EXPORTS: Record<string, string[]> = {
     "zarrFidelitySweep",
   ],
   notices: ["NOTICE_LEVELS", "createNotice", "deleteNotice", "getNotices", "listAdminNotices"],
+  oidc: [
+    "createOidcClient",
+    "disableOidcClient",
+    "endOidcAccount",
+    "getOidcClient",
+    "listOidcClients",
+    "listOidcKeys",
+    "listOidcLogoutDeliveries",
+    "oidcErrorCode",
+    "oidcSecretWord",
+    "revokeOidcKey",
+    "rotateOidcClientSecret",
+    "rotateOidcKeys",
+  ],
   repull: [
     "acceptRepullMergeTrailers",
     "acknowledgeRepullScreen",
@@ -235,6 +249,34 @@ const MODULE_EXPORTS: Record<string, string[]> = {
     "releaseRepullMergeClaim",
     "repullErrorCode",
     "transitionRepull",
+  ],
+  compute: [
+    "adjustAccountComputePool",
+    "adjustPlatformComputePool",
+    "advanceComputeJobAsAdmin",
+    "cancelComputeJobAsAdmin",
+    "computeRefusalCode",
+    "getAccountComputePools",
+    "getComputeAccessReport",
+    "getComputeAccountReport",
+    "getComputePipelineStatus",
+    "getComputePolicy",
+    "getComputeRecord",
+    "getComputeStatus",
+    "grantAccountComputePool",
+    "grantPlatformComputePool",
+    "listComputeAccessReports",
+    "listComputeHolds",
+    "listComputeJobs",
+    "listComputePools",
+    "listUnmatchedComputeRows",
+    "mintComputeObserverRun",
+    "placeComputeHold",
+    "putComputePolicy",
+    "readComputeRecord",
+    "releaseComputeHold",
+    "requeueComputeAccessReport",
+    "runComputePipeline",
   ],
 };
 
@@ -357,6 +399,44 @@ const POST_SPLIT_ADDITIONS = [
   "acceptRepullMergeTrailers", // #1996, ADR 0111 2026-10-29: POST /admin/repulls/:id/merge-trailers/accept
   "getRepullSwitches", // #1913 phase 7h: GET /admin/repulls/switches
   "listRepullDispatches", // #1913 phase 7h: GET /admin/repulls/dispatches
+  "getComputePolicy", // epic #2005 phase A2: GET /admin/compute/policy
+  "putComputePolicy", // epic #2005 phase A2: PUT /admin/compute/policy
+  "getComputeStatus", // epic #2005 phase A4: GET /admin/compute/status
+  "cancelComputeJobAsAdmin", // epic #2005 phase A5: POST /admin/compute/jobs/:id/cancel
+  "advanceComputeJobAsAdmin", // epic #2005 phase A5: POST /admin/compute/jobs/:id/advance
+  "runComputePipeline", // epic #2005 phase A6: POST /admin/compute/pipeline/run
+  "getComputePipelineStatus", // epic #2005 phase A6: GET /admin/compute/pipeline/status
+  "computeRefusalCode", // epic #2005 phase A6: reads a compute refusal's word (no request)
+  "listComputePools", // epic #2005 phase A2: GET /admin/compute/pools
+  "getAccountComputePools", // epic #2005 phase A2: GET /admin/compute/pools/by-id/:accountId
+  "grantAccountComputePool", // epic #2005 phase A2: POST /admin/compute/pools/by-id/:accountId/grant
+  "adjustAccountComputePool", // epic #2005 phase A2: POST /admin/compute/pools/by-id/:accountId/adjust
+  "grantPlatformComputePool", // epic #2005 phase A2: POST /admin/compute/pools/platform/:key/grant
+  "adjustPlatformComputePool", // epic #2005 phase A2: POST /admin/compute/pools/platform/:key/adjust
+  "listComputeJobs", // epic #2005 phase A7: reporting, holds, ACCESS reports and the observer (admin/compute)
+  "listUnmatchedComputeRows", // epic #2005 phase A7: reporting, holds, ACCESS reports and the observer (admin/compute)
+  "getComputeRecord", // epic #2005 phase A7: reporting, holds, ACCESS reports and the observer (admin/compute)
+  "readComputeRecord", // epic #2005 phase A7: reporting, holds, ACCESS reports and the observer (admin/compute)
+  "getComputeAccountReport", // epic #2005 phase A7: reporting, holds, ACCESS reports and the observer (admin/compute)
+  "getComputeAccessReport", // epic #2005 phase A7: reporting, holds, ACCESS reports and the observer (admin/compute)
+  "listComputeHolds", // epic #2005 phase A7: reporting, holds, ACCESS reports and the observer (admin/compute)
+  "placeComputeHold", // epic #2005 phase A7: reporting, holds, ACCESS reports and the observer (admin/compute)
+  "releaseComputeHold", // epic #2005 phase A7: reporting, holds, ACCESS reports and the observer (admin/compute)
+  "listComputeAccessReports", // epic #2005 phase A7: reporting, holds, ACCESS reports and the observer (admin/compute)
+  "requeueComputeAccessReport", // epic #2005 phase A7: reporting, holds, ACCESS reports and the observer (admin/compute)
+  "mintComputeObserverRun", // epic #2005 phase A7: reporting, holds, ACCESS reports and the observer (admin/compute)
+  "createOidcClient", // epic #2014 phase #2016: POST /admin/oidc/clients (shared/contract/oidc-admin.ts)
+  "listOidcClients", // epic #2014 phase #2016: GET /admin/oidc/clients
+  "getOidcClient", // epic #2014 phase #2016: GET /admin/oidc/clients/:client_id
+  "rotateOidcClientSecret", // epic #2014 phase #2016: POST /admin/oidc/clients/:client_id/rotate-secret
+  "disableOidcClient", // epic #2014 phase #2016: POST /admin/oidc/clients/:client_id/disable
+  "listOidcKeys", // epic #2014 phase #2016: GET /admin/oidc/keys
+  "rotateOidcKeys", // epic #2014 phase #2016: POST /admin/oidc/keys/rotate
+  "revokeOidcKey", // epic #2014 phase #2016: POST /admin/oidc/keys/:kid/revoke
+  "oidcErrorCode", // epic #2014 phase #2016: the closed word of an /admin/oidc refusal (rawBody.code)
+  "oidcSecretWord", // ADR 0119 addendum 2026-11-07: `unset` or `malformed`, the owner 404's word for OIDC_SECRET (rawBody.oidc_secret)
+  "endOidcAccount", // epic #2014 phase #2019: POST /admin/oidc/accounts/:id/end (shared/contract/oidc-admin.ts)
+  "listOidcLogoutDeliveries", // epic #2014 phase #2019: GET /admin/oidc/logout-deliveries
   "lockS3Objects", // #1912 phase 6f: POST /admin/datasets/:id/s3-lock with an explicit list
   "OBJECTS_PER_EXPLICIT_LOCK", // #1912 phase 6f: the explicit lock's batch size
 ];

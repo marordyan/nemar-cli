@@ -18,8 +18,8 @@
  *
  * ABOUT HALF THE CATALOG STILL PUBLISHES `format_version` 1 (as of
  * 2026-09-08) while the ADR 0033 engine bump re-converts the back catalog
- * (AGENTS.md's "widening of discovery reaches the back catalog only
- * through the engine stamp" paragraph). A v1 document has no `layout`, no
+ * (ADR 0033: a widening of discovery reaches the back catalog only
+ * through the engine stamp). A v1 document has no `layout`, no
  * `events_parquet`, no `source_tree`/`derived` on its stores, no
  * `engine_version`, and a group may carry no `n_view_levels` at all --
  * none of `zarrIndexSchema`'s required fields hold, so this reader

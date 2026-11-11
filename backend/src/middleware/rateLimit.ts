@@ -45,6 +45,7 @@
  */
 
 import type { Context, Next } from "hono";
+import { OIDC_PUBLIC_DOCUMENT_PATHS } from "../../../shared/oidc.js";
 import { isInternalRequest } from "../lib/internal-request";
 import { ACTIVE_ACCOUNT_STATUS_SQL_LIST } from "../services/account-tier";
 import { logPseudonym } from "../services/log-pseudonym";
@@ -847,6 +848,22 @@ const DATA_PATH_RE = /^\/(nemar\/)?data(\/|$)/;
 // 1,200/min is above any rate it sustains and still bounds a runaway caller.
 const NEUROBAGEL_PATH_RE = /^\/neurobagel(\/|$)/;
 const NEUROBAGEL_MAX_REQUESTS = 1200;
+// The OpenID Connect provider's three client endpoints (epic #2014 phase #2018, ADR 0119): the token
+// endpoint, revocation and introspection. Their own IP-keyed bucket, matched BEFORE the bearer branch,
+// for the Neurobagel route's reasons and one of their own. A client authenticates with HTTP Basic,
+// which the bearer branch does not read, so a partner's server would otherwise sit in the anonymous
+// `ip` bucket, and that one server redeems codes, refreshes tokens and introspects them for every
+// person signed in to it, from one address: 1,000 a minute is not its ceiling. And a request that
+// carries a bearer anyway must not mint a bucket per rotated value. Every credential here is 256
+// random bits and every refusal writes nothing, so the cap bounds load and is no guessing defence.
+// Exactly these paths: userinfo carries a bearer access token and rides the token bucket, and the key
+// set and discovery are not limited at all.
+const OAUTH_PATHS: ReadonlySet<string> = new Set([
+  "/oauth/token",
+  "/oauth/revoke",
+  "/oauth/introspect",
+]);
+const OAUTH_MAX_REQUESTS = 2000;
 // The zarr serving gateway (#901), the highest-request-volume data-plane path,
 // which bypassed the middleware stack and went unthrottled. Two reachable path
 // shapes, because Hono's `app.route("/zarrproxy", zarrDataRoutes)` PREPENDS the
@@ -978,7 +995,9 @@ const AUTH_PATHS = [
   // and this bucket's ten a minute would be shared by everyone signing in at
   // once. It is limited per ACCOUNT instead (`checkPrivateGrantBudget` below,
   // called by the route once the session names the account), and rides the
-  // generic `ip` bucket here.
+  // generic `ip` bucket here. `/auth/oidc/authorize` and `/auth/oidc/consent`
+  // (ADR 0119) are absent for the same reason, and limited per account by
+  // `checkOidcAuthorizeBudget`.
   // NOT an /auth path, and deliberately in this list anyway (ADR 0042, #1253):
   // POST /users/me/upload-access/request spends a live GitHub API call on the
   // shared installation token for every attempt, and a refused one writes
@@ -1039,6 +1058,9 @@ export function __readBearerTokenFromHeader(authHeader: string | undefined): str
  *  - `neurobagel-ip` for the Neurobagel artifact store's read route
  *    (`/neurobagel/*`). 1,200/60s, IP-keyed, checked before the bearer branch for
  *    the reasons at NEUROBAGEL_PATH_RE.
+ *  - `oauth-ip` for the OpenID Connect token, revocation and introspection
+ *    endpoints. 2,000/60s, IP-keyed, checked before the bearer branch for the
+ *    reasons at OAUTH_PATHS.
  *  - `ip` for everything else (the unauthenticated cap), or, for a caller
  *    without `CF-Connecting-IP`, `site-ip` (the visitor it forwarded) or
  *    `site-unattributed` (nobody named). The `ip` argument is the caller key
@@ -1057,7 +1079,8 @@ export interface __BucketSelection {
     | "site-unattributed"
     | "token"
     | "data-ip"
-    | "neurobagel-ip";
+    | "neurobagel-ip"
+    | "oauth-ip";
   /** Pre-hash key material: the caller key (see {@link __CallerIdentity}), or the raw bearer token. */
   rawKey: string;
   maxRequests: number;
@@ -1324,6 +1347,10 @@ export function __selectBucket(
   if (NEUROBAGEL_PATH_RE.test(path)) {
     return { keyKind: "neurobagel-ip", rawKey: ip, maxRequests: NEUROBAGEL_MAX_REQUESTS };
   }
+  // The OpenID Connect client endpoints: IP-keyed whatever they carry (see OAUTH_PATHS).
+  if (OAUTH_PATHS.has(path)) {
+    return { keyKind: "oauth-ip", rawKey: ip, maxRequests: OAUTH_MAX_REQUESTS };
+  }
   const bearer = __readBearerTokenFromHeader(authHeader);
   if (bearer) {
     return { keyKind: "token", rawKey: bearer, maxRequests: TOKEN_MAX_REQUESTS_AUTHED };
@@ -1538,6 +1565,20 @@ export async function rateLimiter(
   // exercise other behavior would silently stop exercising the limiter too.
   // Both forms fail closed on an unset value; do not widen this one.
   if (c.env.ENVIRONMENT === "development") {
+    await next();
+    return;
+  }
+
+  // The OpenID Connect discovery document and the signing keys' public set are NOT limited (ADR 0119):
+  // the issuer is this host for good, and a client that is refused them in a burst cannot validate a
+  // token. Exactly those two paths, by the one list in shared/oidc.ts, and only a read of them (GET or
+  // HEAD): not their `/nemar` twins (which answer 404), and not another method. The key set's one
+  // read is kept briefly per database object (services/oidc-keys.ts), so the exemption does not
+  // become a D1 read per request.
+  if (
+    OIDC_PUBLIC_DOCUMENT_PATHS.includes(c.req.path) &&
+    (c.req.method === "GET" || c.req.method === "HEAD")
+  ) {
     await next();
     return;
   }
@@ -1880,6 +1921,44 @@ export async function checkPrivateGrantBudget(
 }
 
 /**
+ * Thirty authorization calls a minute per ACCOUNT (ADR 0119): the check and the
+ * consent routes of the OpenID Connect authorization endpoint share it. A person
+ * signing in to a client passes through one check and at most one consent, so
+ * thirty is far above any person and far below what a script driving a stolen
+ * app session could want.
+ */
+const OIDC_AUTHORIZE_MAX_REQUESTS = 30;
+const OIDC_AUTHORIZE_BUCKET_KIND = "oidc-authorize-account";
+
+/**
+ * Count one `POST /auth/oidc/authorize` or `POST /auth/oidc/consent` against its
+ * account's budget, and refuse it once the budget is spent. Modelled on
+ * {@link checkPrivateGrantBudget}, for the same reason: the website calls both
+ * routes server-side, so every person arrives from a few egress addresses and a
+ * per-address bucket would make strangers share one limit. A caller with no
+ * session that may approve a grant spends no account's budget; it rides the
+ * generic bucket the middleware already chose for it.
+ */
+export async function checkOidcAuthorizeBudget(
+  env: Pick<Bindings, "ENVIRONMENT" | "TEST_BYPASS_TOKEN">,
+  request: Request,
+  userId: number,
+  waitUntil: ((work: Promise<unknown>) => void) | undefined,
+): Promise<DataMissBudgetOutcome> {
+  return consumeKeyedBudget(
+    env,
+    request,
+    {
+      kind: OIDC_AUTHORIZE_BUCKET_KIND,
+      key: `user-${userId}`,
+      maxRequests: OIDC_AUTHORIZE_MAX_REQUESTS,
+      caller: callerIdentityOf(request).source,
+    },
+    waitUntil,
+  );
+}
+
+/**
  * The shared core of the keyed budgets a route checks itself, because the
  * key is something only the route knows (whether a request missed the cache,
  * which account a session names). Mirrors `rateLimiter`'s own mechanics: the
@@ -1972,6 +2051,8 @@ export const __limits = {
   DATA_MISS_MAX_REQUESTS,
   NEUROBAGEL_MAX_REQUESTS,
   PRIVATE_GRANT_MAX_REQUESTS,
+  OIDC_AUTHORIZE_MAX_REQUESTS,
+  OAUTH_MAX_REQUESTS,
   WINDOW_SIZE,
 };
 

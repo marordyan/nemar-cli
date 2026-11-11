@@ -1,0 +1,26 @@
+[
+  {
+    "test-name": "oidcc-scope-address",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "comment": "Decision 4 (B6 conformance run, owner-approved wording: a module may be skipped by the suite's own rules): under discovery the suite skips a scope test when scopes_supported does not list the scope; NEMAR has no address or phone scope."
+  },
+  {
+    "test-name": "oidcc-scope-phone",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "comment": "Decision 4 (B6 conformance run, owner-approved wording: a module may be skipped by the suite's own rules): under discovery the suite skips a scope test when scopes_supported does not list the scope; NEMAR has no address or phone scope."
+  },
+  {
+    "test-name": "oidcc-scope-all",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "comment": "Decision 4 (B6 conformance run, owner-approved wording: a module may be skipped by the suite's own rules): under discovery the suite skips a scope test when scopes_supported does not list the scope; NEMAR has no address or phone scope."
+  },
+  {
+    "test-name": "oidcc-unsigned-request-object-supported-correctly-or-rejected-as-unsupported",
+    "variant": "*",
+    "configuration-filename": "*basic-plan.json",
+    "comment": "Decision 4 (B6 conformance run, owner-approved wording: a module may be skipped by the suite's own rules): NEMAR answers request_not_supported to a request object, which the specification permits, so the suite skips the test."
+  }
+]

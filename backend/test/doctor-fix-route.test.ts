@@ -1,7 +1,7 @@
 /**
  * Real POST /admin/doctor/fix route tests (issue #1135).
  *
- * The 2026-08-23 nm000225 incident (see AGENTS.md's manifest-healing note)
+ * The 2026-08-23 nm000225 incident (see .memory/manifest-healing-dispatch-over-rest.md)
  * hit exactly this shape: an UN-NARROWED doctor/fix call re-scans the whole
  * catalog and then fixes every finding in one Worker invocation, which
  * starves the GitHub App rate limit / Workers subrequest budget well

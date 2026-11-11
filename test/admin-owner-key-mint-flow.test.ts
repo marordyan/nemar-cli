@@ -3,7 +3,7 @@
  * #1284; ADR 0048): `POST /admin/users/:username/keys`.
  *
  * Targets a deployed backend (set TEST_API_URL; defaults to api.nemar.org).
- * The dev worker deploys only from `dev` (AGENTS.md release pipeline), so
+ * The dev worker deploys only from `dev` (.github/workflows/deploy-backend.yml), so
  * this phase's routes are not guaranteed to be live on whatever backend
  * TEST_API_URL points at until the epic branch reaches dev. This file
  * probes the route first; a non-404 proves it is deployed (ownerMiddleware

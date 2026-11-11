@@ -1,0 +1,11 @@
+[
+  {
+    "test-name": "oidcc-discovery-endpoint-verification",
+    "variant": "*",
+    "configuration-filename": "*config-plan.json",
+    "current-block": "",
+    "condition": "OIDCCCheckDiscEndpointIdTokenSigningAlgValuesSupported",
+    "expected-result": "failure",
+    "comment": "Decision 3c (B6 conformance run, owner-approved): ES256 is the only signing algorithm NEMAR offers, and OpenID Connect Discovery expects RS256 to be listed."
+  }
+]

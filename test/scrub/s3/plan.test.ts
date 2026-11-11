@@ -3,13 +3,14 @@
  * reads, what it writes, and that it stops (exit 4) rather than plan over data it could not read.
  */
 
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { parsePatches, parsePlan } from "../../../scripts/scrub/contract";
 import { buildKey } from "../../../scripts/scrub/contract";
 import type { PlanFile } from "../../../scripts/scrub/contract";
 import { type S3Standin, startS3Standin } from "../helpers/s3-standin";
+import { makeJobPool, makeLimiter, settleAll } from "./concurrency";
 import { expectStopped } from "./refusal";
 import {
   BUCKET,
@@ -44,16 +45,40 @@ import {
 
 afterAll(removeTempDirs);
 
-let standin: S3Standin;
-afterEach(() => standin?.stop());
+/**
+ * The test bodies run in the background, at most three at a time and in the order the tests are
+ * written, once `startJobs` opens the queue (`concurrency.ts`). Each test then waits for its own
+ * job, so time spent queued is not counted against its timeout. `run` keeps at most three real
+ * CLI runs going at once; CI runners have four cores and other files run beside this one.
+ */
+const { job, start: startJobs } = makeJobPool(3);
+beforeAll(startJobs);
+const limit = makeLimiter(3);
+const run = (s: S3Standin, args: string[], env: Record<string, string> = {}) =>
+  limit(() => runScrub(s, args, env));
+
+/** A test with a stand-in of its own, stopped when it ends; its body runs as a background job. */
+function lane(name: string, body: (standin: S3Standin) => Promise<void>, timeout: number) {
+  job(
+    name,
+    async () => {
+      const standin = startS3Standin();
+      try {
+        await body(standin);
+      } finally {
+        standin.stop();
+      }
+    },
+    timeout,
+  );
+}
 
 const toHex = (b: Uint8Array) => Buffer.from(b).toString("hex");
 
 describe("plan", () => {
-  test(
+  lane(
     "finds only the EDF and BDF keys of the manifests, reads headers, writes no value",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       // Two entries per page: the CLI must follow every page of every listing.
       standin.setPageSize(2);
       const a = fixtureA();
@@ -79,7 +104,7 @@ describe("plan", () => {
       );
 
       const dir = tempDir("plan");
-      const r = await runScrub(standin, planArgs(dir));
+      const r = await run(standin, planArgs(dir));
       expect(r.exitCode, r.all).toBe(0);
 
       const plan = parsePlan(JSON.stringify(readJson(dir, "plan.json")));
@@ -152,10 +177,9 @@ describe("plan", () => {
     SLOW,
   );
 
-  test(
+  lane(
     "--tags reads only the manifests named, marks the plan partial, and no later stage runs on it",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const a = fixtureA();
       const b = fixtureB();
       const d = fixtureD();
@@ -163,7 +187,7 @@ describe("plan", () => {
       seedManifest(standin, "v1.0.0", [a, d]);
       seedManifest(standin, "v1.0.1", [a, b]);
       const dir = tempDir("plan-tags");
-      const r = await runScrub(standin, planArgs(dir, ["--tags", "v1.0.1"]));
+      const r = await run(standin, planArgs(dir, ["--tags", "v1.0.1"]));
       expect(r.exitCode, r.all).toBe(0);
       const plan = readJson<PlanFile>(dir, "plan.json");
       expect(plan.tags).toEqual(["v1.0.1"]);
@@ -184,15 +208,11 @@ describe("plan", () => {
       // A partial plan is never carried further, however complete the rest looks.
       writeHashes(dir, [a, b, d]);
       for (const extra of [[], ["--execute"]]) {
-        expectStopped(
-          await runScrub(standin, ["assemble", "--dir", dir, ...extra]),
-          3,
-          "plan-partial",
-        );
+        expectStopped(await run(standin, ["assemble", "--dir", dir, ...extra]), 3, "plan-partial");
       }
       expect(has(dir, "assembled.json")).toBe(false);
-      expectStopped(await runScrub(standin, verifyArgs(dir)), 3, "plan-partial");
-      const del = await runScrub(standin, [
+      expectStopped(await run(standin, verifyArgs(dir)), 3, "plan-partial");
+      const del = await run(standin, [
         "delete-old",
         "--dir",
         dir,
@@ -208,10 +228,9 @@ describe("plan", () => {
     SLOW,
   );
 
-  test(
+  lane(
     "also plans every EDF or BDF under objects/ that no manifest names, in any letter case",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       standin.setPageSize(2);
       const named = fixtureA();
       // On the bucket and in no manifest: a file a later version dropped.
@@ -254,7 +273,7 @@ describe("plan", () => {
       seedManifest(standin, "v1.0.0", [named]);
 
       const dir = tempDir("plan-objects");
-      const r = await runScrub(standin, planArgs(dir));
+      const r = await run(standin, planArgs(dir));
       expect(r.exitCode, r.all).toBe(0);
       const plan = readJson<PlanFile>(dir, "plan.json");
       expect(plan.keys.map((k) => k.oldKey).sort()).toEqual(
@@ -274,37 +293,43 @@ describe("plan", () => {
     SLOW,
   );
 
-  test(
+  job(
     "an object named in the annex key space that is not an annex key stops the plan, any extension",
     async () => {
       // A raw recording stored by its path (`notes.EDF`) is a raw copy now, planned and recorded
       // (raw-copies.test.ts); a name that claims to be an annex key and is not one is still
       // a stop, because nothing can say what it holds.
-      for (const name of [
+      const names = [
         `SHA256E-s5--${"a".repeat(63)}.edf`,
         `SHA256E-s5--${"A".repeat(64)}.bdf`,
         `SHA256E-sx--${"a".repeat(64)}.json`,
         "SHA256E-",
-      ]) {
-        standin = startS3Standin();
-        const a = fixtureA();
-        seedObject(standin, a);
-        seedManifest(standin, "v1.0.0", [a]);
-        standin.putObject(BUCKET, objectPath(name), new Uint8Array(5));
-        const dir = tempDir("plan-objects-bad");
-        const r = await runScrub(standin, planArgs(dir));
-        expectStopped(r, 4, "objects-bad-key", name);
-        expect(has(dir, "plan.json"), name).toBe(false);
-        standin.stop();
-      }
+      ];
+      // Each name has its own stand-in and directory, so they run side by side (`run` bounds them).
+      await settleAll(
+        names.map(async (name) => {
+          const standin = startS3Standin();
+          try {
+            const a = fixtureA();
+            seedObject(standin, a);
+            seedManifest(standin, "v1.0.0", [a]);
+            standin.putObject(BUCKET, objectPath(name), new Uint8Array(5));
+            const dir = tempDir("plan-objects-bad");
+            const r = await run(standin, planArgs(dir));
+            expectStopped(r, 4, "objects-bad-key", name);
+            expect(has(dir, "plan.json"), name).toBe(false);
+          } finally {
+            standin.stop();
+          }
+        }),
+      );
     },
     SLOW,
   );
 
-  test(
+  lane(
     "a recording kept inline in git is recorded as unreadable, once, and the plan is incomplete",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const a = fixtureA();
       seedObject(standin, a);
       const inline = `git:${"b".repeat(40)}`;
@@ -320,7 +345,7 @@ describe("plan", () => {
         "sub-10/eeg/sub-10_eeg.bdf": { key: inline2, size: 5 },
       });
       const dir = tempDir("plan-inline");
-      const r = await runScrub(standin, planArgs(dir));
+      const r = await run(standin, planArgs(dir));
       expect(r.exitCode, r.all).toBe(4);
       const plan = parsePlan(JSON.stringify(readJson(dir, "plan.json")));
       const inlineEntries = plan.keys.filter((k) => k.oldKey.startsWith("git:"));
@@ -337,48 +362,49 @@ describe("plan", () => {
 
       // No later stage runs on this plan.
       writeHashes(dir, [a]);
-      expectStopped(await runScrub(standin, assembleArgs(dir)), 3, "plan-has-unreadable");
+      expectStopped(await run(standin, assembleArgs(dir)), 3, "plan-has-unreadable");
 
       // A git: key that is not a blob sha is a manifest the plan cannot account for.
       seedManifest(standin, "v1.0.2", [a], {
         "sub-11/eeg/sub-11_eeg.edf": { key: "git:not-a-sha", size: 5 },
       });
       const dirBad = tempDir("plan-inline-bad");
-      expectStopped(await runScrub(standin, planArgs(dirBad)), 4, "manifest-bad-key");
+      expectStopped(await run(standin, planArgs(dirBad)), 4, "manifest-bad-key");
     },
     SLOW,
   );
 
-  test(
+  job(
     "a file under version/ that is neither a manifest nor a known sibling stops the plan, never skipped",
     async () => {
-      for (const name of [
-        "v1.0.0-final.json",
-        "notes.json",
-        "v1.0.0.json.bak",
-        "v1.0.0-beta.1.json",
-      ]) {
-        standin = startS3Standin();
-        const a = fixtureA();
-        seedObject(standin, a);
-        seedManifest(standin, "v1.0.0", [a]);
-        standin.putObject(BUCKET, `${DATASET}/version/${name}`, new TextEncoder().encode("{}"));
-        const dir = tempDir("plan-unknown");
-        const r = await runScrub(standin, planArgs(dir));
-        expectStopped(r, 4, "version-dir-unknown-file");
-        // Stopped before reading any object, so no header was read and no plan was written.
-        expect(standin.calls("GetObject").length, name).toBe(0);
-        expect(existsSync(`${dir}/plan.json`), name).toBe(false);
-        standin.stop();
-      }
+      const names = ["v1.0.0-final.json", "notes.json", "v1.0.0.json.bak", "v1.0.0-beta.1.json"];
+      // Each name has its own stand-in and directory, so they run side by side (`run` bounds them).
+      await settleAll(
+        names.map(async (name) => {
+          const standin = startS3Standin();
+          try {
+            const a = fixtureA();
+            seedObject(standin, a);
+            seedManifest(standin, "v1.0.0", [a]);
+            standin.putObject(BUCKET, `${DATASET}/version/${name}`, new TextEncoder().encode("{}"));
+            const dir = tempDir("plan-unknown");
+            const r = await run(standin, planArgs(dir));
+            expectStopped(r, 4, "version-dir-unknown-file");
+            // Stopped before reading any object, so no header was read and no plan was written.
+            expect(standin.calls("GetObject").length, name).toBe(0);
+            expect(existsSync(`${dir}/plan.json`), name).toBe(false);
+          } finally {
+            standin.stop();
+          }
+        }),
+      );
     },
     SLOW,
   );
 
-  test(
+  lane(
     "a key that cannot be read, or whose size disagrees, exits 4 and is counted, never skipped",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const good = fixtureA();
       seedObject(standin, good);
 
@@ -398,7 +424,7 @@ describe("plan", () => {
         "sub-09/eeg/sub-09_task-rest_eeg.edf": { key: junkKey, size: junk.length },
       });
       const dir = tempDir("plan-unreadable");
-      const r = await runScrub(standin, planArgs(dir));
+      const r = await run(standin, planArgs(dir));
       expect(r.exitCode, r.all).toBe(4);
 
       const plan = readJson<PlanFile>(dir, "plan.json");
@@ -419,16 +445,15 @@ describe("plan", () => {
 
       // No later stage runs on this plan, even with hashes supplied.
       writeHashes(dir, [good]);
-      const asm = await runScrub(standin, assembleArgs(dir));
+      const asm = await run(standin, assembleArgs(dir));
       expectStopped(asm, 3, "plan-has-unreadable");
     },
     SLOW,
   );
 
-  test(
+  lane(
     "refuses to plan from a manifest it cannot account for",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const a = fixtureA();
       seedObject(standin, a);
 
@@ -437,18 +462,18 @@ describe("plan", () => {
         "sub-07/eeg/sub-07_task-rest_eeg.edf": { key: "MD5E-s5--abcdef.edf", size: 5 },
       });
       const dirBad = tempDir("plan-badkey");
-      const bad = await runScrub(standin, planArgs(dirBad));
+      const bad = await run(standin, planArgs(dirBad));
       expectStopped(bad, 4, "manifest-bad-key");
       expect(has(dirBad, "plan.json")).toBe(false);
 
       // A tag that was asked for and does not exist.
       const dirMissing = tempDir("plan-missing");
-      const missing = await runScrub(standin, planArgs(dirMissing, ["--tags", "v9.9.9"]));
+      const missing = await run(standin, planArgs(dirMissing, ["--tags", "v9.9.9"]));
       expectStopped(missing, 4, "manifest-missing");
 
       // A dataset with no manifests at all.
       const dirNone = tempDir("plan-none");
-      const none = await runScrub(standin, ["plan", "--dataset", "xx090412", "--out", dirNone]);
+      const none = await run(standin, ["plan", "--dataset", "xx090412", "--out", dirNone]);
       expectStopped(none, 4, "no-manifests");
 
       // A manifest that is not JSON must not echo what it holds.
@@ -458,17 +483,16 @@ describe("plan", () => {
         new TextEncoder().encode("Marigold Thistlewood is not json"),
       );
       const dirJunk = tempDir("plan-junk");
-      const junk = await runScrub(standin, planArgs(dirJunk, ["--tags", "v2.0.0"]));
+      const junk = await run(standin, planArgs(dirJunk, ["--tags", "v2.0.0"]));
       expectStopped(junk, 4, "manifest-malformed");
       expect(leaksAName(junk.all)).toBeNull();
     },
     SLOW,
   );
 
-  test(
+  lane(
     "a manifest of another dataset, and an existing assembly, are refused",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const a = fixtureA();
       seedObject(standin, a);
       standin.putObject(
@@ -477,7 +501,7 @@ describe("plan", () => {
         new TextEncoder().encode(JSON.stringify({ dataset_id: "xx090999", files: {} })),
       );
       const dir = tempDir("plan-wrong");
-      const wrong = await runScrub(standin, planArgs(dir));
+      const wrong = await run(standin, planArgs(dir));
       expectStopped(wrong, 4, "manifest-wrong-dataset");
 
       seedManifest(standin, "v1.0.0", [a]);
@@ -487,25 +511,24 @@ describe("plan", () => {
         bucket: BUCKET,
         entries: {},
       });
-      const again = await runScrub(standin, planArgs(dir));
+      const again = await run(standin, planArgs(dir));
       expectStopped(again, 3, "assembled-exists");
       expect(has(dir, "plan.json")).toBe(false);
     },
     SLOW,
   );
 
-  test(
+  lane(
     "usage errors and a long-lived key in the environment are refused before any S3 call",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const dir = tempDir("plan-usage");
-      const noDataset = await runScrub(standin, ["plan", "--out", dir]);
+      const noDataset = await run(standin, ["plan", "--out", dir]);
       expect(noDataset.exitCode).toBe(2);
-      const badId = await runScrub(standin, ["plan", "--dataset", "nm1", "--out", dir]);
+      const badId = await run(standin, ["plan", "--dataset", "nm1", "--out", dir]);
       expect(badId.exitCode).toBe(2);
-      const unknown = await runScrub(standin, ["frobnicate"]);
+      const unknown = await run(standin, ["frobnicate"]);
       expect(unknown.exitCode).toBe(2);
-      const akia = await runScrub(standin, planArgs(dir), {
+      const akia = await run(standin, planArgs(dir), {
         AWS_ACCESS_KEY_ID: "AKIAFAKEFAKEFAKE0001",
       });
       expectStopped(akia, 3, "long-lived-key-in-environment");
@@ -514,23 +537,21 @@ describe("plan", () => {
     SLOW,
   );
 
-  test(
+  lane(
     "an aws failure no stage accounted for prints its operation and fixed class, never a message",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       // The listing that discovers the manifests is refused: nothing in the plan stage counts it.
       standin.inject("ListObjectsV2", { code: "AccessDenied", status: 403 });
-      const r = await runScrub(standin, planArgs(tempDir("plan-aws-escape")));
+      const r = await run(standin, planArgs(tempDir("plan-aws-escape")));
       expect(r.exitCode, r.all).toBe(1);
       expect(r.stderr.trim()).toBe("s3-scrub: failed ListObjectsV2:access-denied");
     },
     SLOW,
   );
 
-  test(
+  lane(
     "an unexpected error names its class only, and SCRUB_S3_DEBUG=1 adds no message or stack",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const d = fixtureD();
       seedObject(standin, d);
       seedManifest(standin, "v1.0.0", [d]);
@@ -539,7 +560,7 @@ describe("plan", () => {
       const out = path.join(tempDir("plan-debug"), "Marigold-Thistlewood");
       mkdirSync(out, { mode: 0o500 });
       try {
-        const r = await runScrub(standin, planArgs(out), { SCRUB_S3_DEBUG: "1" });
+        const r = await run(standin, planArgs(out), { SCRUB_S3_DEBUG: "1" });
         expect(r.exitCode, r.all).toBe(1);
         expect(r.stderr).toContain("s3-scrub: unexpected");
         expect(r.stderr).toContain("message and stack withheld");
@@ -555,10 +576,9 @@ describe("plan", () => {
 });
 
 describe("plan: a recording masked by a delete marker (C3)", () => {
-  test(
+  lane(
     "a clean masked recording is planned, read at its newest version, with every version and marker",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const [a, d] = [fixtureA(), fixtureD()];
       seedObject(standin, a);
       // D: no manifest names it and its current entry is a delete marker.
@@ -566,7 +586,7 @@ describe("plan: a recording masked by a delete marker (C3)", () => {
       const marker = standin.putDeleteMarker(BUCKET, objectPath(d.oldKey));
       seedManifest(standin, "v1.0.0", [a]);
       const dir = tempDir("plan-masked-clean");
-      const r = await runScrub(standin, planArgs(dir));
+      const r = await run(standin, planArgs(dir));
       expect(r.exitCode, r.all).toBe(0);
       const plan = readJson<PlanFile>(dir, "plan.json");
       const entry = plan.keys.find((k) => k.oldKey === d.oldKey);
@@ -582,17 +602,16 @@ describe("plan: a recording masked by a delete marker (C3)", () => {
     SLOW,
   );
 
-  test(
+  lane(
     "a masked recording that needs a scrub stops the plan with a word a person acts on",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const [a, b] = [fixtureA(), fixtureB()];
       seedObject(standin, a);
       const ids = seedObject(standin, b);
       const marker = standin.putDeleteMarker(BUCKET, objectPath(b.oldKey));
       seedManifest(standin, "v1.0.0", [a]);
       const dir = tempDir("plan-masked-dirty");
-      const r = await runScrub(standin, planArgs(dir));
+      const r = await run(standin, planArgs(dir));
       expect(r.exitCode, r.all).toBe(4);
       expect(r.stdout).toContain("masked-needs-scrub=1");
       const plan = readJson<PlanFile>(dir, "plan.json");
@@ -605,15 +624,14 @@ describe("plan: a recording masked by a delete marker (C3)", () => {
     SLOW,
   );
 
-  test(
+  lane(
     "plan.json names the exact bytes of the patches.json written with it, and leaves no temp file",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const a = fixtureA();
       seedObject(standin, a);
       seedManifest(standin, "v1.0.0", [a]);
       const dir = tempDir("plan-bound");
-      const r = await runScrub(standin, planArgs(dir));
+      const r = await run(standin, planArgs(dir));
       expect(r.exitCode, r.all).toBe(0);
       expect(readJson<PlanFile>(dir, "plan.json").patchesSha256).toBe(
         fileSha256(dir, "patches.json"),
@@ -625,17 +643,16 @@ describe("plan: a recording masked by a delete marker (C3)", () => {
 });
 
 describe("plan: a working directory it cannot read is not an empty one (S1)", () => {
-  test(
+  lane(
     "an assembled.json that cannot be checked for is a failure, not a missing file",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const a = fixtureA();
       seedObject(standin, a);
       seedManifest(standin, "v1.0.0", [a]);
       const dir = tempDir("plan-unreadable-dir");
       chmodSync(dir, 0o000);
       try {
-        const r = await runScrub(standin, planArgs(dir));
+        const r = await run(standin, planArgs(dir));
         expectStopped(r, 1, "assembled.json-unreadable");
         expect(standin.log.length).toBe(0);
       } finally {

@@ -27,9 +27,10 @@ First party comes first: A and C together are what NEMAR's data-quality work wai
 B runs beside them because the partner's integration takes calendar time.
 
 **Reserved numbers**, so parallel epics never collide:
-migrations 0114 to 0119 for A, 0120 to 0124 for B, 0125 to 0129 for D;
+migrations 0114 to 0119 for A, 0120 to 0124 for B, and 0131 and up for D (0130 is A's anonymization migration, applied before D's range was used);
 ADR 0118 for the compute gateway (A) and ADR 0119 for the OIDC provider (B).
 If a phase needs more, take the next unreserved number and say so in the PR.
+A migration numbered below one that is already applied is a hazard, because deploy applies by name: production would apply the lower number after the higher one while a fresh replay applies it first, so reserve above the highest applied number.
 
 **Outside gates** that no phase can pass on its own:
 the Tapis tenant and the answers in the design's section 12 (the owner asks SDSC);
@@ -195,12 +196,30 @@ The full rules are `AGENTS.md`, `.rules/` and the ADRs; these are the ones this 
   done; unset v
   ```
 
-  Later compute secrets (Tapis credentials, the ACCESS attributes key, `OIDC_SECRET`) go in the same folder and are copied the same way. No AWS bucket or IAM user is needed for compute.
+  Later compute secrets (Tapis credentials, the ACCESS attributes key, `OIDC_SECRET`) go in the same folder and are copied the same way. `OIDC_SECRET` must be `nmsso-` followed by `openssl rand -hex 32` (70 characters, different for dev and production); any other form leaves the OpenID Connect provider off (ADR 0119 addendum, 2026-11-07). No AWS bucket or IAM user is needed for compute.
 - [ ] Set the Tapis credentials as Worker secrets for dev and production once the tenant exists.
-- [ ] Generate the ACCESS gateway attributes key for the community account and set it as a Worker secret.
+- [ ] Generate the ACCESS gateway attributes key for the community account and set it as the Worker secret `ACCESS_GATEWAY_ATTRIBUTES_KEY`, and set the name ACCESS knows the cluster by as `ACCESS_RESOURCE_NAME` (design question 14). Confirm the header that carries the key and the body's spelling against the real interface: both are unverified constants in `backend/src/services/access-attributes.ts`.
 - [ ] Take the policies and the official-request procedure (Epic D, phase 5) to UC San Diego counsel.
 - [ ] Register compute.nemar.org as an OIDC client after Epic B merges, and send its credentials to the SDSC colleague.
 - [ ] Turn on `COMPUTE_ENABLED` and, later, `COMPUTE_PIPELINES_DISPATCH_ENABLED`, in production.
+
+### Before the first launch: the prerequisites, in order
+
+`nemar admin compute status` prints each of these as yes or no (never a value) under "Prerequisites", plus the Tapis, storage and ACCESS lines, so the order below can be checked from a terminal.
+The checks marked (status) are the ones it prints.
+The gated runbooks at `docs.nemar.org/admin/` are reachable with `nemar admin docs` for an administrator (the systems inventory was fetched on 2026-11-06), but the ones that exist say nothing about compute, so this list is the only written procedure; where a step says "not written down", the owner decides it.
+
+1. [ ] The Tapis credentials are set as Worker secrets and the tenant answers: `token: ok` and `health: ok` (status).
+2. [ ] `PRESCREEN_CALLBACK_SECRET` is set (status: callback secret) and `API_BASE_URL` is set (status: API base address). The one secret signs every compute token, so read the rotation rule before ever changing it: rotating it ends the `job_token` inside every running job's launch specification and the Tapis webhook addresses, so drain the running jobs first (ADR 0118, A5 amendment, item 5, and `.rules/revocation.md`).
+3. [ ] `COMPUTE_RUNTIME_IMAGE` is set to ONE digest-pinned reference and is absent from `wrangler-sccn.toml` (status: runtime image valid, with its digest). A `python` job and every pipeline recipe stay `created` until it is.
+4. [ ] NEMAR's pipelines service account exists: username `nemar-pipelines`, account kind `service`, status `approved`, not deleted (status: pipelines service account). How the account is created is not written down in this repository; create it as the owner would any other service account and check the line.
+5. [ ] The first owner policy version is set with `nemar admin compute policy set --file <json>` (owner; status: owner policy "set"). Until a version exists the default applies, so a recorded version is the owner's decision on the record: the tolerances, the retention periods and the reservation wait are in it.
+6. [ ] The `people` and `pipelines` platform pools are granted (`nemar admin compute pool grant`, owner for a platform budget; status: people pool and pipelines pool granted), and each person who may run a job has an account pool granted. A hold on a person's job needs both the person's pool and the `people` budget.
+7. [ ] The observer's token procedure is decided and written down by the owner. A token is `nemar admin compute observer mint`'s output, good for one hour and ONE post, and the observer posts a quick document every 15 minutes, so a fresh token has to be minted for every post; ADR 0118 leaves who mints it, where it is kept and how it reaches the observer undecided, and nothing in this repository does it.
+8. [ ] `nemar admin compute status` shows every line yes or ok, no "Reconciliation paused" line that was not intended, and no "Attention" line.
+9. [ ] Turn on `COMPUTE_ENABLED`. While it is off the tenant sweep is paused (status prints "Reconciliation paused"), so the final settlement against Expanse, the failed ACCESS report listing and the following of jobs nobody reserved wait.
+10. [ ] Epic D hand-off, before the switch is turned on for people: the mail sent when a job's results are ready links to `<APP_BASE_URL>/compute/jobs/<job id>` (`computeJobPageUrl` in `compute-results.ts`, never to a file), so that page must exist on the website first (issue nemarOrg/website#495, the compute dashboard). A mail whose link is a 404 is the first thing a person sees of the service.
+11. [ ] Know what an administrator sees when Tapis loses a job, and what to do. A live job whose Tapis record answers 404 for a week (or whose cancel and read-back both answer 404) ends `failed` with the failure word `tapis_record_lost`: `nemar admin compute jobs list --state failed` shows the word, and `jobs record <id>` shows the job. A refused credential or a schema change does NOT end jobs this way: they go `unreported` and `status` shows it. The job is flagged `mismatch`. A job that never started was released with no charge; a job that ran (a start time, a Slurm id or uploaded results) was charged provisionally, capped at its hold. If a released job in fact used the allocation, nothing corrects it automatically (the observer corrects only a charged row): the use is flagged for you, and an administrator moves it with a grant. The Tapis job, if it still runs, is recorded as an orphan and cancelled by the cancel sweep. `status` also prints `Attention: cancel_pending_failed` (a cancel not carried out an hour after it was asked for) and `Attention: copy_abandoned` (a finished job whose launcher files were never copied).
 
 ## 9. Starting the driver
 

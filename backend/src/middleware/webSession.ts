@@ -1,7 +1,8 @@
 /**
  * Web-session middleware (#569).
  *
- * Reads the `nemar_session` cookie, looks up the row, and exposes the
+ * Reads the session cookie (`__Host-nemar_session`, or the legacy `nemar_session`: see
+ * `readSessionCookie`), looks up the row, and exposes the
  * joined user (and the raw cookie value) on the Hono context so the
  * route handler can build the response without re-parsing the cookie.
  *
@@ -13,7 +14,7 @@
  */
 
 import type { Context, Next } from "hono";
-import { COOKIE_NAME, findSessionByCookieId, parseCookieHeader } from "../services/web-session";
+import { findSessionByCookieId, readSessionCookie } from "../services/web-session";
 import type { Bindings, Variables } from "../types/bindings";
 
 type WebSessionContext = Context<{ Bindings: Bindings; Variables: Variables }>;
@@ -27,18 +28,20 @@ type WebSessionContext = Context<{ Bindings: Bindings; Variables: Variables }>;
  */
 export async function webSessionMiddleware(c: WebSessionContext, next: Next) {
   const cookieHeader = c.req.header("Cookie");
-  const cookieIdRaw = parseCookieHeader(cookieHeader, COOKIE_NAME);
-  if (!cookieIdRaw) {
+  const found = readSessionCookie(cookieHeader);
+  const cookieIdRaw = found?.value;
+  if (!found || !cookieIdRaw) {
     await next();
     return;
   }
   c.set("webSessionCookieId", cookieIdRaw);
+  c.set("webSessionCookieName", found.name);
 
   try {
-    const found = await findSessionByCookieId(c.env, cookieIdRaw);
-    if (found) {
-      c.set("webUser", found.user);
-      c.set("webSession", found.session);
+    const session = await findSessionByCookieId(c.env, cookieIdRaw);
+    if (session) {
+      c.set("webUser", session.user);
+      c.set("webSession", session.session);
     }
   } catch (err) {
     // Cookie lookup failures are non-fatal: the route treats the user

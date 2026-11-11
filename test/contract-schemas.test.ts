@@ -10,8 +10,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { z } from "zod";
+import * as computeModule from "../shared/contract/compute";
+import * as launchModule from "../shared/contract/compute-launch";
 import {
   NEUROSCHEMA_VERSION,
   NO_SESSION_KEY,
@@ -622,10 +625,801 @@ describe("old-CLI compatibility: no schema in the contract is strict", () => {
     expect((parsed as Record<string, unknown>).some_future_field).toBe("kept");
   });
 
-  test("no schema file under shared/contract calls .strict()", () => {
+  /**
+   * The compute gateway's documents (epic #2005 phase A1, ADR 0118) are strict ON PURPOSE: a job
+   * specification, an owner policy, a launch specification and the launcher's files are validated
+   * as they come IN, or written by the Worker itself, and a mistyped key in them must be refused
+   * rather than stripped. No released CLI parses them as a response. A schema that a CLI does use
+   * to parse a RESPONSE must still never be strict: build that one lenient, in its own file.
+   *
+   * The two responses the launcher reads (`BundleResponseSchema`, `OutputsResponseSchema`) are in
+   * those files but are OPEN (`.passthrough()`): a launcher that runs for 48 hours must survive the
+   * Worker adding a key. The next two tests keep that line where it is, by behaviour and by import.
+   */
+  const STRICT_BY_DESIGN = new Set(["compute.ts", "compute-launch.ts", "compute-observation.ts"]);
+
+  const HEX = "a".repeat(64);
+  const JOB = "job_0123456789abcdef01234567";
+  const CLOSED = ["strict", "lenient"] as const;
+  /**
+   * Every schema the two compute files export that is, or holds, an object (an array of them, a
+   * union), a valid document for it, and which side of the line it is on. Checked BY BEHAVIOUR below:
+   * an unknown key is refused by a strict schema and kept by a lenient one. A new export that is not
+   * in this table fails the test, so it is classified on purpose rather than by accident; one that
+   * the test cannot read at all (a kind of schema it does not know) fails it too.
+   */
+  type Classified = {
+    side: (typeof CLOSED)[number];
+    valid: () => unknown;
+    /** Where an unknown key goes, for a schema that is not itself an object (an array, a union). */
+    withUnknown?: (doc: unknown) => unknown;
+  };
+  const CLASSIFIED: Record<string, Classified> = {
+    JobSpecSchema: {
+      side: "strict",
+      valid: () => ({
+        name: "x",
+        runtime: "python",
+        entry: "run.py",
+        bundle: { size: 1, sha256: HEX },
+        partition: "shared",
+        minutes: 5,
+      }),
+    },
+    ComputePolicySchema: {
+      side: "strict",
+      valid: () => ({ ...computeModule.DEFAULT_COMPUTE_POLICY }),
+    },
+    ComputeCeilingSchema: {
+      side: "strict",
+      valid: () => ({ maxNodes: 1, maxCoresPerNode: 1, maxGpusPerNode: 0, maxMinutes: 1 }),
+    },
+    ComputeClientCapsSchema: {
+      side: "strict",
+      valid: () => ({ maxOpenReservations: 1, maxReservedMilliPerDay: 1 }),
+    },
+    ResultManifestSchema: { side: "strict", valid: () => ({ job_id: JOB, files: [] }) },
+    LauncherResultSchema: {
+      side: "strict",
+      valid: () => ({
+        job_id: JOB,
+        failure_code: null,
+        detail: null,
+        exit_number: 0,
+        entry_exit_code: 0,
+      }),
+    },
+    LauncherProvenanceSchema: {
+      side: "strict",
+      valid: () => ({
+        job_id: JOB,
+        launch_spec_digest: HEX,
+        bundle_digest: null,
+        image: { uri: "docker://ghcr.io/example/runtime", digest: `sha256:${HEX}` },
+        runtime_version: "3.12",
+        staging: [],
+        timings: {},
+        slurm_job_id: null,
+        entry_exit_code: null,
+      }),
+    },
+    LaunchSpecSchema: {
+      side: "strict",
+      valid: () => ({
+        job_id: JOB,
+        runtime: "python",
+        entry: "run.py",
+        args: [],
+        bundle: { sha256: HEX, size: 1 },
+        datasets: [],
+        api_base: "https://api.example.test",
+        image: {
+          uri: `docker://ghcr.io/example/runtime@sha256:${HEX}`,
+          digest: `sha256:${HEX}`,
+          sif: `${HEX}.sif`,
+        },
+        env: {},
+        resources: { gpus: 0 },
+        limits: { max_files: 1, max_total_bytes: 1 },
+        job_token: "t".repeat(32),
+      }),
+    },
+    OutputsRequestSchema: {
+      side: "strict",
+      valid: () => ({
+        outputs: [],
+        launcher: ["result.json", "provenance.json", "manifest.json", "launcher.log"].map(
+          (name) => ({
+            name,
+            size: 1,
+          }),
+        ),
+      }),
+    },
+    BundleResponseSchema: {
+      side: "lenient",
+      valid: () => ({ url: "https://r2.example.test/b", expires_at: "2026-11-03T12:00:00Z" }),
+    },
+    OutputsResponseSchema: {
+      side: "lenient",
+      valid: () => ({
+        uploads: [{ path: "outputs/a", url: "https://r2.example.test/o" }],
+        expires_at: "2026-11-03T13:00:00Z",
+      }),
+    },
+  };
+
+  type ZodDef = { typeName?: string } & Record<string, unknown>;
+  const defOf = (schema: z.ZodTypeAny): ZodDef => schema._def as ZodDef;
+
+  /** A zod schema, seen through the effects (a `superRefine`, a `refine`) around it. */
+  function withoutEffects(schema: z.ZodTypeAny): z.ZodTypeAny {
+    let current = schema;
+    while (defOf(current).typeName === "ZodEffects")
+      current = defOf(current).schema as z.ZodTypeAny;
+    return current;
+  }
+
+  /** The kinds of zod schema that hold no other schema. */
+  const LEAF_KINDS = new Set([
+    "ZodString",
+    "ZodNumber",
+    "ZodBigInt",
+    "ZodBoolean",
+    "ZodDate",
+    "ZodNaN",
+    "ZodLiteral",
+    "ZodEnum",
+    "ZodNativeEnum",
+    "ZodNull",
+    "ZodUndefined",
+    "ZodVoid",
+    "ZodAny",
+    "ZodUnknown",
+    "ZodNever",
+    "ZodSymbol",
+  ]);
+
+  /**
+   * The schemas one level inside `schema`: what an array holds, what a union offers, what a wrapper
+   * wraps. A KIND this table does not know throws, so a new way of building a schema is never
+   * skipped by accident: the test fails until the table learns it.
+   */
+  function innerSchemas(schema: z.ZodTypeAny): z.ZodTypeAny[] {
+    const def = defOf(schema);
+    const at = (key: string) => def[key] as z.ZodTypeAny;
+    const kind = String(def.typeName);
+    if (LEAF_KINDS.has(kind)) return [];
+    switch (kind) {
+      case "ZodArray":
+      case "ZodPromise":
+      case "ZodBranded":
+        return [at("type")];
+      case "ZodSet":
+        return [at("valueType")];
+      case "ZodMap":
+      case "ZodRecord":
+        return [at("keyType"), at("valueType")];
+      case "ZodTuple":
+        return [...(def.items as z.ZodTypeAny[]), ...(def.rest ? [at("rest")] : [])];
+      case "ZodUnion":
+      case "ZodDiscriminatedUnion":
+        return [...(def.options as Iterable<z.ZodTypeAny>)];
+      case "ZodIntersection":
+        return [at("left"), at("right")];
+      case "ZodOptional":
+      case "ZodNullable":
+      case "ZodDefault":
+      case "ZodCatch":
+      case "ZodReadonly":
+        return [at("innerType")];
+      case "ZodEffects":
+        return [at("schema")];
+      case "ZodLazy":
+        return [(def.getter as () => z.ZodTypeAny)()];
+      case "ZodPipeline":
+        return [at("in"), at("out")];
+      default:
+        throw new Error(`cannot classify a ${kind}: teach innerSchemas about it`);
+    }
+  }
+
+  /** Whether an object schema is `schema` or anywhere inside it: an array's element, a union's member. */
+  function containsObject(schema: z.ZodTypeAny, seen = new Set<z.ZodTypeAny>()): boolean {
+    if (seen.has(schema)) return false;
+    seen.add(schema);
+    if (defOf(schema).typeName === "ZodObject") return true;
+    return innerSchemas(schema).some((inner) => containsObject(inner, seen));
+  }
+
+  const addUnknownKey = (doc: unknown) => ({ ...(doc as object), zz_unknown_key: 1 });
+
+  /**
+   * Which side of the line a schema is on, BY BEHAVIOUR: its valid document must parse, and the same
+   * document with an unknown key is refused by a strict schema and kept by a lenient one. Where the
+   * key goes is the top level of the document unless `withUnknown` says otherwise, which a schema
+   * that is not itself an object (an array of them, a union) must: a key added to an array proves
+   * nothing about its elements.
+   */
+  function sideOf(
+    schema: z.ZodTypeAny,
+    valid: () => unknown,
+    withUnknown?: (doc: unknown) => unknown,
+  ): "strict" | "lenient" | "invalid" {
+    if (!schema.safeParse(valid()).success) return "invalid";
+    return schema.safeParse((withUnknown ?? addUnknownKey)(valid())).success ? "lenient" : "strict";
+  }
+
+  /** Every zod schema the two compute files export that is, or holds, an object schema. */
+  const exportedObjectSchemas = (...modules: object[]) =>
+    Object.entries(Object.assign({}, ...modules)).filter(
+      (entry): entry is [string, z.ZodTypeAny] =>
+        entry[1] instanceof z.ZodType && containsObject(entry[1]),
+    );
+
+  /** What is wrong with how `schema` is classified as `entry`, or null if nothing is. */
+  function classificationProblem(schema: z.ZodTypeAny, entry: Classified): string | null {
+    if (defOf(withoutEffects(schema)).typeName !== "ZodObject" && entry.withUnknown === undefined) {
+      return "is not an object itself: say where its unknown key goes";
+    }
+    const side = sideOf(schema, entry.valid, entry.withUnknown);
+    return side === entry.side ? null : `is ${side}, classified ${entry.side}`;
+  }
+
+  test("every schema the compute files export that holds an object is classified, and behaves as classified", () => {
+    const exported = exportedObjectSchemas(computeModule, launchModule);
+    // Guards the guard: the walk found the schemas, not nothing.
+    expect(exported.length).toBeGreaterThanOrEqual(11);
+    expect(exported.map(([name]) => name).sort()).toEqual(Object.keys(CLASSIFIED).sort());
+    for (const [name, schema] of exported) {
+      expect(classificationProblem(schema, CLASSIFIED[name]), name).toBeNull();
+    }
+  });
+
+  describe("the classifier itself, on schemas built here", () => {
+    const strictObject = z.object({ a: z.string() }).strict();
+    const openObject = z.object({ a: z.string() }).passthrough();
+    const element = (doc: unknown) => [addUnknownKey((doc as unknown[])[0])];
+
+    test("it finds an object schema however the export wraps it", () => {
+      const holds: Array<[string, z.ZodTypeAny]> = [
+        ["an object", strictObject],
+        ["an object behind effects", strictObject.superRefine(() => {})],
+        ["an array of objects", z.array(strictObject)],
+        ["an array of an array of objects", z.array(z.array(strictObject))],
+        ["a union of objects", z.union([strictObject, openObject])],
+        ["a union of an object and a string", z.union([z.string(), openObject])],
+        [
+          "a discriminated union of objects",
+          z.discriminatedUnion("k", [
+            z.object({ k: z.literal("a") }).strict(),
+            z.object({ k: z.literal("b") }).strict(),
+          ]),
+        ],
+        ["an optional object", strictObject.optional()],
+        ["a nullable object", strictObject.nullable()],
+        ["an object with a default", strictObject.default({ a: "x" })],
+        ["a record of objects", z.record(z.string(), strictObject)],
+        ["a tuple holding an object", z.tuple([z.string(), strictObject])],
+        ["a tuple whose rest is an object", z.tuple([z.string()]).rest(strictObject)],
+        ["an intersection ending in an object", z.intersection(z.record(z.string()), strictObject)],
+        [
+          "an intersection starting with an object",
+          z.intersection(strictObject, z.record(z.string())),
+        ],
+        ["a map keyed by objects", z.map(strictObject, z.string())],
+        ["a pipe from an object", strictObject.pipe(z.unknown())],
+        ["a lazy object", z.lazy(() => strictObject)],
+        ["a set of objects", z.set(strictObject)],
+        ["a map of objects", z.map(z.string(), strictObject)],
+        ["a branded object", strictObject.brand("b")],
+        ["an object with a catch", strictObject.catch({ a: "x" })],
+        ["a readonly object", strictObject.readonly()],
+        ["a promise of an object", z.promise(strictObject)],
+        [
+          "a piped object",
+          z.string().pipe(
+            z
+              .string()
+              .transform(() => ({}))
+              .pipe(strictObject),
+          ),
+        ],
+        ["an object holding an array of objects", z.object({ list: z.array(strictObject) })],
+      ];
+      for (const [label, schema] of holds) expect(containsObject(schema), label).toBe(true);
+    });
+
+    test("it does not take a schema with no object in it for one", () => {
+      const holds: Array<[string, z.ZodTypeAny]> = [
+        ["a string", z.string()],
+        ["an enum", z.enum(["a", "b"])],
+        ["an array of strings", z.array(z.string())],
+        ["a record of strings", z.record(z.enum(["a"]), z.string().max(3))],
+        ["a union of strings and numbers", z.union([z.string(), z.number()])],
+        ["a tuple of scalars", z.tuple([z.string(), z.number()])],
+        ["a refined string", z.string().refine(() => true)],
+        ["a nullable number", z.number().nullable()],
+        ["a literal", z.literal("x")],
+        ["a number", z.number()],
+        ["a bigint", z.bigint()],
+        ["a boolean", z.boolean()],
+        ["a date", z.date()],
+        ["a NaN", z.nan()],
+        ["a native enum", z.nativeEnum({ A: "a" } as const)],
+        ["a null", z.null()],
+        ["an undefined", z.undefined()],
+        ["a void", z.void()],
+        ["any", z.any()],
+        ["unknown", z.unknown()],
+        ["never", z.never()],
+        ["a symbol", z.symbol()],
+        ["a set of strings", z.set(z.string())],
+        ["a map of strings", z.map(z.string(), z.number())],
+        ["a promise of a string", z.promise(z.string())],
+        ["a readonly array", z.array(z.string()).readonly()],
+        ["a catch", z.string().catch("x")],
+        ["a branded string", z.string().brand("b")],
+        ["an intersection of strings", z.intersection(z.string(), z.string().max(3))],
+        ["a pipe of strings", z.string().pipe(z.string())],
+        ["a lazy string", z.lazy(() => z.string())],
+        ["a union of literals", z.union([z.literal("a"), z.literal("b")])],
+      ];
+      for (const [label, schema] of holds) expect(containsObject(schema), label).toBe(false);
+    });
+
+    test("it stops on a schema that refers to itself", () => {
+      type Node = { next?: Node };
+      const node: z.ZodType<Node> = z.lazy(() => z.object({ next: node.optional() }));
+      expect(containsObject(node)).toBe(true);
+      const loop: z.ZodTypeAny = z.lazy(() => z.array(loop));
+      expect(containsObject(loop)).toBe(false);
+    });
+
+    test("a kind it does not know fails the test instead of being skipped", () => {
+      class Mystery extends z.ZodType {
+        _parse(): never {
+          throw new Error("never parsed");
+        }
+      }
+      const mystery = new Mystery({ typeName: "ZodMystery" } as never);
+      expect(() => containsObject(mystery)).toThrow(/cannot classify a ZodMystery/);
+      expect(() => containsObject(z.array(mystery))).toThrow(/cannot classify a ZodMystery/);
+      expect(() => containsObject(z.union([mystery, strictObject]))).toThrow(/ZodMystery/);
+    });
+
+    test("an export that is not an object itself must say where its unknown key goes", () => {
+      const list: Classified = { side: "strict", valid: () => [{ a: "x" }] };
+      expect(classificationProblem(z.array(strictObject), list)).toMatch(
+        /where its unknown key goes/,
+      );
+      expect(
+        classificationProblem(z.array(strictObject), { ...list, withUnknown: element }),
+      ).toBeNull();
+      // Said, and wrong: the array is strict, not lenient.
+      expect(
+        classificationProblem(z.array(strictObject), {
+          ...list,
+          side: "lenient",
+          withUnknown: element,
+        }),
+      ).toBe("is strict, classified lenient");
+      expect(classificationProblem(z.array(openObject), { ...list, withUnknown: element })).toBe(
+        "is lenient, classified strict",
+      );
+      // An object behind effects needs no such word, and a document that does not parse is a problem.
+      const object: Classified = { side: "strict", valid: () => ({ a: "x" }) };
+      expect(
+        classificationProblem(
+          strictObject.superRefine(() => {}),
+          object,
+        ),
+      ).toBeNull();
+      expect(classificationProblem(strictObject, { ...object, valid: () => ({ a: 1 }) })).toBe(
+        "is invalid, classified strict",
+      );
+    });
+
+    test("sideOf reads the behaviour, at the top or where the key is told to go", () => {
+      const doc = () => ({ a: "x" });
+      expect(sideOf(strictObject, doc)).toBe("strict");
+      expect(sideOf(openObject, doc)).toBe("lenient");
+      expect(sideOf(z.object({ a: z.string() }), doc)).toBe("lenient");
+      expect(
+        sideOf(
+          strictObject.superRefine(() => {}),
+          doc,
+        ),
+      ).toBe("strict");
+      expect(sideOf(strictObject, () => ({ a: 1 }))).toBe("invalid");
+      // An array of objects: a key at the top says nothing, a key on the element does.
+      const list = () => [{ a: "x" }];
+      expect(sideOf(z.array(strictObject), list, element)).toBe("strict");
+      expect(sideOf(z.array(openObject), list, element)).toBe("lenient");
+      const union = z.union([strictObject, z.object({ b: z.number() }).strict()]);
+      expect(sideOf(union, doc)).toBe("strict");
+      expect(sideOf(z.union([openObject, z.string()]), doc)).toBe("lenient");
+    });
+  });
+
+  test("the open responses are open all the way down, and the closed requests closed all the way down", () => {
+    const upload = { path: "outputs/a", url: "https://r2.example.test/o", extra: 1 };
+    expect(
+      launchModule.OutputsResponseSchema.safeParse({
+        uploads: [upload],
+        expires_at: "2026-11-03T13:00:00Z",
+      }).success,
+    ).toBe(true);
+    const request = CLASSIFIED.OutputsRequestSchema.valid() as {
+      outputs: unknown[];
+      launcher: object[];
+    };
+    expect(
+      launchModule.OutputsRequestSchema.safeParse({
+        ...request,
+        outputs: [{ path: "a", size: 1, sha256: HEX, extra: 1 }],
+      }).success,
+    ).toBe(false);
+    expect(
+      launchModule.OutputsRequestSchema.safeParse({
+        ...request,
+        launcher: request.launcher.map((f) => ({ ...f, extra: 1 })),
+      }).success,
+    ).toBe(false);
+  });
+
+  /** The names a response schema must never be built from. */
+  const STRICT_NAMES = Object.entries(CLASSIFIED)
+    .filter(([, c]) => c.side === "strict")
+    .map(([name]) => name);
+
+  /**
+   * What a file under shared/contract takes from the strict compute schemas, by any route. Pure:
+   * it reads source text and a path, never the disk, so each shape it must catch has a probe below.
+   *
+   * A specifier is resolved against the importing file and judged by the file it names, never by
+   * how it is spelled: `./compute`, `./compute.js`, `./compute.ts` and `../contract/compute.js` are
+   * one file. Three things are offences, from the strict files AND from `index` (which re-exports
+   * them): a namespace (`import * as`, `export *`), any strict name (`{ A }`, `{ A as B }`,
+   * `default, { A }`, a type-only one too, since the rule is by name), and a dynamic `import()` or
+   * `require()`, which takes the whole module; a dynamic one whose specifier is not a plain string
+   * cannot be resolved and is an offence too. The one exemption is index.ts's own `export *`.
+   * A comment that quotes an import is read as one: reword it.
+   */
+  function strictComputeTakes(
+    contractDir: string,
+    file: string,
+    text: string,
+    strictNames: readonly string[],
+  ): string[] {
+    const strictFiles = [...STRICT_BY_DESIGN].map((name) =>
+      join(contractDir, name.replace(/\.ts$/, "")),
+    );
+    const indexFile = join(contractDir, "index");
+    const target = (specifier: string): "strict" | "index" | null => {
+      if (!specifier.startsWith(".")) return null; // a package: nothing in it is ours
+      const resolved = resolve(dirname(join(contractDir, file)), specifier).replace(
+        /\.(?:js|ts)$/,
+        "",
+      );
+      if (strictFiles.includes(resolved)) return "strict";
+      if (resolved === indexFile || resolved === contractDir) return "index";
+      return null;
+    };
+    const offenders: string[] = [];
+    const statement = /\b(import|export)\s+([\w$\s,{}*]+?)\s*from\s*(["'])([^"']+)\3/g;
+    for (const [, keyword, clause, , specifier] of text.matchAll(statement)) {
+      const where = target(specifier);
+      if (where === null) continue;
+      const ownReexport = file === "index.ts" && where === "strict" && clause.trim() === "*";
+      if (ownReexport) continue;
+      const names: string[] = clause.match(/[\w$]+/g) ?? [];
+      if (clause.includes("*") || strictNames.some((name) => names.includes(name))) {
+        offenders.push(`${keyword} ${clause.trim()} from "${specifier}"`);
+      }
+    }
+    for (const call of text.matchAll(/(?<![\w$.])(import|require)\s*\(\s*([^)]*)/g)) {
+      const [, keyword, argument] = call;
+      const literal = /^(["'`])([^"'`$\n]*)\1(?:\s*,[\s\S]*)?$/.exec(argument.trim());
+      if (literal === null) {
+        offenders.push(`${keyword}(${argument.trim()}): a specifier the guard cannot resolve`);
+      } else if (target(literal[2]) !== null) {
+        offenders.push(`${keyword}("${literal[2]}")`);
+      }
+    }
+    return offenders;
+  }
+
+  /** One probe per shape: a file, its text, and whether the guard must report it. */
+  const IMPORT_PROBES: Array<[label: string, file: string, text: string, offends: boolean]> = [
+    // The named import the old guard already caught, and its spellings.
+    ["a named import", "x.ts", `import { JobSpecSchema } from "./compute.js";`, true],
+    ["a specifier in single quotes", "x.ts", `import { JobSpecSchema } from './compute.js';`, true],
+    ["a specifier with no extension", "x.ts", `import { JobSpecSchema } from "./compute";`, true],
+    [
+      "a specifier with a .ts extension",
+      "x.ts",
+      `import { JobSpecSchema } from "./compute.ts";`,
+      true,
+    ],
+    [
+      "the launch file with a .ts extension",
+      "x.ts",
+      `import { LaunchSpecSchema } from "./compute-launch.ts";`,
+      true,
+    ],
+    [
+      "an alias",
+      "x.ts",
+      `import { OutputsRequestSchema as Req } from "./compute-launch.js";`,
+      true,
+    ],
+    [
+      "a name among others on several lines",
+      "x.ts",
+      `import {\n  computePathSchema,\n  JobSpecSchema,\n} from "./compute.js";`,
+      true,
+    ],
+    [
+      "a type-only import of a strict name",
+      "x.ts",
+      `import type { JobSpecSchema } from "./compute.js";`,
+      true,
+    ],
+    [
+      "an inline type modifier beside a strict name",
+      "x.ts",
+      `import { type JobSpec, LaunchSpecSchema } from "./compute-launch.js";`,
+      true,
+    ],
+    [
+      "a path through the parent directory",
+      "x.ts",
+      `import { JobSpecSchema } from "../contract/compute.js";`,
+      true,
+    ],
+    [
+      "a file in a subdirectory",
+      "neuroschema/x.ts",
+      `import { JobSpecSchema } from "../compute.js";`,
+      true,
+    ],
+    // Namespaces, and a default beside either.
+    ["a namespace import", "x.ts", `import * as compute from "./compute.js";`, true],
+    ["a namespace re-export", "x.ts", `export * from "./compute.js";`, true],
+    [
+      "a named namespace re-export in index.ts",
+      "index.ts",
+      `export * as compute from "./compute.js";`,
+      true,
+    ],
+    [
+      "a named re-export in index.ts",
+      "index.ts",
+      `export { JobSpecSchema } from "./compute.js";`,
+      true,
+    ],
+    [
+      "a default and a strict name",
+      "x.ts",
+      `import compute, { JobSpecSchema } from "./compute.js";`,
+      true,
+    ],
+    [
+      "a default and an aliased strict name",
+      "x.ts",
+      `import compute, { JobSpecSchema as J } from "./compute.ts";`,
+      true,
+    ],
+    ["a default and a namespace", "x.ts", `import compute, * as all from "./compute.js";`, true],
+    // Through index, which re-exports the strict files.
+    [
+      "a strict name through ./index.js",
+      "x.ts",
+      `import { JobSpecSchema } from "./index.js";`,
+      true,
+    ],
+    ["a strict name through ./index", "x.ts", `import { JobSpecSchema } from "./index";`, true],
+    [
+      "a strict name through ./index.ts",
+      "x.ts",
+      `import { JobSpecSchema } from "./index.ts";`,
+      true,
+    ],
+    [
+      "a strict name through the directory, ./",
+      "x.ts",
+      `import { JobSpecSchema } from "./";`,
+      true,
+    ],
+    ["a strict name through the directory, .", "x.ts", `import { JobSpecSchema } from ".";`, true],
+    [
+      "a strict name through ../index.js",
+      "neuroschema/x.ts",
+      `import { JobSpecSchema } from "../index.js";`,
+      true,
+    ],
+    ["a strict name through ..", "neuroschema/x.ts", `import { JobSpecSchema } from "..";`, true],
+    [
+      "a strict name re-exported through index",
+      "x.ts",
+      `export { LaunchSpecSchema } from "./index.js";`,
+      true,
+    ],
+    ["a namespace import of index", "x.ts", `import * as all from "./index.js";`, true],
+    ["a namespace re-export of index", "x.ts", `export * from "./index.js";`, true],
+    [
+      "a default and a strict name through index",
+      "x.ts",
+      `import all, { OutputsRequestSchema } from "./index.js";`,
+      true,
+    ],
+    // Dynamic.
+    ["a dynamic import", "x.ts", `const m = await import("./compute.js");`, true],
+    [
+      "a dynamic import with single quotes and .ts",
+      "x.ts",
+      `await import('./compute-launch.ts');`,
+      true,
+    ],
+    ["a dynamic import of a template literal", "x.ts", "await import(`./compute.js`);", true],
+    [
+      "a dynamic import with an options argument",
+      "x.ts",
+      `await import("./compute.js", { with: {} });`,
+      true,
+    ],
+    [
+      "a dynamic import of index",
+      "x.ts",
+      `const { JobSpecSchema } = await import("./index.js");`,
+      true,
+    ],
+    ["a require", "x.ts", `const m = require("./compute");`, true],
+    ["a require with .ts", "x.ts", `const m = require('./compute-launch.ts');`, true],
+    ["a require of index", "x.ts", `const m = require("./index");`, true],
+    [
+      "a concatenation that starts with another file",
+      "x.ts",
+      `await import("./other.js" + suffix);`,
+      true,
+    ],
+    ["a dynamic import of a variable", "x.ts", "const m = await import(name);", true],
+    ["a require of a variable", "x.ts", "const m = require(path);", true],
+    [
+      "a dynamic import built from a template",
+      "x.ts",
+      "await import(`./compute${suffix}.js`);",
+      true,
+    ],
+    ["a dynamic import built by concatenation", "x.ts", `await import("./compute" + ".js");`, true],
+    [
+      "a forbidden one after allowed ones",
+      "x.ts",
+      `import { z } from "zod";\nimport type { JobSpec } from "./compute.js";\nawait import("./other.js");\nawait import("./compute.js");`,
+      true,
+    ],
+    [
+      "index.ts export * from a file in a subdirectory called index.ts",
+      "neuroschema/index.ts",
+      `export * from "../compute.js";`,
+      true,
+    ],
+    // What stays allowed.
+    ["a namespace import in index.ts", "index.ts", `import * as c from "./compute.js";`, true],
+    ["index.ts re-exporting index", "index.ts", `export * from "./index.js";`, true],
+    [
+      "index.ts re-exports the compute file whole",
+      "index.ts",
+      `export * from "./compute.js";`,
+      false,
+    ],
+    [
+      "a type that is not a strict name",
+      "x.ts",
+      `import type { JobSpec } from "./compute.js";`,
+      false,
+    ],
+    [
+      "a plain helper",
+      "x.ts",
+      `import { COMPUTE_PATH_RE, computePathSchema } from "./compute.js";`,
+      false,
+    ],
+    [
+      "launch helpers and types",
+      "x.ts",
+      `import type { LaunchSpec } from "./compute-launch.js";\nimport { LAUNCH_SPEC_MAX_BYTES, encodeLaunchSpec } from "./compute-launch.js";`,
+      false,
+    ],
+    [
+      "a lenient name through index",
+      "x.ts",
+      `import { catalogItemSchema } from "./index.js";`,
+      false,
+    ],
+    ["a type through index", "x.ts", `import type { JobSpec } from "./index.js";`, false],
+    ["a package", "x.ts", `import { z } from "zod";`, false],
+    [
+      "a package that is named like the file",
+      "x.ts",
+      `import { JobSpecSchema } from "compute";`,
+      false,
+    ],
+    [
+      "a dynamic import of another file with options",
+      "x.ts",
+      `await import("./other.js", { with: { type: "json" } });`,
+      false,
+    ],
+    [
+      "a sibling that only starts like it",
+      "x.ts",
+      `import { a } from "./compute-state.js";`,
+      false,
+    ],
+    ["another sibling", "x.ts", `import { a } from "./computed.js";`, false],
+    [
+      "the shared compute words",
+      "x.ts",
+      `import { COMPUTE_WORD_RE } from "../compute-state.js";`,
+      false,
+    ],
+    ["a default import of something else", "x.ts", `import other from "./other.js";`, false],
+    [
+      "a name that only contains a strict name",
+      "x.ts",
+      `import { JobSpecSchemaNote } from "./other.js";`,
+      false,
+    ],
+    [
+      "a name that only contains a strict name, from the compute file",
+      "x.ts",
+      `import { JobSpecSchemaNote } from "./compute.js";`,
+      false,
+    ],
+    ["a template literal of another file", "x.ts", "await import(`./other.js`);", false],
+    ["a strict name that is not imported", "x.ts", `const name = "JobSpecSchema";`, false],
+    ["a dynamic import of another file", "x.ts", `await import("./other.js");`, false],
+    ["a dynamic import of a package", "x.ts", `await import("zod");`, false],
+    ["a require of a package", "x.ts", `const z = require("zod");`, false],
+    ["a method named require", "x.ts", "loader.require(name);", false],
+    ["a function whose name ends in import", "x.ts", "reimport(name);", false],
+  ];
+
+  test("the import guard flags every shape of taking a strict compute schema, and only those", () => {
+    expect(STRICT_NAMES).toHaveLength(9);
+    expect(IMPORT_PROBES.length).toBeGreaterThan(55);
+    for (const [label, file, text, offends] of IMPORT_PROBES) {
+      const found = strictComputeTakes(CONTRACT_DIR, file, text, STRICT_NAMES);
+      expect(found.length > 0, `${label}: ${JSON.stringify(found)}`).toBe(offends);
+    }
+  });
+
+  test("no other file under shared/contract takes a strict compute schema", () => {
     const files = readdirSync(CONTRACT_DIR, { recursive: true, encoding: "utf8" })
-      .filter((name) => name.endsWith(".ts"))
+      .filter((name) => name.endsWith(".ts") && !STRICT_BY_DESIGN.has(name))
+      .map((name) => ({ name, text: readFileSync(join(CONTRACT_DIR, name), "utf8") }));
+    // Guards the guard: a mistyped directory would scan nothing and pass, and index.ts must be in it.
+    expect(files.length).toBeGreaterThan(5);
+    expect(files.map((f) => f.name)).toContain("index.ts");
+    const offenders = files.flatMap(({ name, text }) =>
+      strictComputeTakes(CONTRACT_DIR, name, text, STRICT_NAMES).map((o) => `${name}: ${o}`),
+    );
+    expect(offenders, "Build a response schema in its own file, from nothing strict.").toEqual([]);
+  });
+
+  test("no schema file under shared/contract calls .strict(), but the compute documents", () => {
+    const files = readdirSync(CONTRACT_DIR, { recursive: true, encoding: "utf8" })
+      .filter((name) => name.endsWith(".ts") && !STRICT_BY_DESIGN.has(name))
       .map((name) => join(CONTRACT_DIR, name));
+    // Guards the exemption: a rename must not leave a silent hole, and each exempt file must
+    // really be one that needs it.
+    for (const name of STRICT_BY_DESIGN) {
+      const path = join(CONTRACT_DIR, name);
+      expect(existsSync(path), name).toBe(true);
+      expect(readFileSync(path, "utf8").includes(".strict("), name).toBe(true);
+    }
     // Guards the guard: a mistyped directory would scan nothing and pass.
     expect(files.length).toBeGreaterThan(5);
     const offenders = files.filter((file) => readFileSync(file, "utf8").includes(".strict("));

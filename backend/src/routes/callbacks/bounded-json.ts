@@ -26,9 +26,10 @@ export type BoundedJson =
 /**
  * The request body as bytes, read chunk by chunk and abandoned the moment it passes `max`.
  * Null means it did. A stream that errors (a client that went away) throws, like a body
- * that is not JSON, and is answered the same way.
+ * that is not JSON, and is answered the same way. Also the OpenID Connect endpoints' reader
+ * (`routes/oauth.ts`), whose form bodies are open to anyone until the client has authenticated.
  */
-async function readCapped(request: Request, max: number): Promise<Uint8Array | null> {
+export async function readCapped(request: Request, max: number): Promise<Uint8Array | null> {
   const stream = request.body;
   if (stream === null) return new Uint8Array(0);
   const reader = stream.getReader();

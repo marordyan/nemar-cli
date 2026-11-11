@@ -691,3 +691,49 @@ The owner ruled that the administrator's run obeys the same limits.
    A dry run trims `would_dispatch` to the room, so the preview is what a live run would do; for a named dataset on a full pool it reports `blocked: over_concurrency`.
 
 The decision to queue a job NEMAR cannot yet admit (rather than refuse it) is not taken here; design and open questions are in #2121.
+
+## Amendment 2026-11-10 (#2121, phase P2): a tenant-wide ceiling on live jobs, checked when a job is accepted
+
+The class caps of P1 bound each of NEMAR's front doors separately, so together they could ask for more of the cluster account than it has.
+The owner approved a ceiling for the whole tenant, with a floor of slots for each class that no other class may use.
+The numbers are policy defaults the owner can change without a deploy once the center says how the cluster account's limit is counted.
+It adds no queue and no migration.
+
+1. **The rule is a guard in every hold.**
+   `createJob` adds `tenantGuard` (`services/compute-tenant.ts`) to the hold's own statement for EVERY source, after the class cap that already exists (a person's live-job limit, or the pipelines' live cap).
+   A job of class K is admitted when `occupied + 1 + SUM over the classes L other than K of max(0, floor[L] - occupied[L]) <= ceiling`.
+   It is counted inside the statement that writes the hold, so two requests racing for the last slot cannot both win; it is a guard, not a clamp.
+   The floors are unconditional: a floor slot is never lent to another class, and a class's floor is what it is owed, not what it is limited to.
+2. **The classes are counted by the job's `source`.**
+   People are `cli` and `web`; pipelines are `pipeline`; the partner is `partner` with `flag_unreserved = 0`; everything else is `other`: a row the tenant sweep found that skipped the reservation (`flag_unreserved = 1`, whatever its source) and an orphan (below).
+   `other` has no floor and cannot be admitted, because NEMAR did not admit it; it is only counted.
+   On `dev` only `pipeline` and swept rows exist today.
+   The person's submit and the partner's reserve are on the held third-party branch (#2116); the class function is written by the source word so both are already counted when that branch merges, and its merge must keep this guard and the pipeline guard in the `guards` block of `createJob`.
+3. **What occupies a slot.**
+   Every row in a live state, `created` included (the states are written literally in the statement so the existing partial indexes of the live rows serve the count), and one slot more for each row that is no longer live and still records an orphaned platform job (`orphan_tapis_uuid IS NOT NULL`): that job runs on until the sweep cancels it.
+   NEMAR's own count errs toward too many, never too few.
+4. **The defaults and why.**
+   The policy key is `tenant { maxLiveJobs, reserved { people, pipelines, partner } }`; the schema refuses floors that add up to more than the ceiling, and `PUT /admin/compute/policy` therefore refuses them.
+   The defaults are a ceiling of 20 and floors of 8 for people, 2 for the pipelines and 0 for the partner.
+   The ceiling sits below the cluster account's own limit on purpose: that headroom is for occupants NEMAR cannot see yet (a partner job that skipped the reservation until the sweep finds it, a job someone ran by hand, a duplicate), which is also why the sweep warns when its listing holds more live jobs than the ceiling.
+   With the defaults the pipelines can burst to 12 and people to 18, and NEMAR's own pipelines keep the room they had (8 CPU and 4 GPU).
+   A stored policy that lacks the key uses `TENANT_POLICY_DEFAULT`, the very object the shipped default carries, never "no limit".
+   A ceiling of 0 admits nothing new (running jobs finish).
+5. **A refusal is `platform_busy` (409), and it is not a queue.**
+   It is worded after the refusal, last in the documented order: a pool that is suspended, a balance that is short and the class cap are read first, then each guard is asked again in order and the first that fails names the word.
+   A pipeline run stops with it (`stopped_by`), and the daily dispatcher ends its whole run, because the ceiling does not depend on the pool or the recipe.
+   Whether to hold such a job until a slot frees (the queue, P3) is decided elsewhere (#2121); until then the caller asks again.
+   The partner is checked only when it reserves, so it cannot be queued behind the ceiling: a reservation either holds a slot now or is refused.
+6. **What an administrator sees.**
+   `GET /admin/compute/status` carries `tenant { ceiling, occupied, by_class, reserved }` and the attention count `tenant_over_ceiling`, which only rows NEMAR did not admit can make positive; `nemar admin compute status` prints `Tenant: occupied/ceiling (people, pipelines, partner, other)`.
+   The live tenant sweep adds `tenant_live=<live jobs in its listing> occupied=<n>/<ceiling>` to its line and logs a warning when `tenant_live` exceeds the ceiling.
+7. **Honest limits.**
+   - The guard counts NEMAR's own rows.
+     A job it has not been told about holds a slot nobody counts until the sweep finds it, which is what the headroom and the warning are for; the ceiling is not a guarantee about the cluster.
+   - The count is read inside every hold.
+     The live rows are served by a partial index, but the orphan term has no index (it would need a migration) and is a scan of `compute_jobs`; the table has one row per job and a migration is the answer when it stops being small.
+   - A refused job is refused by the guard at the moment of the hold; the word is read afterwards, so a slot freed in between can leave a refusal worded by the first guard, and the next request may be admitted.
+   - A guard is not a clamp.
+     The tenant guard is atomic, the daily cap of P1 stays a clamp, and an atomic daily guard (with an account-bound count) is a separate small change.
+   - The pipelines' floor protects them from people and from the partner, and the people floor protects people from the pipelines; neither bounds NEMAR against slots held by what NEMAR did not admit.
+   - Rolling the Worker back to a build from before this change reads a stored policy that has the `tenant` key as unreadable (the policy reader is as strict as the writer, on purpose) and fails closed; the rollback must set a policy without the key first.

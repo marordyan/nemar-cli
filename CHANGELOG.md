@@ -63,6 +63,8 @@ Third-party compute (`nemar compute`) and the partner contract are not in this r
   NEMAR's own pipelines obey their caps on every path, fixed before this release (#2121): the live cap per pool is checked inside the statement that takes each pipeline job's hold, and an administrator's `pipeline run --eligible` also stops at what is left of the daily cap and dispatches at most 10 per invocation, reporting the room it had.
   One named dataset is refused when its pool is full and counts toward the daily cap without being refused by it.
   The daily dispatcher's counts and words are unchanged unless it races an administrator's run.
+  A tenant-wide ceiling on live jobs is checked in the same statement for every job, whoever submits it (#2121): the owner's `tenant` policy sets the ceiling and a floor of slots kept for people, for the pipelines and for partners, and a job that would take a slot owed to another class, or pass the ceiling, is refused with the new word `platform_busy` (it is not queued).
+  The defaults are a ceiling of 20 with floors of 8 for people and 2 for the pipelines, which leaves NEMAR's own pipelines their current room; `nemar admin compute status` prints the occupied slots by class.
 - **A development target for the OpenID Connect conformance workflow (#2075).**
   The suite can run against the deployed development system; the default is unchanged.
 

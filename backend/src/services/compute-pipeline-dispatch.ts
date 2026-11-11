@@ -75,7 +75,7 @@ import { isExactProduction } from "./repull-switches.js";
 export const CRON_DISPATCH_PER_TICK = COMPUTE_PIPELINE_RUN_PER_INVOCATION;
 
 /** The refusals that would repeat for every recipe and every pool: they end the run. */
-const ENDS_THE_RUN: ReadonlySet<PipelineRefusal> = new Set<PipelineRefusal>([
+export const ENDS_THE_RUN: ReadonlySet<PipelineRefusal> = new Set<PipelineRefusal>([
   "compute_disabled",
   "runtime_unavailable",
   "pipelines_account_missing",

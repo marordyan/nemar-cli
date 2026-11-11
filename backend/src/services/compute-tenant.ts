@@ -27,16 +27,18 @@
  *              did not admit them, it only counts them.
  *
  * WHAT OCCUPIES A SLOT. Every row in a live state (`created` included: it is about to hold one), and
- * one slot more for each row that is no longer live and still records a Tapis job NEMAR made that no row
- * owns (`orphan_tapis_uuid`): the platform job is still running until the sweep cancels it. NEMAR's own
- * counting errs toward too many, never too few. It is NEMAR's view: a job that nothing has told NEMAR
- * about is not in it, which is why the ceiling sits below the cluster's own number.
+ * one slot more for EVERY row that records an orphaned platform job (`orphan_tapis_uuid`), live or not: a
+ * Tapis job NEMAR made that no row owns is still running until the cancel is known to have worked. A live
+ * row can carry one (a duplicate of the job the row owns, found when a second submit is bound), and it then
+ * holds two slots, its own and the orphan's. The count errs toward too many, not too few, for what NEMAR has
+ * recorded; a platform job nothing has recorded is not in it, and neither is a second orphan of one row (the
+ * row has one orphan slot): that is what the ceiling's headroom is for. It is NEMAR's view.
  *
  * COST. The live count is answered from a partial index of the live rows, as the person's and the
- * pipelines' counts are. The orphan term is a scan of `compute_jobs`: no index serves it (a partial
- * index on `orphan_tapis_uuid` needs a migration, which P2 does not have), so every hold pays one scan
- * of the table; the table holds one row per job and is small, and a migration is the answer when it is
- * not.
+ * pipelines' counts are. The orphan term is a scan of `compute_jobs`: no index serves it, so every hold pays
+ * one scan of the table (one row per job, small). It is written as a plain `orphan_tapis_uuid IS NOT NULL`
+ * so that a partial index on exactly that predicate will serve it; the index needs a migration, which P2 does
+ * not have, and is filed for the queue phase's (#2131).
  */
 
 import type { ComputeSource } from "../../../shared/compute-state.js";
@@ -74,7 +76,7 @@ export function tenantClassOf(source: ComputeSource): TenantFloorClass {
  * The class of a row is decided once, in the inner CASE, so a row is counted in exactly one class:
  * a row the sweep flagged as having skipped the reservation is `other` whatever its source says.
  * The first leg is the live rows (the states written LITERALLY so the partial index serves it); the
- * second is the orphan term.
+ * second is the orphan term, every row that records an orphaned platform job.
  */
 export const TENANT_COUNTS_SQL = `SELECT
     COALESCE(SUM(c = 'people'), 0) AS people,
@@ -93,7 +95,7 @@ export const TENANT_COUNTS_SQL = `SELECT
       FROM compute_jobs WHERE state IN (${LIVE_STATES_SQL})
     UNION ALL
     SELECT 'other' FROM compute_jobs
-     WHERE orphan_tapis_uuid IS NOT NULL AND state NOT IN (${LIVE_STATES_SQL})
+     WHERE orphan_tapis_uuid IS NOT NULL
   )`;
 
 /**
@@ -146,6 +148,23 @@ export async function tenantFacts(db: D1Database, policy: ComputePolicy): Promis
   };
 }
 
-/** Slots occupied beyond the ceiling: only what NEMAR did not admit can cause it (0 when within). */
+/**
+ * The slots a job of `cls` could take right now, from facts already read: the ceiling less what is
+ * occupied less what the OTHER classes' floors are still owed, never below 0. It is the guard's own
+ * arithmetic (a job is admitted exactly when this is at least 1), so a dry run and a run's clamp read what
+ * the hold will decide; the hold remains the decision, because the facts can move after they are read.
+ */
+export function tenantRoom(facts: TenantFacts, cls: TenantFloorClass): number {
+  let owed = 0;
+  for (const l of TENANT_FLOOR_CLASSES) {
+    if (l !== cls) owed += Math.max(0, facts.reserved[l] - facts.by_class[l]);
+  }
+  return Math.max(0, facts.ceiling - facts.occupied - owed);
+}
+
+/**
+ * Slots occupied beyond the ceiling (0 when within). Two things cause it: a job NEMAR did not admit (one that
+ * skipped the reservation, an orphan), or a ceiling the owner lowered below what is already live.
+ */
 export const tenantOverCeiling = (facts: TenantFacts): number =>
   Math.max(0, facts.occupied - facts.ceiling);

@@ -825,6 +825,17 @@ export async function createJob(
     throw err;
   }
   if (changes === 0) {
+    // A retry that raced its own original request: the original took the slot (or the pool's last funds)
+    // between this request's first read of the key and its hold, so the hold was refused, but the job
+    // under this key now exists and is the answer. Asked BEFORE the refusal is worded, as a sequential
+    // replay is answered before any guard.
+    if (args.key !== null && args.accountId !== null) {
+      const existing = await db
+        .prepare(JOB_BY_KEY_SQL)
+        .bind(args.accountId, args.key)
+        .first<ComputeJobRow>();
+      if (existing) return replay(env, existing, specDigest, specText, uploads);
+    }
     const why = await holdRefusalReason(db, hold);
     return refusal(why === "guard_refused" ? await guardRefusal(db, guards) : why);
   }

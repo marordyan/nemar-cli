@@ -63,9 +63,20 @@ function peekPayloadBytes(headerBytes: Uint8Array): number | null {
   }
 }
 
+export interface FrameReaderOptions {
+  /** The largest payload a frame may declare before the reader stops. The engine reads
+   *  requests and keeps the default; a client reading windows passes a larger one. */
+  maxPayloadBytes?: number;
+}
+
 export class FrameReader {
   private buf: Uint8Array = new Uint8Array(0);
   private stopped = false;
+  private readonly maxPayloadBytes: number;
+
+  constructor(options: FrameReaderOptions = {}) {
+    this.maxPayloadBytes = options.maxPayloadBytes ?? MAX_REQUEST_PAYLOAD_BYTES;
+  }
 
   /** Feed bytes; returns every event they complete, in order. After a `fatal` event the
    *  reader ignores further input. */
@@ -131,10 +142,10 @@ export class FrameReader {
     if (buf.length < payloadStart) return null;
 
     const declared = peekPayloadBytes(buf.subarray(FRAME_PREFIX_BYTES, payloadStart));
-    if (declared !== null && declared > MAX_REQUEST_PAYLOAD_BYTES) {
+    if (declared !== null && declared > this.maxPayloadBytes) {
       return this.fatal(
         "payload_too_large",
-        `payload_bytes ${declared} exceeds the ${MAX_REQUEST_PAYLOAD_BYTES} a request may carry`,
+        `payload_bytes ${declared} exceeds the ${this.maxPayloadBytes} a frame may carry here`,
       );
     }
     const frameEnd = payloadStart + (declared ?? 0);
@@ -157,8 +168,9 @@ export class FrameReader {
 /** Every event of a byte stream (stdin, in the engine), then any end-of-input event. */
 export async function* readFrames(
   source: AsyncIterable<Uint8Array>,
+  options: FrameReaderOptions = {},
 ): AsyncGenerator<FrameEvent, void, undefined> {
-  const reader = new FrameReader();
+  const reader = new FrameReader(options);
   for await (const chunk of source) {
     for (const event of reader.push(chunk)) {
       yield event;

@@ -33,6 +33,7 @@ import type {
 } from "../../../shared/contract/zarr-engine-protocol.js";
 import {
   DATASET_ID_RE,
+  type ZarrArrayMetadata,
   type ZarrGroup,
   type ZarrStore,
   zarrIndexLegacySchema,
@@ -227,6 +228,8 @@ export interface Binding {
   store: ZarrStore;
   group: ZarrGroup;
   geometry: GroupGeometry;
+  /** What the recipe reports about the array: its Zarr data type and codecs. */
+  arrayMetadata: { data_type: string; codecs: ZarrArrayMetadata["codecs"] };
   /** `index.data_base` with a trailing slash, as the read core joins it. */
   dataBase: string;
   /** Dataset identity for the read core's cache entries. */
@@ -409,6 +412,7 @@ export async function openRecording(
         shardSamples: group.shard_samples,
         nInner,
       },
+      arrayMetadata: { data_type: dataType, codecs: meta.metadata.codecs },
       dataBase,
       cacheKey,
     },

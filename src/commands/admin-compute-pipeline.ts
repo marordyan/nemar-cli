@@ -177,6 +177,8 @@ Runs a processing recipe on NEMAR's own datasets through the compute gateway, or
 The caps are the owner's, for every path: a run that finds the pool full or the day's cap used stops
 with over_concurrency or daily_cap_reached and dispatches nothing. One named dataset is refused as
 over_concurrency when the pool is full; it counts toward the daily cap and is not refused by it.
+NEMAR's share of the cluster has a ceiling too: a job that would pass it, or take slots kept for
+people or partners, is refused as platform_busy, which stops a run (try again shortly).
 
 Only a public, non-anonymous, first-published, non-withdrawn dataset with EEG data and at least one
 version is eligible; the Worker decides that from its own record, never from this command. A dataset

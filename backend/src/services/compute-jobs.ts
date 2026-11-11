@@ -57,6 +57,11 @@
  *    it however they interleave. The daily count (`pipelines.dailyJobCap`) is the dispatchers' to read
  *    (`pipelineRoom`), not a guard: it clamps a run and does not refuse a dataset an administrator names
  *    (issue #2121, ADR 0118 amendment of 2026-11-10).
+ *  - EVERY source also meets the TENANT ceiling (`tenantGuard`, `compute-tenant.ts`, phase P2 of #2121): NEMAR's
+ *    total of live jobs and the slots kept for the other classes are counted in the same statement, so a job
+ *    that would pass the ceiling or take a floor another class is owed is refused `platform_busy`. A refusal
+ *    is worded after the batch by asking each guard again in order (`guardRefusal`): the class's own cap
+ *    first, then the tenant. Whoever merges another branch into the `guards` block keeps both.
  */
 
 import { z } from "zod";
@@ -67,9 +72,6 @@ import {
   type ComputeRefusalCode,
   type ComputeSource,
   type ComputeState,
-  LIVE_COMPUTE_STATES,
-  TAPIS_REPORTING_STATES,
-  TERMINAL_COMPUTE_STATES,
 } from "../../../shared/compute-state.js";
 import { launchSpecFits } from "../../../shared/contract/compute-launch.js";
 import {
@@ -84,6 +86,7 @@ import {
   computeSafeInt,
   datasetVersionWithoutTag,
   estimateSuMilli,
+  tenantPolicyOf,
 } from "../../../shared/contract/compute.js";
 import {
   type HoldGuard,
@@ -102,6 +105,12 @@ import {
   writeIdentitySnapshot,
   writeSpec,
 } from "./compute-records.js";
+import {
+  LIVE_STATES_SQL,
+  TAPIS_REPORTING_STATES_SQL,
+  TERMINAL_STATES_SQL,
+} from "./compute-state-sql.js";
+import { tenantClassOf, tenantGuard } from "./compute-tenant.js";
 
 // --- Errors and shapes ---------------------------------------------------------------------------
 
@@ -295,6 +304,7 @@ export type CreateJobRefusal = Extract<
   | "suspended"
   | "platform_budget_exhausted"
   | "over_concurrency"
+  | "platform_busy"
 >;
 
 export type CreateJobResult =
@@ -357,14 +367,8 @@ export const JOB_BY_KEY_SQL = `SELECT ${JOB_COLUMNS} FROM compute_jobs
   WHERE account_id = ?1 AND idempotency_key = ?2`;
 
 /** The live states as a SQL list, from the one list of them: the partial index answers only this literal. */
-/** `'a', 'b'` for a SQL `IN (...)`, from this tree's own fixed state words (never a caller's). */
-const sqlList = (states: readonly string[]) => states.map((s) => `'${s}'`).join(", ");
-
-/** The live states and the terminal states as SQL lists: declared once, imported by every compute statement. */
-export const LIVE_STATES_SQL = sqlList(LIVE_COMPUTE_STATES);
-export const TERMINAL_STATES_SQL = sqlList(TERMINAL_COMPUTE_STATES);
-/** The live states whose Tapis job exists and is reported on (what a long silence turns `unreported`). */
-export const TAPIS_REPORTING_STATES_SQL = sqlList(TAPIS_REPORTING_STATES);
+// The state lists live in compute-state-sql.ts (no cycle with the tenant guard); they stay importable here.
+export { LIVE_STATES_SQL, TAPIS_REPORTING_STATES_SQL, TERMINAL_STATES_SQL };
 
 /**
  * A person's live-job limit, as a guard on the hold (plain `?` placeholders: the account and the
@@ -391,6 +395,33 @@ export const PIPELINE_LIVE_JOBS_SQL = `SELECT COUNT(*) AS n FROM compute_jobs
  * racing for the last slot of a pool cannot both win; a refusal is `over_concurrency`.
  */
 export const PIPELINE_LIVE_JOBS_GUARD_SQL = `(${PIPELINE_LIVE_JOBS_SQL}) < ?`;
+
+/** A guard of the hold and the refusal word it answers with. */
+interface NamedGuard {
+  guard: HoldGuard;
+  refusal: Extract<CreateJobRefusal, "over_concurrency" | "platform_busy">;
+}
+
+/**
+ * The word for a hold that a guard refused (the balance and the pool were read first: see
+ * `holdRefusalReason`): each guard is asked again, in order, with the binds it was given, and the first
+ * that no longer passes names the refusal. A class's own cap therefore comes before the tenant ceiling.
+ * If every guard passes now (a slot was freed between the refusal and this read) the first guard's word
+ * is given: the request was refused, and it may ask again.
+ */
+async function guardRefusal(
+  db: D1Database,
+  guards: readonly NamedGuard[],
+): Promise<NamedGuard["refusal"]> {
+  for (const { guard, refusal: word } of guards) {
+    const row = await db
+      .prepare(`SELECT ${guard.sql} AS ok`)
+      .bind(...(guard.binds ?? []))
+      .first<{ ok: number | null }>();
+    if (row?.ok !== 1) return word;
+  }
+  return (guards[0] as NamedGuard).refusal;
+}
 
 /** The hold row of a job exists: the one gate both of the batch's later statements wait behind. */
 const holdExists = (jobParam: number): string =>
@@ -713,15 +744,36 @@ export async function createJob(
   }
 
   const jobId = newJobId();
-  // The person's live-job limit, or for NEMAR's own pipelines the pipelines' live cap of this pool: the
-  // guard is in the hold's statement, and its refusal is read after the batch (`over_concurrency`).
-  const guards: HoldGuard[] =
-    args.source === "pipeline"
-      ? [{ sql: PIPELINE_LIVE_JOBS_GUARD_SQL, binds: [word, policy.pipelines.maxLiveJobs[word]] }]
-      : args.accountId !== null
-        ? [{ sql: LIVE_JOBS_GUARD_SQL, binds: [args.accountId, policy.maxLiveJobsPerPerson] }]
-        : [];
-  const hold = { poolId, budgetPoolId, amountMilli, jobId, extraGuards: guards };
+  // The guards, in the order a refusal is worded: the class's own cap (a person's live-job limit, or for
+  // NEMAR's own pipelines the pipelines' live cap of this pool), then the tenant ceiling that EVERY source
+  // meets. Each is in the hold's statement, and a refusal is worded after the batch by asking each guard
+  // again (`guardRefusal`), so the word is the guard's and never a second hold's.
+  const guards: NamedGuard[] = [];
+  if (args.source === "pipeline") {
+    guards.push({
+      guard: {
+        sql: PIPELINE_LIVE_JOBS_GUARD_SQL,
+        binds: [word, policy.pipelines.maxLiveJobs[word]],
+      },
+      refusal: "over_concurrency",
+    });
+  } else if (args.accountId !== null) {
+    guards.push({
+      guard: { sql: LIVE_JOBS_GUARD_SQL, binds: [args.accountId, policy.maxLiveJobsPerPerson] },
+      refusal: "over_concurrency",
+    });
+  }
+  guards.push({
+    guard: tenantGuard(tenantClassOf(args.source), tenantPolicyOf(policy)),
+    refusal: "platform_busy",
+  });
+  const hold = {
+    poolId,
+    budgetPoolId,
+    amountMilli,
+    jobId,
+    extraGuards: guards.map((g) => g.guard),
+  };
 
   const statements = [...holdStatements(db, hold)];
   if (args.source !== "pipeline" && args.accountId !== null) {
@@ -774,7 +826,7 @@ export async function createJob(
   }
   if (changes === 0) {
     const why = await holdRefusalReason(db, hold);
-    return refusal(why === "guard_refused" ? "over_concurrency" : why);
+    return refusal(why === "guard_refused" ? await guardRefusal(db, guards) : why);
   }
 
   const created = await getJob(db, jobId);

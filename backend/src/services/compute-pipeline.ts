@@ -1235,6 +1235,8 @@ const STOPS_A_RUN: ReadonlySet<PipelineRefusal> = new Set<PipelineRefusal>([
   "platform_budget_exhausted",
   "suspended",
   "over_concurrency",
+  // The tenant ceiling is full for the pipelines' class: the next dataset meets the same count.
+  "platform_busy",
   "create_failed",
 ]);
 

@@ -85,6 +85,7 @@ const SENTENCES = {
   platform_budget_exhausted: "The platform budget is exhausted.",
   suspended: "The pipelines pool is suspended.",
   over_concurrency: "NEMAR's pipelines already have as many live jobs as the owner allows.",
+  platform_busy: "NEMAR's share of the cluster is full right now; try again shortly.",
   daily_cap_reached: "NEMAR's pipelines have already made as many jobs today as the owner allows.",
   invalid_spec: "The job could not be built from the recipe.",
   create_failed: "The job could not be created.",

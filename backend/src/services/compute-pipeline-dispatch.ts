@@ -79,6 +79,8 @@ const ENDS_THE_RUN: ReadonlySet<PipelineRefusal> = new Set<PipelineRefusal>([
   "compute_disabled",
   "runtime_unavailable",
   "pipelines_account_missing",
+  // The tenant ceiling does not depend on the pool or the recipe: no other recipe would be admitted.
+  "platform_busy",
 ]);
 
 export type RecipeSkip =

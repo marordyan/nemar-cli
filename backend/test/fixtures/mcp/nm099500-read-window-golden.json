@@ -63,7 +63,7 @@
       "_meta": {
         "io.modelcontextprotocol/serverInfo": {
           "name": "nemar",
-          "version": "0.10.28-dev5"
+          "version": "<server version>"
         }
       }
     },
@@ -2214,7 +2214,7 @@
       "_meta": {
         "io.modelcontextprotocol/serverInfo": {
           "name": "nemar",
-          "version": "0.10.28-dev5"
+          "version": "<server version>"
         }
       }
     },
@@ -10387,7 +10387,7 @@
       "_meta": {
         "io.modelcontextprotocol/serverInfo": {
           "name": "nemar",
-          "version": "0.10.28-dev5"
+          "version": "<server version>"
         }
       }
     },
@@ -12550,7 +12550,7 @@
       "_meta": {
         "io.modelcontextprotocol/serverInfo": {
           "name": "nemar",
-          "version": "0.10.28-dev5"
+          "version": "<server version>"
         }
       }
     },
@@ -14726,7 +14726,7 @@
       "_meta": {
         "io.modelcontextprotocol/serverInfo": {
           "name": "nemar",
-          "version": "0.10.28-dev5"
+          "version": "<server version>"
         }
       }
     },
@@ -14779,7 +14779,7 @@
       "_meta": {
         "io.modelcontextprotocol/serverInfo": {
           "name": "nemar",
-          "version": "0.10.28-dev5"
+          "version": "<server version>"
         }
       }
     },

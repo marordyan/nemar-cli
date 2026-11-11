@@ -356,6 +356,16 @@ describe("open failures and their codes", () => {
     expect(parseIndexDocument(ok, ID).status).toBe("ok");
   });
 
+  test("an index whose contract_base is plain http to a non-loopback host is upstream_error", () => {
+    const doc = { ...nm099500Index, contract_base: "http://example.com/nm099500/zarr/" };
+    expect(parseIndexDocument(doc, ID)).toMatchObject({
+      status: "error",
+      detail: expect.stringContaining("contract_base"),
+    });
+    const loopback = { ...nm099500Index, contract_base: "http://127.0.0.1:9/nm099500/zarr/" };
+    expect(parseIndexDocument(loopback, ID).status).toBe("ok");
+  });
+
   test("a group without shard geometry is upstream_error", async () => {
     const store = nm099500Index.stores[0];
     const { shard_samples: _drop, ...group } = store.groups[0];

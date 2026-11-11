@@ -64,8 +64,8 @@ const MAX_RECORDS_BYTES = 64 * 1024 * 1024;
 /**
  * The v3 index schema with the two base URLs relaxed from "https" to "any string". The shared
  * schema is the producer's contract and stays untouched; the engine applies its own host rule
- * (`checkHost`: https, or http to loopback) to `data_base` instead, so a test can stand an
- * origin up on 127.0.0.1 and nothing else changes.
+ * (`checkHost`: https, or http to a loopback address) to both bases instead, so a test can
+ * stand an origin up on 127.0.0.1 and nothing else changes.
  */
 const engineIndexSchema = zarrIndexSchema.extend({
   contract_base: z.string(),
@@ -128,9 +128,11 @@ export function parseIndexDocument(doc: unknown, datasetId: string): IndexOutcom
         detail: `index.json for ${datasetId} names dataset ${parsed.data.dataset_id}`,
       };
     }
-    const dataBase = checkHost(parsed.data.data_base);
-    if (!dataBase.ok) {
-      return { status: "error", detail: `index.json data_base is not allowed: ${dataBase.reason}` };
+    for (const field of ["data_base", "contract_base"] as const) {
+      const check = checkHost(parsed.data[field]);
+      if (!check.ok) {
+        return { status: "error", detail: `index.json ${field} is not allowed: ${check.reason}` };
+      }
     }
     return { status: "ok", index: parsed.data };
   }

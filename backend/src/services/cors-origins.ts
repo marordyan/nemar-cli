@@ -13,6 +13,8 @@
  * instantiating the worker, the same way `host-routing.ts` is.
  */
 
+import { isPartnerHost } from "../../../shared/partner-hosts.js";
+
 /**
  * Cloudflare Pages projects serving the NEMAR website. Each one answers on
  * `<project>.pages.dev` plus a subdomain per branch and per deployment.
@@ -61,8 +63,15 @@ export function isWebsitePagesHost(hostname: string): boolean {
  *
  * This is the common core of both allow-lists. Neither call site should add
  * a NEMAR web surface without adding it here.
+ *
+ * A partner host (`shared/partner-hosts.ts`, ADR 0119 decision 9) is NEVER one of
+ * ours, though it ends in `.nemar.org`: another party runs it and its pages run
+ * code its visitors write. That is asked FIRST, before any rule that would say
+ * yes, so no later addition to this function can admit it by accident. The api
+ * fork, `routes/zarr-data.ts` and `routes/mcp.ts` all inherit the answer.
  */
 export function isNemarWebOrigin(hostname: string): boolean {
+  if (isPartnerHost(hostname)) return false;
   if (hostname === "localhost" || hostname === "127.0.0.1") return true;
   if (hostname === "nemar.org" || hostname.endsWith(".nemar.org")) return true;
   return isWebsitePagesHost(hostname);

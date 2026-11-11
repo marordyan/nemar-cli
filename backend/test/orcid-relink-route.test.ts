@@ -93,14 +93,14 @@ async function sessionCookie(userId: number): Promise<string> {
 }
 
 function stateCookie(mode: string, next = "/settings"): string {
-  return `nemar_oauth_state=${encodeState({ csrf: CSRF, mode: mode as "login", next })}`;
+  return `__Host-nemar_oauth_state=${encodeState({ csrf: CSRF, mode: mode as "login", next })}`;
 }
 
 function stateFromSetCookie(res: Response): ReturnType<typeof decodeState> {
   const setCookies = res.headers.getSetCookie();
-  const state = setCookies.find((c) => c.startsWith("nemar_oauth_state="));
+  const state = setCookies.find((c) => c.startsWith("__Host-nemar_oauth_state="));
   if (!state) return null;
-  const value = state.split(";")[0].slice("nemar_oauth_state=".length);
+  const value = state.split(";")[0].slice("__Host-nemar_oauth_state=".length);
   return value ? decodeState(value) : null;
 }
 
@@ -113,7 +113,7 @@ beforeEach(() => {
 describe("relink intent minting (#913)", () => {
   test("GET /orcid/start?mode=relink degrades to login — a link can never arm a swap", async () => {
     const res = await app.request(
-      "/auth/orcid/start?mode=relink&next=/settings",
+      "https://app.nemar.org/auth/orcid/start?mode=relink&next=/settings",
       { method: "GET" },
       env(),
     );
@@ -126,7 +126,7 @@ describe("relink intent minting (#913)", () => {
   test("POST /orcid/start?mode=relink mints relink for a same-origin, authenticated request", async () => {
     const user = seedUser("relink-mint@nemar.test", OLD_ID);
     const res = await app.request(
-      "/auth/orcid/start?mode=relink&next=/settings",
+      "https://app.nemar.org/auth/orcid/start?mode=relink&next=/settings",
       {
         method: "POST",
         headers: { Origin: APP, Cookie: await sessionCookie(user.id) },
@@ -142,7 +142,7 @@ describe("relink intent minting (#913)", () => {
 
   test("POST without a session redirects to login; cross-site Origin is refused outright", async () => {
     const anon = await app.request(
-      "/auth/orcid/start?mode=relink",
+      "https://app.nemar.org/auth/orcid/start?mode=relink",
       { method: "POST", headers: { Origin: APP } },
       env(),
     );
@@ -151,7 +151,7 @@ describe("relink intent minting (#913)", () => {
 
     const user = seedUser("relink-origin@nemar.test", OLD_ID);
     const forged = await app.request(
-      "/auth/orcid/start?mode=relink",
+      "https://app.nemar.org/auth/orcid/start?mode=relink",
       {
         method: "POST",
         headers: { Origin: "https://evil.example", Cookie: await sessionCookie(user.id) },
@@ -236,15 +236,23 @@ describe("callback relink wiring (#913)", () => {
     const user = seedUser("relink-refuse@nemar.test", OLD_ID);
     linkIdentity(user.id, OLD_ID);
 
-    for (const mode of ["link", "login"]) {
-      const res = await app.request(
-        callbackReq([stateCookie(mode), await sessionCookie(user.id)]),
-        undefined,
-        env(),
-      );
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toContain("error=orcid_already_have");
-    }
+    const res = await app.request(
+      callbackReq([stateCookie("link"), await sessionCookie(user.id)]),
+      undefined,
+      env(),
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toContain("error=orcid_already_have");
+
+    // A plain sign-in never touches the session's account (ADR 0119 rule 10): the finished iD
+    // belongs to nobody, so it is a new sign-up and the account keeps its own iD.
+    const signIn = await app.request(
+      callbackReq([stateCookie("login"), await sessionCookie(user.id)]),
+      undefined,
+      env(),
+    );
+    expect(signIn.status).toBe(302);
+    expect(signIn.headers.get("Location")).toContain("/auth/orcid/complete");
     const ident = db
       .query<{ provider_subject: string }, [number]>(
         "SELECT provider_subject FROM oauth_identities WHERE user_id = ?",

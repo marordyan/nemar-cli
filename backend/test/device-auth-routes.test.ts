@@ -1006,7 +1006,7 @@ describe("device flow reached through a brand-new ORCID sign-in", () => {
     const pendingCookie = pendingCookieHeader.split(";")[0];
 
     const finalizeRes = await app.request(
-      "/auth/orcid/finalize",
+      "https://app.nemar.org/auth/orcid/finalize",
       {
         method: "POST",
         headers: { Origin: ORIGIN, "content-type": "application/json", Cookie: pendingCookie },

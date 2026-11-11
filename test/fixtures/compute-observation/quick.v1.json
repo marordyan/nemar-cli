@@ -1,0 +1,136 @@
+{
+  "balance": {
+    "expanse": {
+      "projects": [
+        {
+          "available": 110000,
+          "project": "prj001",
+          "used": 0,
+          "used_by_project": 8318
+        },
+        {
+          "available": 5000,
+          "project": "prj002",
+          "used": 12,
+          "used_by_project": 40
+        }
+      ],
+      "status": "parsed"
+    },
+    "expanse_gpu": {
+      "projects": [
+        {
+          "available": 110000,
+          "project": "prj001",
+          "used": 0,
+          "used_by_project": 8318
+        },
+        {
+          "available": 5000,
+          "project": "prj002",
+          "used": 12,
+          "used_by_project": 40
+        }
+      ],
+      "status": "parsed"
+    }
+  },
+  "mode": "quick",
+  "observed_at": "2026-11-04T12:00:00Z",
+  "observer_version": "0.1.0",
+  "partitions": {
+    "compute": {
+      "available": "up",
+      "jobs": {
+        "RUNNING": {
+          "cpus": 256,
+          "jobs": 1,
+          "nodes": 2
+        }
+      },
+      "nodes": {
+        "drained": 3,
+        "idle": 8
+      },
+      "pending_reasons": {}
+    },
+    "debug": {
+      "available": "up",
+      "jobs": {},
+      "nodes": {
+        "idle": 2
+      },
+      "pending_reasons": {}
+    },
+    "gpu": {
+      "available": "up",
+      "jobs": {
+        "PENDING": {
+          "cpus": 10,
+          "jobs": 1,
+          "nodes": 1
+        }
+      },
+      "nodes": {
+        "down": 1,
+        "mixed": 2
+      },
+      "pending_reasons": {
+        "Resources": 1
+      }
+    },
+    "shared": {
+      "available": "up",
+      "jobs": {
+        "PENDING": {
+          "cpus": 20,
+          "jobs": 3,
+          "nodes": 3
+        },
+        "RUNNING": {
+          "cpus": 12,
+          "jobs": 2,
+          "nodes": 2
+        }
+      },
+      "nodes": {
+        "allocated": 2,
+        "idle": 30,
+        "mixed": 12
+      },
+      "pending_reasons": {
+        "Priority": 2,
+        "Resources": 1
+      }
+    }
+  },
+  "pending_starts": [
+    {
+      "expected_start": "2026-11-05T09:15:00",
+      "job_id": "101",
+      "partition": "shared",
+      "state": "PENDING"
+    },
+    {
+      "expected_start": null,
+      "job_id": "102",
+      "partition": "gpu",
+      "state": "PENDING"
+    }
+  ],
+  "schema": "nemar.observation.v1",
+  "sources": {
+    "sinfo": {
+      "malformed_rows": 0,
+      "status": "ok"
+    },
+    "squeue": {
+      "malformed_rows": 0,
+      "status": "ok"
+    },
+    "squeue_start": {
+      "malformed_rows": 0,
+      "status": "ok"
+    }
+  }
+}

@@ -1268,7 +1268,10 @@ describe("only the loader registers an entry as loaded", () => {
       (f) => !ALLOWED.includes(f) && usesOf(readFileSync(join(ROOT, f), "utf8"), "markLoaded") > 0,
     );
     expect(offenders).toEqual([]);
-  });
+    // It reads every source file in the repository, which took 5.2 s (the default limit is 5 s)
+    // with four test workers sharing a 4-vCPU runner. The scan is bounded by the file count,
+    // not by a wait, so a longer limit does not hide a hang.
+  }, 30_000);
 
   test("the scanner finds an import, a call, an alias and a re-export", () => {
     expect(usesOf('import { markLoaded } from "./curation-loaded";', "markLoaded")).toBe(1);

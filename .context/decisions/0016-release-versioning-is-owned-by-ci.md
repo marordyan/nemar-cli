@@ -29,7 +29,7 @@ Three things must agree at release time: `package.json`, the git tag, and the np
 
 ## Receipts
 
-- AGENTS.md "Version Bumping and Release"
+- `https://docs.nemar.org/develop/release-pipeline/` and `.rules/release-and-repull.md` (formerly AGENTS.md "Version Bumping and Release")
 - `.github/workflows/auto-tag.yml`, `npm-publish.yml`, `sync-dev.yml`; `scripts/bump-version.sh`
 
 ## Amendment 2026-10-04 (#1610): privacy corrections

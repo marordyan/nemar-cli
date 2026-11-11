@@ -4,7 +4,6 @@ description: "A new worktree has no node_modules, so bunx fetches latest biome a
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: feb870a5-d2bd-421c-b0db-8061cdd93a33
   modified: 2026-09-18T02:30:19.351Z
 ---
 

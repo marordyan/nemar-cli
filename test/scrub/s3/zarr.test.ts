@@ -7,7 +7,7 @@
  * structure, from the same document.
  */
 
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
@@ -17,7 +17,8 @@ import {
   parseZarrVerified,
 } from "../../../scripts/scrub/contract";
 import { TEST_LOOPBACK_PUBLIC_BASE_ENV } from "../../../scripts/scrub/s3/s3-stages";
-import { type S3Standin, startS3Standin } from "../helpers/s3-standin";
+import { type S3Standin, type Snapshot, startS3Standin } from "../helpers/s3-standin";
+import { BATCH_SLOW, makeLimiter, settleAll } from "./concurrency";
 import { expectStopped, expectUsage } from "./refusal";
 import {
   BUCKET,
@@ -26,6 +27,7 @@ import {
   type PublicEndpoint,
   SLOW,
   addUnreadableKey,
+  copyDir,
   deleteRequests,
   dirText,
   fileSha256,
@@ -35,7 +37,7 @@ import {
   planArgs,
   readJson,
   removeTempDirs,
-  runScrub,
+  runScrub as runScrubUnbounded,
   seedManifest,
   seedObject,
   sha256,
@@ -46,13 +48,63 @@ import {
 
 afterAll(removeTempDirs);
 
-let standin: S3Standin;
-let pub: PublicEndpoint | undefined;
-afterEach(() => {
-  standin?.stop();
-  pub?.stop();
-  pub = undefined;
+/**
+ * Every test makes a stand-in (and, for zarr-public, a public endpoint) of its own and takes it
+ * from here, so the tests that are declared `test.concurrent` share nothing. Bun runs a run of
+ * adjacent concurrent tests together, and `runScrub` lets at most SLOTS real CLI runs be in
+ * flight at once, in a group or inside a test, so the four-core CI runner is never given more.
+ */
+const opened: S3Standin[] = [];
+const endpoints: PublicEndpoint[] = [];
+function open(): S3Standin {
+  const s = startS3Standin();
+  opened.push(s);
+  return s;
+}
+function openPublic(): PublicEndpoint {
+  const e = startPublicEndpoint();
+  endpoints.push(e);
+  return e;
+}
+afterAll(() => {
+  for (const s of opened) s.stop();
+  for (const e of endpoints) e.stop();
 });
+
+const SLOTS = 3;
+const limit = makeLimiter(SLOTS);
+const runScrub = (...args: Parameters<typeof runScrubUnbounded>) =>
+  limit(() => runScrubUnbounded(...args));
+
+/**
+ * The working directory the plan stage leaves for the dataset every test below uses (one clean
+ * recording). The zarr stage reads plan.json for the dataset, the bucket and the digest its
+ * proof is bound to, and nothing else of the plan, so each test gets a copy of this one real
+ * plan instead of running the plan stage again.
+ */
+let planned: string;
+beforeAll(async () => {
+  const s = startS3Standin();
+  try {
+    const d = fixtureD();
+    seedObject(s, d);
+    seedManifest(s, "v1.0.0", [d]);
+    planned = tempDir("zarr-planned");
+    const plan = await runScrub(s, planArgs(planned));
+    expect(plan.exitCode, plan.all).toBe(0);
+  } finally {
+    s.stop();
+  }
+}, SLOW);
+
+/** A fresh stand-in holding the dataset's recording, and a copy of its plan's working directory. */
+function withPlan(): { standin: S3Standin; dir: string } {
+  const standin = open();
+  const d = fixtureD();
+  seedObject(standin, d);
+  seedManifest(standin, "v1.0.0", [d]);
+  return { standin, dir: copyDir(planned) };
+}
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const dec = (b: Uint8Array) => new TextDecoder().decode(b);
@@ -132,6 +184,7 @@ const nestedDirty = JSON.stringify({
 const nestedCleaned = JSON.stringify({ zarr_format: 3, node_type: "array", attributes: {} });
 
 interface Seeded {
+  standin: S3Standin;
   dir: string;
   /** The other objects of the Zarr copy, which the stage must never touch. */
   others: Record<string, Uint8Array>;
@@ -139,13 +192,7 @@ interface Seeded {
 
 /** A dataset with a plan, and a Zarr copy: two dirty store roots, one clean, and other objects. */
 async function seeded(): Promise<Seeded> {
-  standin = startS3Standin();
-  const d = fixtureD();
-  seedObject(standin, d);
-  seedManifest(standin, "v1.0.0", [d]);
-  const dir = tempDir("zarr");
-  const plan = await runScrub(standin, planArgs(dir));
-  expect(plan.exitCode, plan.all).toBe(0);
+  const { standin, dir } = withPlan();
 
   standin.putObject(BUCKET, A, enc(prettyDirty), {
     contentType: "application/json",
@@ -162,7 +209,7 @@ async function seeded(): Promise<Seeded> {
   };
   for (const [k, v] of Object.entries(others)) standin.putObject(BUCKET, k, v);
   standin.log.length = 0;
-  return { dir, others };
+  return { standin, dir, others };
 }
 
 const zarrArgs = (dir: string, extra: string[] = []) => [
@@ -174,8 +221,9 @@ const zarrArgs = (dir: string, extra: string[] = []) => [
   ...extra,
 ];
 
-const text = (key: string) => dec((standin.current(BUCKET, key) as { data: Uint8Array }).data);
-const versionsOf = (key: string) => standin.versions(BUCKET, key);
+const text = (standin: S3Standin, key: string) =>
+  dec((standin.current(BUCKET, key) as { data: Uint8Array }).data);
+const versionsOf = (standin: S3Standin, key: string) => standin.versions(BUCKET, key);
 const mode = (dir: string, name: string) => statSync(path.join(dir, name)).mode & 0o777;
 
 function expectNoValue(output: string, dir: string) {
@@ -188,7 +236,7 @@ describe("zarr: a dry run", () => {
   test(
     "reads, reports what it would remove, writes a private plan, and changes nothing",
     async () => {
-      const { dir } = await seeded();
+      const { dir, standin } = await seeded();
       // A proof from an earlier run is not left standing by a run that did not re-prove.
       writeFileSync(path.join(dir, "zarr-verified.json"), "{}");
 
@@ -205,7 +253,7 @@ describe("zarr: a dry run", () => {
       );
       // Every store root, then every zarr.json inside a store.
       expect(standin.calls("GetObject").map((c) => c.key)).toEqual([A, B, C, N]);
-      for (const k of [A, B, C, N]) expect(versionsOf(k).length).toBe(1);
+      for (const k of [A, B, C, N]) expect(versionsOf(standin, k).length).toBe(1);
 
       const plan = readJson<ZarrPlanFile>(dir, "zarr-plan.json");
       expect(plan.executed).toBe(false);
@@ -240,15 +288,15 @@ describe("zarr: a dry run", () => {
 });
 
 describe("zarr: --execute", () => {
-  test(
+  test.concurrent(
     "removes exactly the identifier keys, conditionally, and leaves every other object alone",
     async () => {
-      const { dir, others } = await seeded();
+      const { dir, others, standin } = await seeded();
       const before = {
-        a: versionsOf(A)[0]?.etag as string,
-        b: versionsOf(B)[0]?.etag as string,
-        c: versionsOf(C)[0]?.etag as string,
-        n: versionsOf(N)[0]?.etag as string,
+        a: versionsOf(standin, A)[0]?.etag as string,
+        b: versionsOf(standin, B)[0]?.etag as string,
+        c: versionsOf(standin, C)[0]?.etag as string,
+        n: versionsOf(standin, N)[0]?.etag as string,
       };
 
       const r = await runScrub(standin, zarrArgs(dir, ["--execute"]));
@@ -259,25 +307,25 @@ describe("zarr: --execute", () => {
       expect(r.stdout).toContain("zarr: ok");
 
       // The rewritten roots are the original minus the identifier members, in the original layout.
-      expect(text(A)).toBe(prettyCleaned);
-      expect(text(B)).toBe(compactCleaned);
-      expect(text(N)).toBe(nestedCleaned);
+      expect(text(standin, A)).toBe(prettyCleaned);
+      expect(text(standin, B)).toBe(compactCleaned);
+      expect(text(standin, N)).toBe(nestedCleaned);
       for (const v of VALUES) {
-        expect(text(A), v).not.toContain(v);
-        expect(text(B), v).not.toContain(v);
-        expect(text(N), v).not.toContain(v);
+        expect(text(standin, A), v).not.toContain(v);
+        expect(text(standin, B), v).not.toContain(v);
+        expect(text(standin, N), v).not.toContain(v);
       }
       // The fields that stay are the ones that were not identifiers or about the subject.
-      expect(JSON.parse(text(A)).attributes.recording_metadata).toEqual({
+      expect(JSON.parse(text(standin, A)).attributes.recording_metadata).toEqual({
         startdate: "02.02.20",
       });
 
       // A new version each; the original is still there, noncurrent, for the prune to remove.
       for (const k of [A, B]) {
-        expect(versionsOf(k).length, k).toBe(2);
-        expect(versionsOf(k)[1]?.deleteMarker).toBe(false);
+        expect(versionsOf(standin, k).length, k).toBe(2);
+        expect(versionsOf(standin, k)[1]?.deleteMarker).toBe(false);
       }
-      expect(dec((versionsOf(A)[0] as { data: Uint8Array }).data)).toBe(prettyDirty);
+      expect(dec((versionsOf(standin, A)[0] as { data: Uint8Array }).data)).toBe(prettyDirty);
 
       // Each write named the ETag it read, so a writer in between would have been refused.
       const puts = standin.calls("PutObject");
@@ -293,10 +341,10 @@ describe("zarr: --execute", () => {
       expect(rewritten?.sse).toBe("AES256");
 
       // The clean root and every other object of the Zarr copy: no new version, same bytes.
-      expect(versionsOf(C).length).toBe(1);
-      expect(versionsOf(C)[0]?.etag).toBe(before.c);
+      expect(versionsOf(standin, C).length).toBe(1);
+      expect(versionsOf(standin, C)[0]?.etag).toBe(before.c);
       for (const [k, v] of Object.entries(others)) {
-        expect(versionsOf(k).length, k).toBe(1);
+        expect(versionsOf(standin, k).length, k).toBe(1);
         expect(Buffer.compare(standin.current(BUCKET, k)?.data as Uint8Array, v), k).toBe(0);
       }
       expect(deleteRequests(standin)).toBe(0);
@@ -326,17 +374,17 @@ describe("zarr: --execute", () => {
       const again = await runScrub(standin, zarrArgs(dir, ["--execute"]));
       expect(again.exitCode, again.all).toBe(0);
       expect(standin.calls("PutObject").length).toBe(0);
-      for (const k of [A, B, C]) expect(versionsOf(k).length).toBe(k === C ? 1 : 2);
+      for (const k of [A, B, C]) expect(versionsOf(standin, k).length).toBe(k === C ? 1 : 2);
       const renewed = readJson<ZarrVerifiedFile>(dir, "zarr-verified.json");
       expect(renewed.counts).toEqual({ stores: 3, docs: 4, rewritten: 0, untouched: 4 });
     },
-    SLOW,
+    BATCH_SLOW,
   );
 
-  test(
+  test.concurrent(
     "a store root changed since it was read is never overwritten, and a re-run finishes the job",
     async () => {
-      const { dir } = await seeded();
+      const { dir, standin } = await seeded();
       // Just as the first write begins, another writer replaces A with a newer version that still
       // has identifiers (and a key of its own).
       const newer = JSON.stringify(
@@ -353,42 +401,42 @@ describe("zarr: --execute", () => {
       expect(has(dir, "zarr-verified.json")).toBe(false);
 
       // The other writer's version stands: our stale write was refused, not applied on top.
-      expect(text(A)).toBe(newer);
-      expect(versionsOf(A).length).toBe(2);
+      expect(text(standin, A)).toBe(newer);
+      expect(versionsOf(standin, A).length).toBe(2);
       expect(standin.calls("PutObject").find((p) => p.key === A)?.status).toBe(412);
       // The other store was independent of it and was scrubbed.
-      expect(text(B)).toBe(compactCleaned);
+      expect(text(standin, B)).toBe(compactCleaned);
 
       // Nothing blocks a second run: it reads what is there now, removes the keys, keeps theirs.
       const again = await runScrub(standin, zarrArgs(dir, ["--execute"]));
       expect(again.exitCode, again.all).toBe(0);
-      const finalA = JSON.parse(text(A));
+      const finalA = JSON.parse(text(standin, A));
       expect(finalA.attributes.later).toEqual({ added: "by another writer" });
       expect(finalA.attributes.recording_metadata).toEqual({ startdate: "02.02.20" });
-      expect(versionsOf(A).length).toBe(3);
+      expect(versionsOf(standin, A).length).toBe(3);
       expect(has(dir, "zarr-verified.json")).toBe(true);
     },
-    SLOW,
+    BATCH_SLOW,
   );
 
-  test(
+  test.concurrent(
     "a conflicting-write refusal (409) is a store changed concurrently, never a rewrite",
     async () => {
-      const { dir } = await seeded();
+      const { dir, standin } = await seeded();
       standin.inject("PutObject", { code: "ConditionalRequestConflict", status: 409, key: A });
       const r = await runScrub(standin, zarrArgs(dir, ["--execute"]));
       expect(r.exitCode, r.all).toBe(1);
       expect(r.stdout).toContain("changed-concurrently=1");
       expect(has(dir, "zarr-verified.json")).toBe(false);
-      expect(text(A)).toBe(prettyDirty);
+      expect(text(standin, A)).toBe(prettyDirty);
     },
-    SLOW,
+    BATCH_SLOW,
   );
 
   test(
     "a store that is dirty again when read back is not clean, and nothing is proven",
     async () => {
-      const { dir } = await seeded();
+      const { dir, standin } = await seeded();
       // Reads, in order with one worker: A, then A again after its write. Just before that second
       // read, a writer puts a dirty version back.
       // The stand-in counts every GET since it started (the plan's too), so the hook is armed
@@ -408,7 +456,7 @@ describe("zarr: --execute", () => {
       expect(r.exitCode, r.all).toBe(1);
       expect(r.stdout).toContain("verify-failed=1");
       expect(has(dir, "zarr-verified.json")).toBe(false);
-      expect(text(A)).toBe(prettyDirty);
+      expect(text(standin, A)).toBe(prettyDirty);
       expect(readJson<ZarrPlanFile>(dir, "zarr-plan.json").outcomes).toEqual({
         "verify-failed": 1,
         scrubbed: 2,
@@ -418,10 +466,10 @@ describe("zarr: --execute", () => {
     SLOW,
   );
 
-  test(
+  test.concurrent(
     "a store that cannot be read or cleaned is counted, the plan is incomplete, and nothing is proven",
     async () => {
-      const { dir } = await seeded();
+      const { dir, standin } = await seeded();
       const D = storeKey("d-malformed");
       const E = storeKey("e-not-utf8");
       const F = storeKey("f-too-large");
@@ -458,28 +506,28 @@ describe("zarr: --execute", () => {
         expect(r.all).not.toContain("P0044");
       }
       // The ones it could not clean are exactly as they were; the one it could was cleaned.
-      for (const k of [D, E, F, G, V2]) expect(versionsOf(k).length, k).toBe(1);
-      expect(text(G)).toBe(outside);
-      expect(text(A)).toBe(prettyCleaned);
+      for (const k of [D, E, F, G, V2]) expect(versionsOf(standin, k).length, k).toBe(1);
+      expect(text(standin, G)).toBe(outside);
+      expect(text(standin, A)).toBe(prettyCleaned);
       const plan = readJson<ZarrPlanFile>(dir, "zarr-plan.json");
       expect(plan.totals.unreadable).toBe(6);
       expect(plan.totals.failed).toBe(0);
     },
-    SLOW,
+    BATCH_SLOW,
   );
 
-  test(
+  test.concurrent(
     "a store that cannot be read at all is a failure, not a clean store",
     async () => {
-      const { dir } = await seeded();
+      const { dir, standin } = await seeded();
       standin.inject("GetObject", { code: "InternalError", status: 500, key: B });
       const r = await runScrub(standin, zarrArgs(dir, ["--execute"]));
       expect(r.exitCode, r.all).toBe(1);
       expect(r.stdout).toContain("GetObject:failed=1");
       expect(has(dir, "zarr-verified.json")).toBe(false);
-      expect(versionsOf(B).length).toBe(1);
+      expect(versionsOf(standin, B).length).toBe(1);
     },
-    SLOW,
+    BATCH_SLOW,
   );
 });
 
@@ -487,7 +535,7 @@ describe("zarr: the EDF identification fields the converter mirrors", () => {
   test(
     "a store whose only identifier is a mirrored field the scanner does not know is not clean",
     async () => {
-      const { dir } = await seeded();
+      const { dir, standin } = await seeded();
       // Reviewer probe T6: a technician's name and free text from the patient field, and nothing
       // the scanner calls an identifier. Before the mirror list this store was "clean".
       const T = storeKey("t-technician");
@@ -512,9 +560,11 @@ describe("zarr: the EDF identification fields the converter mirrors", () => {
 
       const r = await runScrub(standin, zarrArgs(dir, ["--execute"]));
       expect(r.exitCode, r.all).toBe(0);
-      expect(JSON.parse(text(T))).toEqual(wrap({ recording_metadata: { startdate: "02.02.20" } }));
+      expect(JSON.parse(text(standin, T))).toEqual(
+        wrap({ recording_metadata: { startdate: "02.02.20" } }),
+      );
       for (const v of ["Wilhelmina", "Fairweather", "Hieronymus", "A-7731", "Bellweather"]) {
-        expect(text(T), v).not.toContain(v);
+        expect(text(standin, T), v).not.toContain(v);
       }
       expect(readJson<ZarrVerifiedFile>(dir, "zarr-verified.json").counts.rewritten).toBe(4);
       expectNoValue(r.all, dir);
@@ -532,56 +582,68 @@ describe("zarr-public: the check from outside after publication", () => {
    * The zarr stage has run (its proof names A, B, C), the dataset's index names A, B, C, and a
    * public reader serves the stand-in's current objects.
    */
-  async function published(): Promise<Seeded> {
-    const s = await seeded();
-    const scrub = await runScrub(standin, zarrArgs(s.dir, ["--execute"]));
+  let publishedSnap: Snapshot;
+  let publishedDir: string;
+  beforeAll(async () => {
+    // The zarr stage runs for real, once, and every test below starts from what it left: the
+    // stand-in's contents and the working directory with its proof. None of them changes the
+    // proof, and each gets a stand-in and a copy of its own.
+    const built = await seeded();
+    const scrub = await runScrub(built.standin, zarrArgs(built.dir, ["--execute"]));
     expect(scrub.exitCode, scrub.all).toBe(0);
-    standin.putObject(BUCKET, `${DATASET}/zarr/index.json`, index([A, B, C].map(rel)));
-    pub = startPublicEndpoint();
+    built.standin.putObject(BUCKET, `${DATASET}/zarr/index.json`, index([A, B, C].map(rel)));
+    publishedSnap = built.standin.snapshot();
+    publishedDir = built.dir;
+  }, SLOW);
+
+  async function published(): Promise<{ dir: string; standin: S3Standin; pub: PublicEndpoint }> {
+    const standin = open();
+    standin.restore(publishedSnap);
+    const pub = openPublic();
     pub.serve = (key) => standin.current(BUCKET, key)?.data;
-    return s;
+    return { dir: copyDir(publishedDir), standin, pub };
   }
-  const publicArgs = (dir: string) => [
+  const publicArgs = (dir: string, pub: PublicEndpoint) => [
     "zarr-public",
     "--dataset",
     DATASET,
     "--zarr-verified",
     path.join(dir, "zarr-verified.json"),
     "--public-base",
-    pub?.url ?? "",
+    pub.url,
   ];
 
-  test(
+  test.concurrent(
     "asks the zarr stage's own question of every store, anonymously",
     async () => {
-      const { dir } = await published();
-      const after = await runScrub(standin, publicArgs(dir));
+      const { dir, standin, pub } = await published();
+      const after = await runScrub(standin, publicArgs(dir, pub));
       expect(after.exitCode, after.all).toBe(0);
       expect(after.stdout).toContain("stores=3 clean=3 identifier=0 unknownMembers=0 unreadable=0");
       // Anonymous GETs only: the index, then each store root.
-      for (const req of pub?.requests ?? []) {
+      for (const req of pub.requests) {
         expect(req.method).toBe("GET");
         expect(req.headers.authorization).toBeUndefined();
       }
-      expect((pub?.requests ?? []).map((q) => q.path).sort()).toEqual(
+      expect(pub.requests.map((q) => q.path).sort()).toEqual(
         [`/${DATASET}/zarr/index.json`, ...[A, B, C].map((k) => `/${k}`)].sort(),
       );
 
       // Dirty again after publication: found from outside.
       standin.putObject(BUCKET, A, enc(prettyDirty));
       standin.putObject(BUCKET, B, enc(compactDirty));
-      const before = await runScrub(standin, publicArgs(dir));
+      const before = await runScrub(standin, publicArgs(dir, pub));
       expect(before.exitCode, before.all).toBe(1);
       expect(before.stdout).toContain("stores=3 clean=1 identifier=2 unknownMembers=0");
       expectNoValue(before.all, dir);
     },
-    SLOW,
+    BATCH_SLOW,
   );
 
-  test(
+  test.concurrent(
     "a mirrored field the scanner does not know, and a member no list names, fail it too",
     async () => {
-      const { dir } = await published();
+      const { dir, standin, pub } = await published();
       standin.putObject(
         BUCKET,
         A,
@@ -592,110 +654,111 @@ describe("zarr-public: the check from outside after publication", () => {
         B,
         enc(JSON.stringify(wrap({ recording_metadata: { subject_note: "Hieronymus" } }))),
       );
-      const r = await runScrub(standin, publicArgs(dir));
+      const r = await runScrub(standin, publicArgs(dir, pub));
       expect(r.exitCode, r.all).toBe(1);
       expect(r.stdout).toContain("stores=3 clean=1 identifier=1 unknownMembers=1 unreadable=0");
       expect(r.all).not.toContain("Wilhelmina");
       expect(r.all).not.toContain("Hieronymus");
     },
-    SLOW,
+    BATCH_SLOW,
   );
 
-  test(
+  test.concurrent(
     "the stores checked are the UNION of the index and the proof; a proved store the index lacks is refused (C2)",
     async () => {
-      const { dir } = await published();
+      const { dir, standin, pub } = await published();
       // An index that forgot C: the proof says C exists.
       standin.putObject(BUCKET, `${DATASET}/zarr/index.json`, index([A, B].map(rel)));
-      const r = await runScrub(standin, publicArgs(dir));
+      const r = await runScrub(standin, publicArgs(dir, pub));
       expectStopped(r, 3, "store-not-in-index");
       expect(r.stdout).toContain("1 store(s) the zarr stage proved are not in index.json");
       // An index of nothing at all, beside a proof of three stores.
       standin.putObject(BUCKET, `${DATASET}/zarr/index.json`, enc('{"stores": []}'));
-      expectStopped(await runScrub(standin, publicArgs(dir)), 3, "store-not-in-index");
+      expectStopped(await runScrub(standin, publicArgs(dir, pub)), 3, "store-not-in-index");
       // A store the index names that the proof does not: checked too, and found dirty.
       const D = storeKey("d-late");
       standin.putObject(BUCKET, D, enc(compactDirty));
       standin.putObject(BUCKET, `${DATASET}/zarr/index.json`, index([A, B, C, D].map(rel)));
-      const late = await runScrub(standin, publicArgs(dir));
+      const late = await runScrub(standin, publicArgs(dir, pub));
       expect(late.exitCode, late.all).toBe(1);
       expect(late.stdout).toContain("stores=4 clean=3 identifier=1");
     },
-    SLOW,
+    BATCH_SLOW,
   );
 
-  test(
+  test.concurrent(
     "no store at all passes only when the zarr stage recorded no-zarr (C2)",
     async () => {
-      standin = startS3Standin();
-      const d = fixtureD();
-      seedObject(standin, d);
-      seedManifest(standin, "v1.0.0", [d]);
-      const dir = tempDir("zarr-public-none");
-      expect((await runScrub(standin, planArgs(dir))).exitCode).toBe(0);
+      const { dir, standin } = withPlan();
       expect((await runScrub(standin, zarrArgs(dir, ["--execute"]))).exitCode).toBe(0);
       expect(readJson<ZarrVerifiedFile>(dir, "zarr-verified.json").found).toBe("no-zarr");
-      pub = startPublicEndpoint();
+      const pub = openPublic();
       pub.serve = (key) => standin.current(BUCKET, key)?.data;
       // No index (403) and no store: the proof says there is none, so that is the answer.
-      const none = await runScrub(standin, publicArgs(dir));
+      const none = await runScrub(standin, publicArgs(dir, pub));
       expect(none.exitCode, none.all).toBe(0);
       expect(none.stdout).toContain("no Zarr copy");
       // A proof that says stores but names none is not a proof the contract accepts.
       const proof = readJson<ZarrVerifiedFile>(dir, "zarr-verified.json");
       writeJson(dir, "zarr-verified.json", { ...proof, found: "stores" });
-      expectStopped(await runScrub(standin, publicArgs(dir)), 3, "zarr-verified.json-invalid");
+      expectStopped(await runScrub(standin, publicArgs(dir, pub)), 3, "zarr-verified.json-invalid");
       // Another dataset's proof.
       writeJson(dir, "zarr-verified.json", { ...proof, dataset: "xx090412" });
-      expectStopped(await runScrub(standin, publicArgs(dir)), 3, "zarr-verified-wrong-dataset");
+      expectStopped(
+        await runScrub(standin, publicArgs(dir, pub)),
+        3,
+        "zarr-verified-wrong-dataset",
+      );
       rmSync(path.join(dir, "zarr-verified.json"));
-      expectStopped(await runScrub(standin, publicArgs(dir)), 3, "zarr-verified.json-missing");
+      expectStopped(await runScrub(standin, publicArgs(dir, pub)), 3, "zarr-verified.json-missing");
     },
-    SLOW,
+    BATCH_SLOW,
   );
 
-  test(
+  test.concurrent(
     "the public base must be the bucket's https S3 endpoint outside a test, before any request",
     async () => {
-      const { dir } = await published();
+      const { dir, standin, pub } = await published();
       const outside = { [TEST_LOOPBACK_PUBLIC_BASE_ENV]: "" };
       // Only hosts no request can reach: a regression here must not send one to the real bucket.
-      for (const base of [pub?.url ?? "", "https://evil.example"]) {
-        const args = publicArgs(dir);
-        args[args.length - 1] = base;
-        const r = await runScrub(standin, args, outside, { anyPublicBase: true });
-        expectUsage(r, "bad-public-base", base);
-      }
-      expect(pub?.requests.length).toBe(0);
+      await settleAll(
+        [pub.url, "https://evil.example"].map(async (base) => {
+          const args = publicArgs(dir, pub);
+          args[args.length - 1] = base;
+          const r = await runScrub(standin, args, outside, { anyPublicBase: true });
+          expectUsage(r, "bad-public-base", base);
+        }),
+      );
+      expect(pub.requests.length).toBe(0);
     },
-    SLOW,
+    BATCH_SLOW,
   );
 
-  test(
+  test.concurrent(
     "a store or an index it cannot read proves nothing",
     async () => {
-      const { dir } = await published();
+      const { dir, standin, pub } = await published();
       // C is named by the index and not served: 403, as for a missing key.
       standin.putDeleteMarker(BUCKET, C);
-      const r = await runScrub(standin, publicArgs(dir));
+      const r = await runScrub(standin, publicArgs(dir, pub));
       expect(r.exitCode, r.all).toBe(4);
       expect(r.stdout).toContain("http-403=1");
 
       standin.putDeleteMarker(BUCKET, `${DATASET}/zarr/index.json`);
-      expectStopped(await runScrub(standin, publicArgs(dir)), 4, "index-unreadable");
+      expectStopped(await runScrub(standin, publicArgs(dir, pub)), 4, "index-unreadable");
 
       standin.putObject(BUCKET, `${DATASET}/zarr/index.json`, index(["../../objects/x.zarr"]));
-      expectStopped(await runScrub(standin, publicArgs(dir)), 4, "index-malformed");
+      expectStopped(await runScrub(standin, publicArgs(dir, pub)), 4, "index-malformed");
     },
-    SLOW,
+    BATCH_SLOW,
   );
 });
 
 describe("zarr: a proof is never vacuous", () => {
-  test(
+  test.concurrent(
     "objects under the prefix and no store root: unreadable, and no proof is written",
     async () => {
-      const { dir, others } = await seeded();
+      const { dir, others, standin } = await seeded();
       // Reviewer probe T7: only a dirty zarr.json under a directory without the .zarr suffix, and
       // an index. Before, that was "every one of 0 store roots is clean" and a proof.
       for (const k of [A, B, C]) standin.putDeleteMarker(BUCKET, k);
@@ -709,7 +772,7 @@ describe("zarr: a proof is never vacuous", () => {
         expect(r.stdout).toContain("zarr-json-outside-store=1");
         expect(has(dir, "zarr-verified.json")).toBe(false);
       }
-      expect(text(stray)).toBe(prettyDirty);
+      expect(text(standin, stray)).toBe(prettyDirty);
 
       // Nothing but the index: no zarr.json anywhere, and still not a prefix with nothing in it.
       standin.putDeleteMarker(BUCKET, stray);
@@ -721,13 +784,13 @@ describe("zarr: a proof is never vacuous", () => {
       expect(r.stdout).toContain("not clean, by reason: no-store-root=1");
       expect(has(dir, "zarr-verified.json")).toBe(false);
     },
-    SLOW,
+    BATCH_SLOW,
   );
 
-  test(
+  test.concurrent(
     "a zarr.json outside any store, or a store with no root, fails a run that has good stores",
     async () => {
-      const { dir } = await seeded();
+      const { dir, standin } = await seeded();
       standin.putObject(BUCKET, `${DATASET}/zarr/zarr.json`, enc(compactDirty));
       let r = await runScrub(standin, zarrArgs(dir, ["--execute"]));
       expect(r.exitCode, r.all).toBe(4);
@@ -742,23 +805,23 @@ describe("zarr: a proof is never vacuous", () => {
       expect(r.stdout).toContain("store-root-missing=1");
       expect(has(dir, "zarr-verified.json")).toBe(false);
     },
-    SLOW,
+    BATCH_SLOW,
   );
 
-  test(
+  test.concurrent(
     "a store root that starts with a byte order mark is refused, not rewritten without it",
     async () => {
-      const { dir } = await seeded();
+      const { dir, standin } = await seeded();
       const bom = new Uint8Array([0xef, 0xbb, 0xbf, ...enc(compactDirty)]);
       standin.putObject(BUCKET, B, bom);
       const r = await runScrub(standin, zarrArgs(dir, ["--execute"]));
       expect(r.exitCode, r.all).toBe(4);
       expect(r.stdout).toContain("zarr-json-bom=1");
-      expect(versionsOf(B).length).toBe(2);
+      expect(versionsOf(standin, B).length).toBe(2);
       expect(Buffer.compare(standin.current(BUCKET, B)?.data as Uint8Array, bom)).toBe(0);
       expect(has(dir, "zarr-verified.json")).toBe(false);
     },
-    SLOW,
+    BATCH_SLOW,
   );
 });
 
@@ -766,7 +829,7 @@ describe("zarr: preconditions", () => {
   test(
     "needs a plan to name the dataset and the bucket",
     async () => {
-      standin = startS3Standin();
+      const standin = open();
       const empty = tempDir("zarr-empty");
       expectStopped(await runScrub(standin, zarrArgs(empty)), 3, "plan.json-missing");
 
@@ -793,7 +856,7 @@ describe("zarr: preconditions", () => {
   test(
     "refuses a plan with a key nobody read, before any S3 call",
     async () => {
-      const { dir } = await seeded();
+      const { dir, standin } = await seeded();
       addUnreadableKey(dir);
       for (const flag of [[], ["--execute"]]) {
         expectStopped(await runScrub(standin, zarrArgs(dir, flag)), 3, "plan-has-unreadable");
@@ -807,12 +870,7 @@ describe("zarr: preconditions", () => {
   test(
     "a dataset with no Zarr copy is recorded as no-zarr, and the plan it made is the one named",
     async () => {
-      standin = startS3Standin();
-      const d = fixtureD();
-      seedObject(standin, d);
-      seedManifest(standin, "v1.0.0", [d]);
-      const dir = tempDir("zarr-none");
-      expect((await runScrub(standin, planArgs(dir))).exitCode).toBe(0);
+      const { dir, standin } = withPlan();
       const r = await runScrub(standin, zarrArgs(dir, ["--execute"]));
       expect(r.exitCode, r.all).toBe(0);
       const proof = readJson<ZarrVerifiedFile>(dir, "zarr-verified.json");
@@ -873,17 +931,12 @@ describe("zarr: what a store may keep (I10, T8)", () => {
     "startdate",
   ];
 
-  async function withStores(docs: Record<string, string>): Promise<string> {
-    standin = startS3Standin();
-    const d = fixtureD();
-    seedObject(standin, d);
-    seedManifest(standin, "v1.0.0", [d]);
-    const dir = tempDir("zarr-members");
-    expect((await runScrub(standin, planArgs(dir))).exitCode).toBe(0);
+  function withStores(docs: Record<string, string>): { standin: S3Standin; dir: string } {
+    const { standin, dir } = withPlan();
     for (const [k, v] of Object.entries(docs)) {
       standin.putObject(BUCKET, k, enc(v), { contentType: "application/json" });
     }
-    return dir;
+    return { standin, dir };
   }
 
   test(
@@ -892,14 +945,19 @@ describe("zarr: what a store may keep (I10, T8)", () => {
       const keys = Array.from({ length: 88 }, (_, i) =>
         storeKey(`sub-${String(i).padStart(3, "0")}_eeg`),
       );
-      const dir = await withStores(Object.fromEntries(keys.map((k, i) => [k, nm000186Root(i)])));
+      const { dir, standin } = withStores(
+        Object.fromEntries(keys.map((k, i) => [k, nm000186Root(i)])),
+      );
       const r = await runScrub(standin, zarrArgs(dir, ["--execute", "--concurrency", "8"]));
       expect(r.exitCode, r.all).toBe(0);
       expect(r.stdout).toContain("stores=88 docs=88 clean=0 scrubbed=88");
       const plan = readJson<ZarrPlanFile>(dir, "zarr-plan.json");
       expect(plan.removedMembers).toBe(88 * 4);
       for (const k of keys) {
-        const meta = JSON.parse(text(k)).attributes.recording_metadata as Record<string, unknown>;
+        const meta = JSON.parse(text(standin, k)).attributes.recording_metadata as Record<
+          string,
+          unknown
+        >;
         expect(Object.keys(meta).sort(), k).toEqual(KEPT_186);
       }
       // Proven by re-reading every one of the 88.
@@ -910,7 +968,7 @@ describe("zarr: what a store may keep (I10, T8)", () => {
     SLOW,
   );
 
-  test(
+  test.concurrent(
     "stores shaped like nm000348's hold nothing to remove, and that is a clean proof, not a failure",
     async () => {
       const keys = [storeKey("x-1"), storeKey("x-2")];
@@ -924,7 +982,7 @@ describe("zarr: what a store may keep (I10, T8)", () => {
           },
         }),
       );
-      const dir = await withStores(Object.fromEntries(keys.map((k) => [k, doc])));
+      const { dir, standin } = withStores(Object.fromEntries(keys.map((k) => [k, doc])));
       const r = await runScrub(standin, zarrArgs(dir, ["--execute"]));
       expect(r.exitCode, r.all).toBe(0);
       expect(standin.calls("PutObject").length).toBe(0);
@@ -932,10 +990,10 @@ describe("zarr: what a store may keep (I10, T8)", () => {
       expect(proof.found).toBe("stores");
       expect(proof.counts).toEqual({ stores: 2, docs: 2, rewritten: 0, untouched: 2 });
     },
-    SLOW,
+    BATCH_SLOW,
   );
 
-  test(
+  test.concurrent(
     "a member no list names refuses the run, its name (never its value) goes to a private file, and --allow-member accepts it",
     async () => {
       const K = storeKey("k-unknown");
@@ -948,7 +1006,7 @@ describe("zarr: what a store may keep (I10, T8)", () => {
           },
         }),
       );
-      const dir = await withStores({ [K]: doc });
+      const { dir, standin } = withStores({ [K]: doc });
       for (const flag of [[], ["--execute"]]) {
         const r = await runScrub(standin, zarrArgs(dir, flag));
         expectStopped(r, 3, "unknown-recording-member");
@@ -961,7 +1019,7 @@ describe("zarr: what a store may keep (I10, T8)", () => {
         expectNoValue(r.all, dir);
       }
       // Nothing was written to a store it refused.
-      expect(versionsOf(K).length).toBe(1);
+      expect(versionsOf(standin, K).length).toBe(1);
 
       const ok = await runScrub(
         standin,
@@ -972,12 +1030,12 @@ describe("zarr: what a store may keep (I10, T8)", () => {
       const proof = readJson<ZarrVerifiedFile>(dir, "zarr-verified.json");
       expect(proof.allowedMembers).toEqual(["subjectnote"]);
       // The accepted member stays; the identifier does not.
-      expect(JSON.parse(text(K)).attributes.recording_metadata).toEqual({
+      expect(JSON.parse(text(standin, K)).attributes.recording_metadata).toEqual({
         startdate: "02.02.20",
         subject_note: "Marigold Thistlewood",
       });
     },
-    SLOW,
+    BATCH_SLOW,
   );
 
   test(
@@ -988,7 +1046,7 @@ describe("zarr: what a store may keep (I10, T8)", () => {
         docs[storeKey(name)] = compactDirty;
         docs[`${ROOT}/${name}.zarr/data/zarr.json`] = nestedDirty;
       }
-      const dir = await withStores(docs);
+      const { dir, standin } = withStores(docs);
       standin.log.length = 0;
       const r = await runScrub(standin, zarrArgs(dir, ["--execute", "--max-zarr-json", "3"]));
       expectStopped(r, 3, "too-many-zarr-json");
@@ -999,15 +1057,10 @@ describe("zarr: what a store may keep (I10, T8)", () => {
     SLOW,
   );
 
-  test(
+  test.concurrent(
     "a rewrite keeps the object's SSE-KMS settings (T8)",
     async () => {
-      standin = startS3Standin();
-      const d = fixtureD();
-      seedObject(standin, d);
-      seedManifest(standin, "v1.0.0", [d]);
-      const dir = tempDir("zarr-kms");
-      expect((await runScrub(standin, planArgs(dir))).exitCode).toBe(0);
+      const { dir, standin } = withPlan();
       const kms = "arn:aws:kms:us-east-2:000000000000:key/test-key";
       standin.putObject(BUCKET, B, enc(compactDirty), {
         contentType: "application/json",
@@ -1019,15 +1072,15 @@ describe("zarr: what a store may keep (I10, T8)", () => {
       const now = standin.current(BUCKET, B);
       expect(now?.sse).toBe("aws:kms");
       expect(now?.kmsKeyId).toBe(kms);
-      expect(text(B)).toBe(compactCleaned);
+      expect(text(standin, B)).toBe(compactCleaned);
     },
-    SLOW,
+    BATCH_SLOW,
   );
 
-  test(
+  test.concurrent(
     "a store that vanishes between the listing and its read is not counted clean (T8)",
     async () => {
-      const { dir } = await seeded();
+      const { dir, standin } = await seeded();
       // Just before the stage's first HEAD of a store root, C goes away.
       standin.beforeOp(
         "HeadObject",
@@ -1042,6 +1095,6 @@ describe("zarr: what a store may keep (I10, T8)", () => {
       expect(has(dir, "zarr-verified.json")).toBe(false);
       expect(readJson<ZarrPlanFile>(dir, "zarr-plan.json").totals.clean).toBe(0);
     },
-    SLOW,
+    BATCH_SLOW,
   );
 });

@@ -76,3 +76,22 @@ export function inactiveAccountBody(status: string): {
           : "Your account is not active",
   };
 }
+
+/**
+ * The three tiers ADR 0040 names, in the words the copy uses (`tier.unverified`, `tier.base`,
+ * `tier.upload` in `shared/contract/account-copy.ts`) and the website derives (`deriveAccountTier`):
+ * `pending` is unverified; an active account is at the upload tier when an admin granted upload
+ * access (`users.service_access`, which approval alone writes) and at the base tier otherwise.
+ */
+export type AccountTier = "unverified" | "base" | "upload";
+
+/**
+ * Which tier an account holds, or null for one that holds none (`revoked`, or a status this module
+ * does not know). Keyed on the status and the grant together, as the website's derivation is, so an
+ * account that is no longer active never reads as `upload` whatever its grant says.
+ */
+export function accountTier(status: string, serviceAccess: boolean): AccountTier | null {
+  if (status === "pending") return "unverified";
+  if (!isActiveAccountStatus(status)) return null;
+  return serviceAccess ? "upload" : "base";
+}

@@ -4,7 +4,6 @@ description: "git annex find takes --include '*' not --all; bulk registration is
 metadata: 
   node_type: memory
   type: project
-  originSessionId: 869097f1-58ff-4901-90ec-79b7838f21cb
   modified: 2026-09-15T16:42:36.363Z
 ---
 

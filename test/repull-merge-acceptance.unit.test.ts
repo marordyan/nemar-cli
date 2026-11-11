@@ -10,6 +10,7 @@ import {
   type TreeEntry,
   acceptedMergesOf,
   changesBesideLedger,
+  classifyMergeParents,
   isEnrichmentPath,
   ledgerChange,
   ledgerTimeOf,
@@ -216,5 +217,54 @@ describe("mergeAcceptanceLine: the line, a function of the stored acceptance", (
       expect(() => mergeAcceptanceLine({ ...facts, ...over })).toThrow();
     }
     expect(() => ledgerTimeOf("2026-10-29T12:00:00Z")).toThrow();
+  });
+});
+
+describe("classifyMergeParents: the shapes of merge commit the acceptance takes", () => {
+  const BASE = "1".repeat(40);
+  const HEAD = "2".repeat(40);
+  const OTHER = "3".repeat(40);
+  const short = MERGE.slice(0, 12);
+
+  test("one parent is a squash, whatever it is: the caller compares it with the base", () => {
+    expect(classifyMergeParents([BASE], HEAD, short)).toEqual({
+      ok: true,
+      shape: "squash",
+      first: BASE,
+    });
+  });
+
+  test("two parents with the merged head second are GitHub's plain merge, the first parent being the base side", () => {
+    expect(classifyMergeParents([BASE, HEAD], HEAD, short)).toEqual({
+      ok: true,
+      shape: "merge-commit",
+      first: BASE,
+    });
+  });
+
+  test("two parents whose second is not the merged head are refused, and so is the head first", () => {
+    for (const parents of [
+      [BASE, OTHER],
+      [HEAD, BASE],
+      [BASE, BASE],
+    ]) {
+      const verdict = classifyMergeParents(parents, HEAD, short);
+      expect(verdict.ok).toBe(false);
+      if (!verdict.ok) {
+        expect(verdict.code).toBe("merge-second-parent-foreign");
+        expect(verdict.message).toContain(short);
+      }
+    }
+  });
+
+  test("no parent, or three or more, is merge-not-squash, even with the merged head among them", () => {
+    for (const parents of [[], [BASE, HEAD, OTHER], [HEAD, BASE, OTHER], [BASE, OTHER, HEAD]]) {
+      const verdict = classifyMergeParents(parents, HEAD, short);
+      expect(verdict.ok).toBe(false);
+      if (!verdict.ok) {
+        expect(verdict.code).toBe("merge-not-squash");
+        expect(verdict.message).toContain(`${parents.length} parents`);
+      }
+    }
   });
 });

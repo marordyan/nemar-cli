@@ -9,7 +9,8 @@
  * that wording lives.
  *
  * Headless-first: the printed URL is the mechanism, a browser is only a
- * convenience. No display detection -- see AGENTS.md "CLI sign-in".
+ * convenience. No display detection -- see ADR 0047 and the authentication
+ * page, https://docs.nemar.org/cli/getting-started/authentication/.
  */
 
 import { hostname } from "node:os";

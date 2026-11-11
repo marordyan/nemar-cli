@@ -4,7 +4,6 @@ description: "EnterPlanMode is session-wide; a subagent mid-implementation stops
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 0f33834a-28ae-4fc8-b46d-31227beabe37
   modified: 2026-09-07T13:01:13.853Z
 ---
 

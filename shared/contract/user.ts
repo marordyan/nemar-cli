@@ -496,6 +496,7 @@ export const profileEditErrorCodeSchema = z.enum([
   "username_too_short",
   "username_too_long",
   "username_charset",
+  "username_reserved",
   "given_name_required",
   "family_name_required",
   // PATCH /auth/profile, decided against the account rather than the value

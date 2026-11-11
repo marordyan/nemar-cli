@@ -271,7 +271,7 @@ async function finalize(orcid: string, body: Record<string, unknown> = {}): Prom
     ENCRYPTION_KEY,
   );
   return app.request(
-    "/auth/orcid/finalize",
+    "https://app.nemar.org/auth/orcid/finalize",
     {
       method: "POST",
       headers: {
@@ -454,10 +454,10 @@ describe("finalize maps a lost race to its typed refusal", () => {
 
 function callback(cookie: string, mode: "login" | "link" | "relink"): Promise<Response> {
   return app.request(
-    `/auth/orcid/callback?code=authcode&state=${CSRF}`,
+    `https://app.nemar.org/auth/orcid/callback?code=authcode&state=${CSRF}`,
     {
       headers: {
-        Cookie: `nemar_oauth_state=${encodeState({ csrf: CSRF, mode, next: "/settings" })}; ${cookie}`,
+        Cookie: `__Host-nemar_oauth_state=${encodeState({ csrf: CSRF, mode, next: "/settings" })}; ${cookie}`,
       },
     },
     env(),

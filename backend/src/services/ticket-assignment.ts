@@ -259,6 +259,13 @@ export interface MailReleaseStatement {
  * (which both the owner-only soft delete and the scheduled sweep run, so it counts once). A
  * fourth path that removes an admin needs these statements too.
  *
+ * The compute counterpart, `computeReleaseStatements` (`services/compute-release.ts`, epic #2005
+ * phase A8), has TWO callers, not three: `finalizeRevocation` and `tombstoneUserCascade`. A role
+ * demotion is deliberately not one of them: compute is not an admin's standing, so a demoted person
+ * keeps their jobs and their pools, while the tickets, the away window and the queue references above
+ * exist only for admins. A new path that ends a WHOLE ACCOUNT needs both sets; one that only removes
+ * an admin needs this set alone.
+ *
  * The person's `mail_ticket_reads` markers (migration 0110) go with the rest under `scope: "all"`;
  * every caller named above gets them through this function, so none needs its own line.
  *

@@ -48,6 +48,43 @@ const EXPECTED_ENTRIES: Record<string, number> = {
   "POST /mail/reprocess": 1,
   "PUT /mail/tickets/:id/summary": 1,
 
+  // Epic #2005 phase A2 (ADR 0118): the compute policy and the allocation pools. The owner-only
+  // ones are two handlers (the owner check, then the handler); an admin's are one.
+  "GET /compute/policy": 2,
+  "PUT /compute/policy": 2,
+  "GET /compute/pools": 1,
+  "GET /compute/pools/by-id/:accountId": 1,
+  "POST /compute/pools/by-id/:accountId/grant": 1,
+  "POST /compute/pools/by-id/:accountId/adjust": 1,
+  "POST /compute/pools/platform/:key/grant": 2,
+  "POST /compute/pools/platform/:key/adjust": 2,
+  // Epic #2005 phase A4 (ADR 0118): the status of the switches, Tapis and the storage. One handler:
+  // the router's admin middleware is the whole gate.
+  "GET /compute/status": 1,
+  // Epic #2005 phase A5 (ADR 0118): an administrator cancels a job, or takes it one step on (the way a
+  // job advances in development, where no compute cron runs). One handler each: the router's admin
+  // middleware is the whole gate.
+  "POST /compute/jobs/:id/cancel": 1,
+  "POST /compute/jobs/:id/advance": 1,
+  // Epic #2005 phase A6 (ADR 0118): NEMAR's own pipelines. Admin-only through the router's middleware;
+  // one handler each.
+  // Epic #2005 phase A7 (ADR 0118): reporting, legal holds, the observer's token and the ACCESS report
+  // re-queue. Admin-only through the router's middleware; the owner-only ones are two handlers (the
+  // owner check, then the handler), an admin's are one.
+  "GET /compute/jobs": 1,
+  "GET /compute/records/:ref": 1,
+  "POST /compute/records/:ref/read": 2,
+  "GET /compute/report": 1,
+  "GET /compute/access-report": 1,
+  "GET /compute/holds": 1,
+  "POST /compute/holds": 2,
+  "DELETE /compute/holds/:id": 2,
+  "GET /compute/access-reports": 1,
+  "POST /compute/access-reports/:jobId/requeue": 2,
+  "POST /compute/observer-runs": 1,
+  "POST /compute/pipeline/run": 1,
+  "GET /compute/pipeline/status": 1,
+
   // Users / accounts
   "GET /users": 1,
   "GET /users/:username": 1,
@@ -93,6 +130,9 @@ const EXPECTED_ENTRIES: Record<string, number> = {
   // permission check lives in parseAdminUserEdit and not in a middleware.
   "GET /users/by-id/:id": 1,
   "PATCH /users/by-id/:id": 1,
+  // ADR 0119 (epic #2014 phase #2015): resolve an OpenID Connect subject to its account.
+  // ownerMiddleware plus the handler; the subject is in no other admin response.
+  "GET /users/by-oidc-subject/:sub": 2,
 
   // DOI / enrichment
   "POST /datasets/:id/doi/concept": 2,
@@ -255,6 +295,26 @@ const EXPECTED_ENTRIES: Record<string, number> = {
   "GET /pr-review-authors/:login": 1,
   "PUT /pr-review-authors/:login": 2,
   "DELETE /pr-review-authors/:login": 1,
+
+  // The OpenID Connect provider's client registry and signing keys (epic #2014 phase #2016, ADR
+  // 0119): one `use` for the whole prefix carries three handlers (the owner check, the surface
+  // check that makes every route 404 off the issuer's host, and the no-store header), so a route
+  // added under /oidc/ inherits all three, and each route is its handler alone. A body is read and
+  // checked inside the handler (a contract shape, unknown fields refused by name), not by a validator.
+  "ALL /oidc/*": 3,
+  "POST /oidc/clients": 1,
+  "GET /oidc/clients": 1,
+  "GET /oidc/clients/:client_id": 1,
+  "POST /oidc/clients/:client_id/rotate-secret": 1,
+  "POST /oidc/clients/:client_id/disable": 1,
+  "GET /oidc/keys": 1,
+  "POST /oidc/keys/rotate": 1,
+  "POST /oidc/keys/:kid/revoke": 1,
+  // Phase #2019: the owner's command for the manual merge and the incident tool. A route added under
+  // /oidc/ inherits the three above and is its handler alone.
+  "POST /oidc/accounts/:id/end": 1,
+  // The owner's read view of the back-channel logouts owed to clients.
+  "GET /oidc/logout-deliveries": 1,
 };
 
 describe("admin route inventory", () => {
@@ -309,7 +369,7 @@ describe("admin route inventory", () => {
   });
 
   test("entry total is pinned", () => {
-    expect(adminRoutes.routes.length).toBe(200);
+    expect(adminRoutes.routes.length).toBe(247);
   });
 
   // The count pin above can't see a SWAP of the router-level middleware

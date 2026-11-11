@@ -1,6 +1,7 @@
 /**
- * An administrator's acceptance of a re-pull's squash merge made without its trailers (epic #1046;
- * ADR 0111, the amendment of 2026-10-29; issue #1996), and the one ledger line NEMAR writes for it.
+ * An administrator's acceptance of a re-pull's merge made without its trailers, a squash or a plain
+ * merge commit of its pull request (epic #1046; ADR 0111, the amendments of 2026-10-29 and
+ * 2026-11-09; issue #1996), and the one ledger line NEMAR writes for it.
  *
  *   POST /admin/repulls/:id/merge-trailers/accept   { pr, merge_sha, reason? }
  *
@@ -21,8 +22,11 @@
  *     merged, with GitHub's merge commit the record's (`merge-mismatch`), at the recorded head or
  *     one GitHub's comparison shows moved from it only on paths enrichment writes
  *     (`merge-head-foreign`).
- *  3. The merge commit, read on GitHub: one parent (`merge-not-squash`), which is the record's base
- *     or a descendant of it moved only on paths enrichment writes (`merge-parent-foreign`).
+ *  3. The merge commit, read on GitHub: one parent, or two with the merged head second
+ *     (`merge-not-squash`, `merge-second-parent-foreign`; ADR 0111, the amendment of 2026-11-09,
+ *     which takes GitHub's plain merge of the pull request as well as a squash), the first or only
+ *     parent being the record's base or a descendant of it moved only on paths enrichment writes
+ *     (`merge-parent-foreign`).
  *  4. Its tree, the same as the record's commit outside `.nemar/**` and `.github/**`: N.0.0's
  *     synthesized tree, N.0.1's gated head (`merge-tree-mismatch`; `tree-anchor-missing` for an
  *     N.0.1 merged before its gates were recorded, which the release cannot compare either), the
@@ -63,6 +67,7 @@ import {
   type TreeEntry,
   acceptedMergesOf,
   changesBesideLedger,
+  classifyMergeParents,
   ledgerChange,
   ledgerLines,
   ledgerTimeOf,
@@ -325,20 +330,20 @@ export async function acceptRepullMerge(
     );
   }
 
-  // 3. The merge commit: one parent, the base or an enrichment-moved descendant of it.
+  // 3. The merge commit: the base or an enrichment-moved descendant of it as its first or only parent.
   const merge = await readCommit(env, row, body.merge_sha);
   if (!merge.ok) return unread(merge, row);
   if (merge.value === null) {
     return { ...unreadable(`commit ${body.merge_sha.slice(0, 12)}`, "not found"), row };
   }
-  if (merge.value.parents.length !== 1) {
-    return refusal(
-      "merge-not-squash",
-      `The merge commit ${body.merge_sha.slice(0, 12)} has ${merge.value.parents.length} parents; a squash merge has one.`,
-      row,
-    );
-  }
-  const parent = merge.value.parents[0] as string;
+  // One parent (a squash) or two with the merged head second (GitHub's plain merge), and no other.
+  const shaped = classifyMergeParents(
+    merge.value.parents,
+    facts.headSha,
+    body.merge_sha.slice(0, 12),
+  );
+  if (!shaped.ok) return refusal(shaped.code, shaped.message, row);
+  const parent = shaped.first;
   const base = (body.pr === "n0" ? row.base_sha : row.patch_base_sha) as string;
   const parentOk = await movedByEnrichmentOnly(env, row, base, parent);
   if (!parentOk.ok) return unread(parentOk, row);

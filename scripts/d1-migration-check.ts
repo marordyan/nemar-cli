@@ -52,8 +52,8 @@
  * USAGE
  *   bun run migrations:d1-check
  *
- * Roughly a minute (one wrangler invocation per migration), so it is a release
- * check rather than a per-PR CI job. See AGENTS.md.
+ * Roughly a minute (one wrangler invocation per migration), so it is a gate run
+ * by hand, not a per-PR CI job (see .rules/testing.md, Test cost).
  */
 
 import { Database } from "bun:sqlite";

@@ -1,0 +1,493 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nemarOrg/nemar-cli/shared/contract/compute-launch.schema.json",
+  "title": "nemar.launch-spec.v1",
+  "description": "The launch specification NEMAR's Worker hands the launcher, and the shapes the launcher exchanges with the Worker and leaves on the node. The launch specification is a document of printable-ASCII JSON text, at most 65536 bytes: every byte is 0x20 to 0x7e, a character at or above U+007F is written as a lowercase \\uXXXX escape, a character outside the Basic Multilingual Plane as two, and JSON escapes the control characters. This schema describes that text. The document travels as the value of the environment variable NEMAR_LAUNCH_SPEC, as the base64url encoding (Request for Comments (RFC) 4648 section 5, alphabet A-Za-z0-9-_, no padding, no line breaks) of the bytes of that text, at most 87382 characters, and the encoding is canonical: encoding the decoded text again gives the value back. Its digests are over the text, never over the encoded value. Shared byte for byte between nemarOrg/nemar-cli (shared/contract/compute-launch.schema.json) and nemarOrg/nemar-process (launcher/schema/launch-spec.v1.json): whichever merges first writes it, the other copies it. The root validates the launch specification; $defs hold the bundle response, the outputs request and response, and the launcher's result, manifest and provenance documents. Requests and documents are closed (no unknown keys); the two responses (bundle_response, outputs_response) are open, and a reader ignores unknown keys. Exit numbers: 0, and 10 to 16 for the seven launcher failure codes in order. On the node, outputs are at work/outputs/<path> and the launcher directory holds result.json, provenance.json, manifest.json and launcher.log; in the results bucket the same files are jobs/<job_id>/outputs/<path> and jobs/<job_id>/launcher/<file>.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "job_id",
+    "runtime",
+    "args",
+    "datasets",
+    "api_base",
+    "image",
+    "env",
+    "resources",
+    "limits",
+    "job_token"
+  ],
+  "properties": {
+    "job_id": {
+      "type": "string",
+      "pattern": "^job_[0-9a-f]{24}(?![\\s\\S])"
+    },
+    "runtime": {
+      "enum": ["python", "image"]
+    },
+    "entry": {
+      "description": "A path inside the bundle. With runtime python the launcher runs python /code/<entry> followed by args; with runtime image and an entry it runs /code/<entry> directly, followed by args, which needs the executable bit that the bundle packer must preserve. The runtime image must provide python on its PATH for the python runtime. A bundle archive's member names may carry a leading ./; absolute names, .. segments, links, devices and FIFOs are refused by the launcher. Exactly one of entry and command is present.",
+      "type": "string",
+      "maxLength": 240,
+      "pattern": "^(?:[^/\\\\\\u0000-\\u001f\\u007f]+/)*[^/\\\\\\u0000-\\u001f\\u007f]+(?![\\s\\S])",
+      "not": {
+        "pattern": "(?:^|/)\\.\\.?(?:/|$)"
+      }
+    },
+    "command": {
+      "description": "An argument vector, run as given, with args appended. Exactly one of entry and command is present.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "args": {
+      "description": "Arguments, each as one argument: after python /code/<entry> (runtime python with an entry), after /code/<entry> (runtime image with an entry) or after the command.",
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "maxLength": 1024
+      }
+    },
+    "bundle": {
+      "description": "The code archive's own SHA-256 and size. There is no URL: the launcher asks the Worker for a presigned address. Required with entry.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "size"],
+      "properties": {
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "datasets": {
+      "type": "array",
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "version"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z]{2}[0-9]{6}(?![\\s\\S])"
+          },
+          "version": {
+            "description": "The data-plane tag of the dataset version: latest, or v<major>.<minor>.<patch>, exactly what the data plane accepts.",
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^(latest|v[0-9]+\\.[0-9]+\\.[0-9]+)(?![\\s\\S])"
+          },
+          "include": {
+            "description": "Patterns that select the dataset's files, matched against manifest paths relative to the dataset root; every file when there are none. The dialect: **/ matches zero or more directories (so a/**/b matches a/b); ** elsewhere matches any run of characters including /; * and ? stay inside one path segment; [abc], [a-c] and [!abc] are character classes; a character class never matches /, so like * and ? it stays inside one path segment, and a negated class [!a] matches any single character except a and /; an unterminated [ is a literal [; an empty class [] and an inverted range such as [z-a] are refused, and bad_include is exactly the set of patterns this dialect refuses; matching is case-sensitive; there are no escapes. A matcher MUST run in time linear in the pattern's length times the path's length (no backtracking).",
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "maxLength": 256,
+              "pattern": "^[^\\\\\\u0000-\\u001f\\u007f]+(?![\\s\\S])",
+              "not": {
+                "pattern": "^/|(?:^|/)\\.\\.(?:/|$)"
+              }
+            }
+          }
+        }
+      }
+    },
+    "api_base": {
+      "description": "The NEMAR API the launcher calls with job_token: no query, no fragment.",
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^https?://[^\\s/?#][^\\s?#]*(?![\\s\\S])"
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "digest", "sif"],
+      "properties": {
+        "uri": {
+          "description": "A digest-pinned reference, optionally docker://-prefixed and lowercase: no leading '-', no control character. Cross-field rule this schema cannot express (a zod-only rule, like the one for sif): the @sha256:<hex> it ends with must equal image.digest.",
+          "type": "string",
+          "maxLength": 512,
+          "pattern": "^(?:docker://)?[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]{1,5})?(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[0-9a-f]{64}(?![\\s\\S])"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+        },
+        "sif": {
+          "description": "The Singularity image file the launcher runs: exactly the basename <64 lowercase hex>.sif, the file name of the SIF built from the image's digest, relative to the directory in the environment variable NEMAR_SIF_ROOT. NEMAR_SIF_ROOT is required: the launcher has no fallback and ends image_missing when it is unset. Cross-field rule this schema cannot express (a zod-only rule): the 64 hex digits of image.digest followed by .sif must equal this value. The launcher does not verify the file's content hash: the name is all that ties the file to the digest.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}\\.sif(?![\\s\\S])"
+        }
+      }
+    },
+    "env": {
+      "description": "Environment for the container, from the allowlist only; each value is printable ASCII.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "OMP_NUM_THREADS": { "type": "string", "maxLength": 256, "pattern": "^[ -~]*(?![\\s\\S])" },
+        "MKL_NUM_THREADS": { "type": "string", "maxLength": 256, "pattern": "^[ -~]*(?![\\s\\S])" },
+        "OPENBLAS_NUM_THREADS": { "type": "string", "maxLength": 256, "pattern": "^[ -~]*(?![\\s\\S])" },
+        "NUMEXPR_NUM_THREADS": { "type": "string", "maxLength": 256, "pattern": "^[ -~]*(?![\\s\\S])" },
+        "PYTHONHASHSEED": { "type": "string", "maxLength": 256, "pattern": "^[ -~]*(?![\\s\\S])" },
+        "MPLBACKEND": { "type": "string", "maxLength": 256, "pattern": "^[ -~]*(?![\\s\\S])" }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gpus"],
+      "properties": {
+        "gpus": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_files", "max_total_bytes"],
+      "properties": {
+        "max_files": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000
+        },
+        "max_total_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "job_token": {
+      "description": "The per-job token, sent in the X-Compute-Job-Token header to the bundle, outputs and complete routes, never in a URL.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{16,256}(?![\\s\\S])"
+    }
+  },
+  "oneOf": [{ "required": ["entry"] }, { "required": ["command"] }],
+  "if": {
+    "required": ["entry"]
+  },
+  "then": {
+    "required": ["bundle"]
+  },
+  "$defs": {
+    "bundle_response": {
+      "description": "POST <api_base>/compute/jobs/<job_id>/bundle: a short-lived presigned GET of the job's own archive. A response, so open: a reader ignores unknown keys (a running launcher must survive the Worker adding one).",
+      "type": "object",
+      "required": ["url", "expires_at"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^https?://[^\\s]+(?![\\s\\S])"
+        },
+        "expires_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z(?![\\s\\S])"
+        }
+      }
+    },
+    "outputs_request": {
+      "description": "POST <api_base>/compute/jobs/<job_id>/outputs: every output with its size and SHA-256, and the sizes of the four launcher files, each named once.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outputs", "launcher"],
+      "properties": {
+        "outputs": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "size", "sha256"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 512,
+                "pattern": "^(?:[^/\\\\\\u0000-\\u001f\\u007f]+/)*[^/\\\\\\u0000-\\u001f\\u007f]+(?![\\s\\S])",
+                "not": {
+                  "pattern": "(?:^|/)\\.\\.?(?:/|$)"
+                }
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+              }
+            }
+          }
+        },
+        "launcher": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "size"],
+            "properties": {
+              "name": {
+                "enum": ["result.json", "provenance.json", "manifest.json", "launcher.log"]
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            }
+          },
+          "allOf": [
+            { "contains": { "type": "object", "required": ["name"], "properties": { "name": { "const": "result.json" } } } },
+            { "contains": { "type": "object", "required": ["name"], "properties": { "name": { "const": "provenance.json" } } } },
+            { "contains": { "type": "object", "required": ["name"], "properties": { "name": { "const": "manifest.json" } } } },
+            { "contains": { "type": "object", "required": ["name"], "properties": { "name": { "const": "launcher.log" } } } }
+          ]
+        }
+      }
+    },
+    "outputs_response": {
+      "description": "The answer to the outputs request: one presigned PUT address per file, each for a path under jobs/<job_id>/ (outputs/... or launcher/...). A response, so open at the top and in each upload: a reader ignores unknown keys (a running launcher must survive the Worker adding one).",
+      "type": "object",
+      "required": ["uploads", "expires_at"],
+      "properties": {
+        "uploads": {
+          "type": "array",
+          "maxItems": 100004,
+          "items": {
+            "description": "An upload address; a reader ignores unknown keys.",
+            "type": "object",
+            "required": ["path", "url"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 600,
+                "pattern": "^(?:outputs/(?:[^/\\\\\\u0000-\\u001f\\u007f]+/)*[^/\\\\\\u0000-\\u001f\\u007f]+|launcher/(?:result\\.json|provenance\\.json|manifest\\.json|launcher\\.log))(?![\\s\\S])",
+                "not": {
+                  "pattern": "(?:^|/)\\.\\.?(?:/|$)"
+                }
+              },
+              "url": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^https?://[^\\s]+(?![\\s\\S])"
+              }
+            }
+          }
+        },
+        "expires_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z(?![\\s\\S])"
+        }
+      }
+    },
+    "result": {
+      "description": "launcher/result.json: the one fixed failure code (or null), the exit number the launcher ends with (0, or 10 to 16 as the code gives it) and the entry's own exit code. The first failure wins.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "failure_code", "detail", "exit_number", "entry_exit_code"],
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "pattern": "^job_[0-9a-f]{24}(?![\\s\\S])"
+        },
+        "failure_code": {
+          "enum": [
+            "code_fetch_failed",
+            "dataset_fetch_failed",
+            "entry_not_found",
+            "runtime_error",
+            "out_of_memory",
+            "time_limit",
+            "result_upload_failed",
+            null
+          ]
+        },
+        "detail": {
+          "type": ["string", "null"],
+          "pattern": "^[a-z0-9_]{1,64}(?![\\s\\S])"
+        },
+        "exit_number": {
+          "enum": [0, 10, 11, 12, 13, 14, 15, 16]
+        },
+        "entry_exit_code": {
+          "type": ["integer", "null"],
+          "minimum": -255,
+          "maximum": 255
+        }
+      },
+      "allOf": [
+        { "if": { "required": ["failure_code"], "properties": { "failure_code": { "type": "null" } } }, "then": { "properties": { "exit_number": { "const": 0 } } } },
+        { "if": { "required": ["failure_code"], "properties": { "failure_code": { "const": "code_fetch_failed" } } }, "then": { "properties": { "exit_number": { "const": 10 } } } },
+        { "if": { "required": ["failure_code"], "properties": { "failure_code": { "const": "dataset_fetch_failed" } } }, "then": { "properties": { "exit_number": { "const": 11 } } } },
+        { "if": { "required": ["failure_code"], "properties": { "failure_code": { "const": "entry_not_found" } } }, "then": { "properties": { "exit_number": { "const": 12 } } } },
+        { "if": { "required": ["failure_code"], "properties": { "failure_code": { "const": "runtime_error" } } }, "then": { "properties": { "exit_number": { "const": 13 } } } },
+        { "if": { "required": ["failure_code"], "properties": { "failure_code": { "const": "out_of_memory" } } }, "then": { "properties": { "exit_number": { "const": 14 } } } },
+        { "if": { "required": ["failure_code"], "properties": { "failure_code": { "const": "time_limit" } } }, "then": { "properties": { "exit_number": { "const": 15 } } } },
+        { "if": { "required": ["failure_code"], "properties": { "failure_code": { "const": "result_upload_failed" } } }, "then": { "properties": { "exit_number": { "const": 16 } } } }
+      ]
+    },
+    "manifest": {
+      "description": "launcher/manifest.json: every output's path, size and SHA-256, hashed by the launcher from outside the container.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "files"],
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "pattern": "^job_[0-9a-f]{24}(?![\\s\\S])"
+        },
+        "files": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "size", "sha256"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 512,
+                "pattern": "^(?:[^/\\\\\\u0000-\\u001f\\u007f]+/)*[^/\\\\\\u0000-\\u001f\\u007f]+(?![\\s\\S])",
+                "not": {
+                  "pattern": "(?:^|/)\\.\\.?(?:/|$)"
+                }
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+              }
+            }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "description": "launcher/provenance.json, written from outside the container: what ran and how. launch_spec_digest is the SHA-256 (lowercase hex) of the exact bytes of the launch specification's JSON text, which is what the base64url value of the environment variable NEMAR_LAUNCH_SPEC decodes to, hashed by the launcher before it parses them; it is not the digest of the encoded value, and not the job row's spec_digest, which is the digest of records/<id>/spec.json. Nothing the container wrote is in it.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job_id",
+        "launch_spec_digest",
+        "bundle_digest",
+        "image",
+        "runtime_version",
+        "staging",
+        "timings",
+        "slurm_job_id",
+        "entry_exit_code"
+      ],
+      "properties": {
+        "job_id": {
+          "type": "string",
+          "pattern": "^job_[0-9a-f]{24}(?![\\s\\S])"
+        },
+        "launch_spec_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+        },
+        "bundle_digest": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["uri", "digest"],
+          "properties": {
+            "uri": {
+              "type": "string",
+              "pattern": "^[^\\s]{1,512}(?![\\s\\S])"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+            }
+          }
+        },
+        "runtime_version": {
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001f\\u007f]{1,128}(?![\\s\\S])"
+        },
+        "staging": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "version", "mode", "files", "bytes"],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z]{2}[0-9]{6}(?![\\s\\S])"
+              },
+              "version": {
+                "type": "string",
+                "pattern": "^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}(?![\\s\\S])"
+              },
+              "mode": {
+                "enum": ["bind", "download"]
+              },
+              "files": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            }
+          }
+        },
+        "timings": {
+          "description": "Seconds per phase, keyed by a fixed word such as code_fetch, staging, run, upload.",
+          "type": "object",
+          "maxProperties": 16,
+          "propertyNames": {
+            "pattern": "^[a-z0-9_]{1,64}(?![\\s\\S])"
+          },
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "slurm_job_id": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9A-Za-z_+.-]{1,64}(?![\\s\\S])"
+        },
+        "entry_exit_code": {
+          "type": ["integer", "null"],
+          "minimum": -255,
+          "maximum": 255
+        }
+      }
+    }
+  }
+}

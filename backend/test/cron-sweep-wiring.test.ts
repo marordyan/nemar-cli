@@ -78,6 +78,10 @@ const INDEX_PATH = join(import.meta.dir, "../src/index.ts");
  *                   driven from a section of `scheduledCleanup` (via a section function in its own
  *                   service file), not called by name from `scheduled()`. Its placement is pinned
  *                   by the dedicated block at the foot of this file, not by the generic loops.
+ *  - `tick-and-daily-prod-only` driven from BOTH production-only places, once each, with different
+ *                   arguments: the 30-minute tick's guard and the daily `prodOnlyJobs` block (the
+ *                   tenant sweep's `live` and `week` modes). Wrapped in `ctx.waitUntil` in each, and
+ *                   called nowhere else.
  *  - `tick-prod-only` driven from the 30-minute `AUTO_IMPORT_CRON` branch of
  *                   `scheduled()` (which returns before the daily block), inside
  *                   that branch's own `if (!isNonProductionEnv(env)) {` guard: a
@@ -85,7 +89,13 @@ const INDEX_PATH = join(import.meta.dir, "../src/index.ts");
  */
 const SWEEP_WIRING: Record<
   string,
-  "prod-only" | "all-envs" | "cron-wrapped" | "helper" | "tick-prod-only" | "nonprod-only"
+  | "prod-only"
+  | "all-envs"
+  | "cron-wrapped"
+  | "helper"
+  | "tick-prod-only"
+  | "nonprod-only"
+  | "tick-and-daily-prod-only"
 > = {
   archiveRetrySweep: "prod-only",
   manifestIntegritySweep: "prod-only",
@@ -145,6 +155,32 @@ const SWEEP_WIRING: Record<
   // DEV_CRON_ALLOWLIST; it also refuses outside exact production on its own, and while
   // AUTO_REPULL_ENABLED is not "1" only resolves a held claim and finishes a merged re-pull.
   runRepullAdvanceCron: "tick-prod-only",
+  // Epic #2005 phase A5 (#2010, ADR 0118): the compute gateway's backstop and its cancel retry. The
+  // first reads each live job back from Tapis in rotation, submits a created job, repairs a terminal
+  // one whose settlement or copy is owed and clears expired webhook nonces; the second cancels at
+  // Tapis every job with a recorded cancel. Both act on a Tapis tenant and move the allocation
+  // ledger, so each rides the 30-minute tick's production guard and is absent from
+  // DEV_CRON_ALLOWLIST; each also refuses outside exact production on its own, and neither reads a
+  // switch, so turning compute off never strands a live job.
+  runComputeAdvanceCron: "tick-prod-only",
+  sweepComputeCancellations: "tick-prod-only",
+  // Epic #2005 phase A8 (#2013, ADR 0118 decision 9): the ACCESS gateway-attributes reporter. It sends
+  // each Slurm job's pseudonymous gateway user to a third party with an owner-set key, so it rides the
+  // 30-minute tick's production guard and is absent from DEV_CRON_ALLOWLIST; it also refuses outside
+  // exact production on its own, and reads no switch (a job that ran is owed its report).
+  runAccessReportCron: "tick-prod-only",
+  // Epic #2005 phase A6 (#2011, ADR 0118): NEMAR's own pipelines. The daily dispatcher makes jobs that
+  // take the allocation ledger's holds and reach a Tapis tenant, so it is production-only and absent
+  // from DEV_CRON_ALLOWLIST; it also refuses outside exact production on its own, and does nothing
+  // (it touches no table) until compute and COMPUTE_PIPELINES_DISPATCH_ENABLED are both "1".
+  runComputePipelineDispatchCron: "prod-only",
+  // Epic #2005 phase A7 (#2012, ADR 0118): the tenant sweep. `live` rides the 30-minute tick and `week` the
+  // daily block, both production-only and absent from DEV_CRON_ALLOWLIST, both self-fenced and acting
+  // only while COMPUTE_ENABLED is exactly "1": it cancels jobs in a tenant and moves the ledger.
+  sweepTenantJobs: "tick-and-daily-prod-only",
+  // The retention sweep deletes from the two private compute buckets, so it is production-only, absent
+  // from DEV_CRON_ALLOWLIST and self-fenced; it reads no switch (a record that is due goes).
+  runComputeRetentionSweep: "prod-only",
   sweepBlockedBidsValidationRequests: "all-envs",
   // #1789: tombstones the live integration tests' accounts. It runs ONLY outside production,
   // from a section of scheduledCleanup (`cleanUpLiveTestAccounts`); the dedicated block at the
@@ -363,6 +399,34 @@ describe("every sweep service is declared and driven", () => {
 
   for (const [name, kind] of Object.entries(SWEEP_WIRING)) {
     if (kind === "helper" || kind === "cron-wrapped" || kind === "nonprod-only") continue;
+
+    if (kind === "tick-and-daily-prod-only") {
+      test(`${name} is wrapped in ctx.waitUntil in BOTH the tick's guard and the prod-only block`, () => {
+        expect(isScheduled(tickProdOnlyCode, name)).toBe(true);
+        expect(isScheduled(prodOnlyCode, name)).toBe(true);
+      });
+
+      test(`${name} is called once in each production-only place and nowhere else`, () => {
+        expect(callCount(tickProdOnlyCode, name)).toBe(1);
+        expect(callCount(prodOnlyCode, name)).toBe(1);
+        expect(callCount(allCode, name)).toBe(2);
+      });
+
+      test(`${name} is NOT in DEV_CRON_ALLOWLIST`, () => {
+        const allowlist = /DEV_CRON_ALLOWLIST[^;]*;/s.exec(allCode)?.[0] ?? "";
+        expect(allowlist).not.toContain(`"${name}"`);
+      });
+
+      if (name === "sweepTenantJobs") {
+        test("sweepTenantJobs runs `live` on the tick and `week` in the daily block, and neither the other (MUTATION: swap the modes)", () => {
+          expect(tickProdOnlyCode).toContain('sweepTenantJobs(env, "live")');
+          expect(tickProdOnlyCode).not.toContain('sweepTenantJobs(env, "week")');
+          expect(prodOnlyCode).toContain('sweepTenantJobs(env, "week")');
+          expect(prodOnlyCode).not.toContain('sweepTenantJobs(env, "live")');
+        });
+      }
+      continue;
+    }
 
     test(`${name} is actually called in scheduled()`, () => {
       expect(callCount(allCode, name)).toBeGreaterThanOrEqual(1);

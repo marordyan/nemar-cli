@@ -992,7 +992,7 @@ def ack_run(tmp_path: Path):
 
 
 def test_ack_file_is_consumed_by_exactly_one_run(ack_run) -> None:
-    """The two-step engine bump (AGENTS.md, ADR 0033): merging a bump deploys
+    """The two-step engine bump (ADR 0033): merging a bump deploys
     it, so a bump over the requeue limit re-queues NOTHING until an operator
     touches the ack file -- and that file arms exactly ONE run.
 

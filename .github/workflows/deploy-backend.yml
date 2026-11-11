@@ -12,6 +12,7 @@ on:
       - 'shared/**'
       - 'validator-version.json'
       - '.github/workflows/deploy-backend.yml'
+      - '.github/actions/**'
   # The dev worker: called by auto-bump-dev.yml, ONCE per push to dev, after it has
   # pushed the version bump, with the commit to deploy (the bump). Until 2026-10, a
   # push to dev deployed itself here, so a merge touching backend/ or shared/
@@ -30,6 +31,8 @@ on:
         type: string
         required: true
   # By hand, to redeploy dev: gh workflow run deploy-backend.yml --ref dev
+  # (a `sha` older than .github/actions/ fails the gate: the checkout at that sha has no composite
+  # actions, so redeploy an older commit from a branch that carries them).
   # [-f sha=<commit on dev>]. A call or dispatch from any other ref deploys nothing
   # (see detect-environment), so neither adds a way to reach production.
   workflow_dispatch:
@@ -155,17 +158,21 @@ jobs:
   # previously stopped a direct push (or an unreviewed merge) from deploying a
   # red build straight to production. Both deploy jobs `needs:` this, so a
   # failing gate blocks the deploy instead of racing it.
-  test-gate:
+  test-gate-shard:
+    name: test-gate shard ${{ matrix.shard }}/${{ strategy.job-total }}
     needs: detect-environment
     if: needs.detect-environment.outputs.environment != '' && needs.detect-environment.outputs.gate_reused != 'true'
     runs-on: ubuntu-latest
-    # The serial pure tier took about 22 min at p95 (50 green runs to 2026-10-13) before the
-    # migrated-database template cut the backend suite's time; the limit is kept at twice that
-    # until a run measures the new duration.
-    timeout-minutes: 44
+    # One serial job took 22 to 37 min (it was the longest wait on the way to production). Six
+    # shards balanced by test/unit-pure-timings.json take 5 to 8 min each, as in test.yml.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
     # A missing tool fails instead of skipping (test/scrub/helpers/require-tools.ts,
     # test/helpers/in-german.ts). This job installs git-annex ("Install git-annex"), the German
-    # locale ("Install the German locale"), Python and uv ("Setup Python", "Setup uv"); the aws CLI
+    # locale ("Start/Wait for the German locale"), Python and uv ("Setup Python", "Setup uv"); the aws CLI
     # comes with the runner image; "Tool versions" names each before the tests.
     env:
       NEMAR_REQUIRE_SCRUB_TOOLS: "1"
@@ -188,19 +195,17 @@ jobs:
       # Under 30 s at p95, but the Ubuntu mirror can stall on this one package for minutes,
       # and #1667 saw the same install hang for an hour.
       - name: Install git-annex
-        timeout-minutes: 10
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y git-annex
+        uses: ./.github/actions/install-git-annex
 
       # test/import-annex-uuid-preflight.test.ts and test/import-upstream-moved-guard.test.ts run git
       # in German, to show an outcome is read from a status and not from git's message. Without the
       # de_DE.UTF-8 locale git speaks English and those cases assert nothing, so under this job's
       # NEMAR_REQUIRE_SCRUB_TOOLS=1 they fail instead (test/helpers/in-german.ts). The language pack
-      # generates the locale and carries git's German catalog; the mirror was updated just above.
-      - name: Install the German locale
-        timeout-minutes: 10
-        run: sudo apt-get install -y language-pack-de-base
+      # generates the locale and carries git's German catalog; it installs in the background (see the action).
+      - name: Start the German locale install
+        uses: ./.github/actions/german-locale
+        with:
+          phase: start
 
       # The pure tier's tools, as test.yml's unit-pure-shard installs and names them: under this
       # job's NEMAR_REQUIRE_SCRUB_TOOLS=1 a suite that needs one fails instead of skipping, and the
@@ -213,6 +218,19 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
 
+      - name: Install dependencies
+        run: bun install
+
+      - name: Install backend dependencies
+        run: cd backend && bun install
+
+      # Started after the git-annex install; it needs to be done before the tools are listed
+      # and the tests run, and the dependency installs above overlap it.
+      - name: Wait for the German locale
+        uses: ./.github/actions/german-locale
+        with:
+          phase: wait
+
       - name: Tool versions
         shell: bash
         run: |
@@ -221,6 +239,66 @@ jobs:
           uv --version
           aws --version
           locale -a | grep -ix 'de_DE.utf8'
+
+
+      - name: Run pure unit tests (shard ${{ matrix.shard }}/${{ strategy.job-total }}, no live backend)
+        env:
+          SHARD_INDEX: ${{ strategy.job-index }}
+          SHARD_TOTAL: ${{ strategy.job-total }}
+          SHARD_LABEL: ${{ matrix.shard }}
+        run: |
+          # The same classifier as test.yml's required unit-pure tier (one script, so the
+          # deploy gate and the PR gate assert the same set).
+          set -euo pipefail
+          shard=$((SHARD_INDEX + 1))
+          if [ "$shard" != "$SHARD_LABEL" ]; then
+            echo "::error::matrix.shard must be 1..N in order: job $SHARD_INDEX is labeled $SHARD_LABEL, so a slice of the suite would run twice or never"
+            exit 1
+          fi
+          # Written to a file first: process substitution would hide the classifier's exit
+          # status, and an empty list would run a bare `bun test` over everything.
+          scripts/ci/unit-pure-files.sh > "$RUNNER_TEMP/unit-pure-files.txt"
+          mapfile -t files < "$RUNNER_TEMP/unit-pure-files.txt"
+          [ "${#files[@]}" -gt 0 ] || { echo "::error::the classifier listed no pure test files"; exit 1; }
+          echo "Running shard $shard/$SHARD_TOTAL of ${#files[@]} pure test files"
+          log="$RUNNER_TEMP/test-gate-shard.log"
+          # --timings is read-only here: it only balances the shards. Two workers, not one per
+          # core: see the same flag in test.yml's unit-pure-shard for why.
+          bun test --timings test/unit-pure-timings.json --shard="$shard/$SHARD_TOTAL" --parallel=2 "${files[@]}" 2>&1 | tee "$log"
+
+          # An empty shard is not an error to bun ("Ran 0 tests across 0 files", exit 0), and the
+          # classified list must match what bun found, so read the run's own header and summary.
+          esc=$(printf '\033')
+          plain=$(sed -E "s/${esc}\[[0-9;]*m//g" "$log")
+          header=$(grep -E -m1 '^--shard=[0-9]+/[0-9]+: running [0-9]+/[0-9]+ test files' <<<"$plain" || true)
+          summary=$(grep -E '^Ran [0-9]+ tests? across [0-9]+ files?' <<<"$plain" | tail -1 || true)
+          if [ -z "$header" ] || [ -z "$summary" ]; then
+            echo "::error::bun printed no shard header or run summary, so what this shard ran is unknown"
+            exit 1
+          fi
+          read -r planned discovered < <(sed -E 's#^--shard=[0-9]+/[0-9]+: running ([0-9]+)/([0-9]+) test files.*#\1 \2#' <<<"$header")
+          read -r tests ran < <(sed -E 's#^Ran ([0-9]+) tests? across ([0-9]+) files?.*#\1 \2#' <<<"$summary")
+          if [ "$ran" -lt 1 ] || [ "$tests" -lt 1 ] || [ "$ran" != "$planned" ] || [ "$discovered" != "${#files[@]}" ]; then
+            echo "::error::shard $shard/$SHARD_TOTAL planned $planned of $discovered files, ran $ran files and $tests tests; the classifier listed ${#files[@]}"
+            exit 1
+          fi
+
+  # Typecheck and lint run beside the shards, not in front of them or behind them.
+  test-gate-static:
+    needs: detect-environment
+    if: needs.detect-environment.outputs.environment != '' && needs.detect-environment.outputs.gate_reused != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.detect-environment.outputs.sha }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
 
       - name: Install dependencies
         run: bun install
@@ -234,20 +312,38 @@ jobs:
       - name: Lint
         run: bun run lint
 
-      - name: Run pure unit tests (no live backend)
+      # The process tier (files whose header says `CI TIER: process`) is not in the list above,
+      # so the gate runs it here: the same files as test.yml's `process-tier` job, from the same
+      # lister, with the same refusal of an empty list. They are skipped by the pure list because
+      # they spawn processes or listen on a port; they still gate a deploy.
+      - name: Run process-tier tests (no live backend)
         run: |
-          # The same classifier as test.yml's required unit-pure tier (one script, so the
-          # deploy gate and the PR gate assert the same set). Serial on purpose: this job
-          # has to keep the single check name `test-gate` that both deploy jobs and the
-          # gate-reuse lookup above read, and the sharded proof lives in test.yml.
           set -euo pipefail
-          # Written to a file first: process substitution would hide the classifier's exit
-          # status, and an empty list would run a bare `bun test` over everything.
-          scripts/ci/unit-pure-files.sh > "$RUNNER_TEMP/unit-pure-files.txt"
-          mapfile -t files < "$RUNNER_TEMP/unit-pure-files.txt"
-          [ "${#files[@]}" -gt 0 ] || { echo "::error::the classifier listed no pure test files"; exit 1; }
-          echo "Running ${#files[@]} pure test files"
+          scripts/ci/process-files.sh > "$RUNNER_TEMP/process-files.txt"
+          mapfile -t files < "$RUNNER_TEMP/process-files.txt"
+          [ "${#files[@]}" -gt 0 ] || { echo "::error::no test file claims CI TIER: process"; exit 1; }
+          echo "Running ${#files[@]} process-tier test files"
           bun test "${files[@]}"
+
+  # The check named `test-gate`: the name both deploy jobs and the gate-reuse lookup in
+  # detect-environment read. `if: always()` so a failed or cancelled leg still reaches this job
+  # and turns it red (a job skipped because its dependency failed reads as passing); it is
+  # skipped exactly when the legs were (same `if`).
+  test-gate:
+    needs: [detect-environment, test-gate-shard, test-gate-static]
+    if: always() && needs.detect-environment.outputs.environment != '' && needs.detect-environment.outputs.gate_reused != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every leg must have succeeded
+        env:
+          SHARDS_RESULT: ${{ needs.test-gate-shard.result }}
+          STATIC_RESULT: ${{ needs.test-gate-static.result }}
+        run: |
+          if [ "$SHARDS_RESULT" != "success" ] || [ "$STATIC_RESULT" != "success" ]; then
+            echo "::error::test-gate-shard finished as '$SHARDS_RESULT' and test-gate-static as '$STATIC_RESULT'; both must be 'success'"
+            exit 1
+          fi
 
   deploy-dev:
     needs: [detect-environment, test-gate]

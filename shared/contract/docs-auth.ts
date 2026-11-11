@@ -50,8 +50,9 @@
 /** Cookie the docs host sets for itself, matching what the Pages Function
  *  actually sets (`nemarOrg/docs`, `functions/__docs-auth/callback.ts`).
  *
- *  A DIFFERENT name from the app's `nemar_session` on purpose: two host-scoped
- *  cookies with one name is a debugging trap, and the distinct name makes a
+ *  A DIFFERENT name from the app's session cookie (`__Host-nemar_session`, or
+ *  the legacy `nemar_session`) on purpose: two host-scoped cookies with one
+ *  name is a debugging trap, and the distinct name makes a
  *  mix-up visible in a request dump rather than silent.
  *
  *  The `__Host-` prefix is the part that is load-bearing rather than cosmetic:

@@ -4,7 +4,6 @@ description: A remediation loop reporting instant success on known-broken state 
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 6d7ab320-492c-4e92-a797-7dd4557c2cbf
   modified: 2026-08-23T07:08:07.905Z
 ---
 

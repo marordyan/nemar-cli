@@ -26,6 +26,7 @@ import { registerPrescreenRoutes } from "../callbacks/prescreen.js";
 import { registerPublicationReviewRoutes } from "../callbacks/publication-review.js";
 import { registerRecordsReadyRoutes } from "../callbacks/records-ready.js";
 import { registerRepullStateCallbackRoutes } from "../callbacks/repull-state.js";
+import { registerTapisCallbackRoutes } from "../callbacks/tapis.js";
 import { registerVersionDoiRoutes } from "../callbacks/version-doi.js";
 import { registerZarrReadyRoutes } from "../callbacks/zarr-ready.js";
 import { registerGithubWebhookRoutes } from "./github.js";
@@ -52,5 +53,6 @@ registerGithubWebhookRoutes(webhooks);
 registerZarrReadyRoutes(webhooks);
 registerArchiveReadyRoutes(webhooks);
 registerRecordsReadyRoutes(webhooks);
+registerTapisCallbackRoutes(webhooks);
 
 export default webhooks;

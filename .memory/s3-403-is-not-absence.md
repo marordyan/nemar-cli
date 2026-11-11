@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-`s3://nemar` denies anonymous `ListBucket`, so S3 answers a **missing** key with 403 rather than 404. A 403 therefore has at least four causes: the object is absent, the dataset is private, the credentials expired, or the signature carried no session token. It is never, on its own, evidence of absence.
+When the caller lacks `ListBucket` (anonymous requests, and credentials without list permission, are in that position), S3 answers a **missing** key with 403 rather than 404. A 403 therefore has at least four causes: the object is absent, the dataset is private, the credentials expired, or the signature carried no session token. It is never, on its own, evidence of absence.
 
 Three ways this has already misled me in one session:
 

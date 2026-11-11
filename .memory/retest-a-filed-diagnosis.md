@@ -4,14 +4,13 @@ description: "An issue's stated cause is a hypothesis; re-measure it before buil
 metadata: 
   node_type: memory
   type: feedback
-  originSessionId: 869097f1-58ff-4901-90ec-79b7838f21cb
   modified: 2026-09-13T21:22:50.500Z
 ---
 
 An issue body in this repo usually names a confident cause, and that cause is often
 mine from a debugging session under time pressure. Re-measure it before designing
 anything on top of it. #1380 said the API's S3 identity could not reach an `on######`
-prefix; the identity allowed `arn:aws:s3:::nemar/*` all along, and the real fault was
+prefix; the identity's policy covered the whole bucket all along, and the real fault was
 my own migration tool handing `git annex copy` a temporary key with no session token.
 The wrong cause had already produced a `--via-aws-cli` flag, an issue title, and a
 plan to edit prod IAM.

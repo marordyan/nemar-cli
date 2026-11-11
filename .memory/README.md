@@ -63,8 +63,12 @@ Deliberately dull markdown, so an agent that did not write an entry can still re
 
 - **Never commit a secret.** No tokens, keys, credentials or connection strings. This directory is
   public in the same sense the repository is.
-- **No personal data.** Refer to people by role. Do not record email addresses, handles or
-  anything about a named individual.
+- **No personal data.** Refer to people by role ("the owner"). Do not record names, email
+  addresses, handles or anything about a named individual.
+- **No host or account specifics.** No hostnames or addresses of private machines, real home
+  paths, cloud account ids, role ARNs, tenant, allocation or project ids, private repository
+  contents, or how a host is hardened or exposed. Keep the lesson, and point at the gated
+  documentation site (admin operations) for the specific.
 - **Date a claim that can rot.** An entry naming a file, a flag or a workflow is a claim about a
   moving target. Say when it was verified.
 - **Correct, do not accumulate.** When an entry turns out to be wrong, fix it or delete it. Where
@@ -78,5 +82,5 @@ Deliberately dull markdown, so an agent that did not write an entry can still re
 Seeded on 2026-09-20 from a coding agent's private memory store, which is where this knowledge had
 accumulated until then. Entries carry their original dates where they had them.
 
-The convention itself is being proposed for every project rather than just this one:
-`neuromechanist/research-skills#98`.
+The convention itself is being proposed for every project rather than just this one,
+as issue 98 of the research-skills repository.

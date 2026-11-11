@@ -20,6 +20,11 @@
  * revoke followed by a re-approval inside eight hours handed the old docs cookie
  * back to whichever browser still held it. A role demotion had the same shape.
  *
+ * Compute (epic #2005 phase A8, #2013) is the fourth thing a revocation has to end: revoke and the
+ * tombstone cascade both run `computeReleaseStatements` in their batch, a demotion does not. The blocks
+ * below pin that on the same routes; `compute-release-cascade.test.ts` drives the whole lifecycle
+ * (real jobs, the Tapis stand-in and the retried sweep) and the mutations of each statement.
+ *
  * So these tests are deliberately about the SECOND event. That a revoked account
  * is refused is easy and was already true (`status = 'revoked'` fails every
  * reader). What has to hold is that the credential is GONE, such that restoring
@@ -32,9 +37,11 @@ import { Hono } from "hono";
 import { DOCS_SESSION_HEADER } from "../../shared/contract/docs-auth.js";
 import { adminRoutes } from "../src/routes/admin";
 import { authDocsRoutes } from "../src/routes/auth-docs";
+import { placeHold, platformPool } from "../src/services/compute-ledger";
 import { hashApiKey } from "../src/services/token";
 import { issueSession } from "../src/services/web-session";
 import type { Bindings, Variables } from "../src/types/bindings";
+import { fundAccount, fundPlatform } from "./helpers/compute-seed";
 import { freshDb, realD1 } from "./helpers/d1";
 
 const OWNER_KEY = "cascade-owner-key-0123456789abcdef0123456789abcdef";
@@ -155,6 +162,107 @@ function liveSessionCount(userId: number, scope?: "app" | "docs"): number {
   return row?.n ?? 0;
 }
 
+let jobSeq = 0;
+
+/**
+ * An account's compute as the real services make it: a funded pool and, for each job asked for, a real
+ * hold (`placeHold`) and a `compute_jobs` row. A job at Tapis has its uuid and is `running`; the other
+ * never reached Tapis. (`createJob` needs the records bucket, which these tests do not carry; the row it
+ * writes is this one.)
+ */
+async function seedCompute(
+  userId: number,
+  jobs: Array<"unsubmitted" | "at_tapis">,
+): Promise<{ ids: string[] }> {
+  const d1 = realD1(db);
+  await fundPlatform(d1, "people", 1_000_000);
+  const poolId = await fundAccount(d1, userId, 100_000, "cpu");
+  const people = await platformPool(d1, "people", "cpu");
+  const ids: string[] = [];
+  for (const kind of jobs) {
+    const id = `job_${(++jobSeq).toString(16).padStart(24, "0")}`;
+    const held = await placeHold(d1, {
+      poolId,
+      budgetPoolId: people?.id ?? null,
+      amountMilli: 4000,
+      jobId: id,
+    });
+    expect(held.ok).toBe(true);
+    db.run(
+      `INSERT INTO compute_jobs (id, account_id, source, kind, app_id, app_version, spec_digest,
+                                 partition, pool, nodes, cores_per_node, minutes, state, tapis_uuid,
+                                 held_milli)
+       VALUES (?, ?, 'cli', 'batch', 'nemar-launch', '1.0.0', ?, 'shared', 'cpu', 1, 4, 60, ?, ?, 4000)`,
+      [
+        id,
+        userId,
+        "d".repeat(64),
+        kind === "at_tapis" ? "running" : "created",
+        kind === "at_tapis" ? `tapis-${jobSeq}-007` : null,
+      ],
+    );
+    ids.push(id);
+  }
+  return { ids };
+}
+
+interface ComputeSnapshot {
+  state: string;
+  cancel_reason: string | null;
+  cancel_requested: number;
+  ledger: string;
+}
+
+function computeOf(jobId: string): ComputeSnapshot {
+  const row = db
+    .query<
+      { state: string; cancel_reason: string | null; cancel_requested_at: string | null },
+      [string]
+    >("SELECT state, cancel_reason, cancel_requested_at FROM compute_jobs WHERE id = ?")
+    .get(jobId);
+  if (!row) throw new Error("no such job");
+  const kinds = db
+    .query<{ kind: string }, [string]>(
+      "SELECT kind FROM compute_ledger WHERE job_id = ? ORDER BY id",
+    )
+    .all(jobId)
+    .map((r) => r.kind);
+  return {
+    state: row.state,
+    cancel_reason: row.cancel_reason,
+    cancel_requested: row.cancel_requested_at === null ? 0 : 1,
+    ledger: kinds.join(","),
+  };
+}
+
+const frozenPools = (userId: number): number[] =>
+  db
+    .query<{ frozen: number }, [string]>(
+      "SELECT frozen FROM compute_pools WHERE holder_kind = 'account' AND holder_ref = ?",
+    )
+    .all(String(userId))
+    .map((r) => r.frozen);
+
+/** What ending an account must have done to its compute: the job that never reached Tapis cancelled and
+ *  released, the one at Tapis live with the intent and the reason recorded (the retried sweep cancels it
+ *  there; no Tapis call is made in a batch), and the pool frozen. */
+function expectComputeEnded(userId: number, ids: string[]): void {
+  const [unsubmitted, atTapis] = ids as [string, string];
+  expect(computeOf(unsubmitted)).toEqual({
+    state: "cancelled",
+    cancel_reason: "account_ended",
+    cancel_requested: 1,
+    ledger: "hold,release",
+  });
+  expect(computeOf(atTapis)).toEqual({
+    state: "running",
+    cancel_reason: "account_ended",
+    cancel_requested: 1,
+    ledger: "hold",
+  });
+  expect(frozenPools(userId)).toEqual([1]);
+}
+
 function ownerPost(path: string, body?: unknown): Promise<Response> {
   return app.request(
     path,
@@ -236,6 +344,38 @@ describe("POST /admin/revoke/:username cascades into browser credentials", () =>
   });
 });
 
+describe("POST /admin/revoke/:username ends the account's compute in the same batch", () => {
+  test("a job that never reached Tapis is cancelled and released, one at Tapis records the intent, the pool is frozen (MUTATION: remove the statements from finalizeRevocation)", async () => {
+    const userId = seedTarget();
+    const { ids } = await seedCompute(userId, ["unsubmitted", "at_tapis"]);
+    expect(frozenPools(userId)).toEqual([0]);
+
+    expect((await ownerPost("/admin/revoke/cascadetarget")).status).toBe(200);
+
+    expectComputeEnded(userId, ids);
+  });
+
+  test("another account's compute is untouched", async () => {
+    const target = seedTarget();
+    await seedCompute(target, ["unsubmitted", "at_tapis"]);
+    db.run(
+      `INSERT INTO users (username, email, password_hash, status, role, email_verified, account_kind)
+       VALUES ('cascadebystander2', 'bystander2@nemar.test', 'x', 'approved', 'member', 1, 'person')`,
+    );
+    const bystander = db
+      .query<{ id: number }, []>("SELECT id FROM users WHERE username='cascadebystander2'")
+      .get();
+    if (!bystander) throw new Error("seed: bystander insert failed");
+    const other = await seedCompute(bystander.id, ["unsubmitted", "at_tapis"]);
+    const before = other.ids.map(computeOf);
+
+    expect((await ownerPost("/admin/revoke/cascadetarget")).status).toBe(200);
+
+    expect(other.ids.map(computeOf)).toEqual(before);
+    expect(frozenPools(bystander.id)).toEqual([0]);
+  });
+});
+
 describe("POST /admin/users/:username/role cascades on demotion", () => {
   test("a demotion destroys the docs session row, so a re-promotion cannot revive it", async () => {
     // `verify` re-reads the role on every page view, so a demoted admin is
@@ -302,6 +442,21 @@ describe("POST /admin/users/:username/role cascades on demotion", () => {
     expect(details.docs_sessions_revoked).toBe(1);
   });
 
+  test("a demotion does NOT end compute: a member still has an account, a grant and jobs", async () => {
+    // Compute has nothing to do with an admin's standing (`compute-release.ts` says why), so the one
+    // cascade that ends what exists only for admins leaves jobs and pools exactly as they were.
+    const userId = seedTarget();
+    const { ids } = await seedCompute(userId, ["unsubmitted", "at_tapis"]);
+    const before = ids.map(computeOf);
+
+    expect((await ownerPost("/admin/users/cascadetarget/role", { role: "member" })).status).toBe(
+      200,
+    );
+
+    expect(ids.map(computeOf)).toEqual(before);
+    expect(frozenPools(userId)).toEqual([0]);
+  });
+
   test("a PROMOTION leaves the account's credentials alone", async () => {
     // The cascade is keyed on demotion, so this pins that an upgrade is not
     // quietly signing people out of the documentation.
@@ -337,6 +492,20 @@ describe("DELETE /admin/users/by-id/:id cascades too", () => {
     expect(grantCount(userId)).toBe(0);
     expect((await verify(session)).status).toBe(401);
     expect((await exchange(unspentCode)).status).toBe(400);
+  });
+
+  test("a tombstone ends the account's compute in the same batch (MUTATION: remove the statements from tombstoneUserCascade)", async () => {
+    const userId = seedTarget();
+    const { ids } = await seedCompute(userId, ["unsubmitted", "at_tapis"]);
+
+    const res = await app.request(
+      `/admin/users/by-id/${userId}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${OWNER_KEY}` } },
+      env(),
+    );
+    expect(res.status).toBe(200);
+
+    expectComputeEnded(userId, ids);
   });
 
   test("the audit row's session count is the session count, not the grant count", async () => {

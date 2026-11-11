@@ -35,7 +35,7 @@ function body(text: string): string {
 describe("manifestJsonCacheKey", () => {
   test("dataset- and version-scoped, never content-addressed", () => {
     const key = manifestJsonCacheKey(ORIGIN, "nm000132", "v1.1.1");
-    expect(key).toBe(`${ORIGIN}/__nemar-internal/manifest-json-cache/v2/nm000132/v1.1.1.json`);
+    expect(key).toBe(`${ORIGIN}/__nemar-internal/manifest-json-cache/v3/nm000132/v1.1.1.json`);
     // A bare version gets the `v` prefix folded in, like manifestCacheKey and
     // gitFileCacheKey.
     expect(manifestJsonCacheKey(ORIGIN, "nm000132", "1.1.1")).toBe(key);

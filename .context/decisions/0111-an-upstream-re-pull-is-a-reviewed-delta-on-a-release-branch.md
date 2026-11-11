@@ -32,6 +32,16 @@ The copy and the canary send the flag, and the write guard refuses a `copy-objec
 ADR 0063 records the same denial for the content-recovery copy.*
 *Annotated 2026-10-29: and by the amendment of that date (#1996): a re-pull merged outside NEMAR's gate is accepted on evidence the CLI and the Worker each read, and the privacy ledger names the accepted merge in a line NEMAR writes, which the fresh-clone proof reads.*
 
+*Annotated 2026-11-09: and by the amendment of that date: the acceptance also takes a merge commit of two parents, when it is GitHub's plain merge of the re-pull's own pull request.*
+*The first parent must be the record's base, or a commit enrichment moved it to, as for a squash.*
+*The second parent must be the head GitHub reports for the merged pull request, which the record's gated head, or an enrichment-shaped descendant of it, already has to be.*
+*The merge's tree must be the re-pull's commit outside `.nemar/**` and `.github/**`, and its effect on the privacy ledger must be nothing or a scrub's appended lines, both unchanged.*
+*Any other shape is refused: no parent or three or more parents with `merge-not-squash`, and two parents whose second is not the merged head (including the head first) with `merge-second-parent-foreign`.*
+*Why: a re-pull merged with GitHub's merge button produced a merge commit that the amendment of 2026-10-29 refused, although its tree was identical to the gated head's, and rewriting `main` was not an option once the tag and the version DOI named it.*
+*The fresh-clone proof reads a merge's first-parent diff, so a `repull-merge-accepted` line that names the merge vouches for it as it does for a squash.*
+*The line keeps the verification word `squash-merge-verified` for both shapes, because a ledger validator already deployed accepts that word and no other, and the line names the merge by its full id, so the shape is read from the commit.*
+*One predicate, `classifyMergeParents` in `shared/repull-merge-acceptance.ts`, decides the shape for the CLI and the Worker; the section "Amendment 2026-11-09" below gives the reasoning.*
+
 ## Context
 
 ADR 0006 fixed the policy for an upstream re-pull and left the machinery to epic #1046.
@@ -287,7 +297,7 @@ ADR 0086 exempts `xx` from the identifier screen, so an `xx` re-pull never has a
   *Annotated 2026-10-26: still not seen for a squash the App makes: the first production merge of the Phase 7g amendment, under a cap of 1, is the check.*
 - Whether the NEMAR installation token is accepted for another organization's public raw files (`OpenNeuroDatasets`), which the staleness report's mirror probe uses; if it is not, every probe reads `stale_unverified` with the reason and the first production run shows it.
 - That the central `run-identifier-screen` workflow posts a re-pull screen's report to its own callback path (`/webhooks/identifier-screen-repull-result`); the workflow accepts any plain https `callback_url` (read), and no run has used this one yet (added by the Phase 6e amendment).
-- GitHub's answers to the reads the re-pull's release and merge make (`commits/tags/<tag>` asked for `application/vnd.github.sha`, `compare/<merge>...<tag>` and its status words, a squash-merged pull request's `head` and `merge_commit_sha`); only stand-ins have answered them (added by the Phase 6e amendment).
+- GitHub's answers to the reads the re-pull's release and merge make (`commits/refs/tags/<tag>` asked for `application/vnd.github.sha`, `compare/<merge>...<tag>` and its status words, a squash-merged pull request's `head` and `merge_commit_sha`); only stand-ins have answered them (added by the Phase 6e amendment). *Annotated 2026-11-08: the tag read was first made against production for on003645 and on004362 and GitHub answered 422 to `commits/tags/<tag>`, so every release was refused as `tag-missing`; the stand-ins had accepted the short form. The read now uses `commits/refs/tags/<tag>` and both stand-ins refuse the short form.*
 - What the weekly report's re-pull section reads on production data: the week's counts, the attribution of a merge to the user of its claim in the audit log, and the first week a switch is on (added by the Phase 7h amendment).
 
 ## Receipts
@@ -919,6 +929,7 @@ It does so only when that commit carries decision 2's `Upstream-Snapshot:` and `
 GitHub's default squash message lists each commit of the pull request as a bullet, so the re-pull commit's trailers end up mid-message; the proof reads no trailers in such a merge and fails the dataset with `ledger-commit-not-alone`.
 Phase 6f writes the squash message itself so that it ends with both trailers.
 *Annotated 2026-10-29: a squash merge made without them, with GitHub's own button, passes the proof only when a `repull-merge-accepted` line, which NEMAR's Worker writes after an administrator accepted the merge on evidence, names it (the amendment of 2026-10-29).*
+*Annotated 2026-11-09: the same holds for GitHub's plain merge commit of the pull request, whose first-parent diff is the one the proof reads (the amendment of 2026-11-09).*
 Neither scrub word can be typed: `ledger-cli.ts append` refuses `import-scrubbed` and `repull-scrubbed`, which only the scrub that wrote them, in the commit that carries what it scrubbed, may write.
 *Annotated 2026-10-29: nor can `repull-merge-accepted`, which only NEMAR's Worker writes (`action-written-by-nemar-only`).*
 Decision 10's retarget of an unreleased import still refuses any line but the importer's own, `repull-scrubbed` included.
@@ -2356,9 +2367,9 @@ Earlier text is annotated, in a note that begins "Annotated 2026-10-29", where t
 - `nemar admin repull resume <id> --accept-merge-trailers "<reason>"` accepts the merge, with a reason of 10 to 500 characters, the publication path's rule that `--acknowledge-identifier-screen` and `--accept-tag-tree` take.
 - The release waits for the tag and the version row first, as for any merge, so NEMAR's ledger line never lands on `main` before the dataset workflow tags the merge.
 - The reason is never enough.
-  Before anything is sent, `resume` reads, with the administrator's own GitHub token and from NEMAR's origin, in this order: the record is one an administrator opened (`accept-automatic`); its pull request on GitHub is merged, from the record's release branch into `main` of the dataset's own repository, with the record's merge commit (`pr-foreign`, `merge-mismatch`); the merge commit has one parent (`merge-not-squash`), which is the record's base or an enrichment-shaped descendant of it (`merge-parent-foreign`, by the same `enrichmentOnlySince` the rest of the re-pull reads `main` with); the merged head is the recorded head or an enrichment-shaped descendant of it (`merge-head-foreign`); the merge's tree is the record's commit outside `.nemar/**` and `.github/**` (`merge-tree-mismatch`), by the very comparison the release makes for the tag (`tagTreeVersus`), N.0.0's synthesized commit and N.0.1's gated head; and the merge changed the privacy ledger by appending a scrub's lines only, or not at all (`merge-ledger-foreign`).
+  Before anything is sent, `resume` reads, with the administrator's own GitHub token and from NEMAR's origin, in this order: the record is one an administrator opened (`accept-automatic`); its pull request on GitHub is merged, from the record's release branch into `main` of the dataset's own repository, with the record's merge commit (`pr-foreign`, `merge-mismatch`); the merge commit has one parent (`merge-not-squash`; *Annotated 2026-11-09: or two, the second the merged head, `merge-second-parent-foreign`, by the amendment of that date*), which is the record's base or an enrichment-shaped descendant of it (`merge-parent-foreign`, by the same `enrichmentOnlySince` the rest of the re-pull reads `main` with); the merged head is the recorded head or an enrichment-shaped descendant of it (`merge-head-foreign`); the merge's tree is the record's commit outside `.nemar/**` and `.github/**` (`merge-tree-mismatch`), by the very comparison the release makes for the tag (`tagTreeVersus`), N.0.0's synthesized commit and N.0.1's gated head; and the merge changed the privacy ledger by appending a scrub's lines only, or not at all (`merge-ledger-foreign`).
   It prints what it verified, line by line, before it asks the Worker.
-- Then the Worker reads all of it again, on GitHub, with its own credential, before it records anything, through `POST /admin/repulls/:id/merge-trailers/accept`: the record at `merged` or `patch_merged` with the named merge commit, opened by an administrator and by this administrator (`accept-not-yours`, which only the Worker can check); the pull request through `readRecordedPullRequest` (its own word for another branch or repository is `pull-request-mismatch`, as at the verified merge); the merged head (`merge-head-foreign`); the merge commit's one parent and its root tree, compared with the recorded tree by the top-level entries outside `.nemar` and `.github`, whose equal object ids are equal contents; and the ledger at the merge and at its parent through the Contents API.
+- Then the Worker reads all of it again, on GitHub, with its own credential, before it records anything, through `POST /admin/repulls/:id/merge-trailers/accept`: the record at `merged` or `patch_merged` with the named merge commit, opened by an administrator and by this administrator (`accept-not-yours`, which only the Worker can check); the pull request through `readRecordedPullRequest` (its own word for another branch or repository is `pull-request-mismatch`, as at the verified merge); the merged head (`merge-head-foreign`); the merge commit's one parent (*Annotated 2026-11-09: or its first of two*) and its root tree, compared with the recorded tree by the top-level entries outside `.nemar` and `.github`, whose equal object ids are equal contents; and the ledger at the merge and at its parent through the Contents API.
   Before it records anything it also checks that, when the proof needs the line, the merge's `repull-scrubbed` line names a `scanner` a ledger line can carry (`merge-ledger-foreign`, so a stored acceptance can always build its line); that `main` still holds the merge, by GitHub's comparison of the merge with `main` (`merge-not-on-main`); and that `main`'s ledger exists (`ledger-missing-on-main`) and names the merge in no line yet, since NEMAR writes only after it records (`attestation-conflict`).
   The Worker reads "moved by enrichment only" from GitHub's comparison, which names paths: every path a file under `.nemar/` other than the ledger, `.bidsignore` or the root `participants.tsv`, added or modified, in at most 20 commits, and fewer than the 300 files GitHub lists.
   That is a weaker reading than the CLI's, which reads each commit's content.
@@ -2376,7 +2387,7 @@ Earlier text is annotated, in a note that begins "Annotated 2026-10-29", where t
 
 The choice this amendment had to make is where the proof finds that one trailer-less commit is accepted, so that a fresh clone with no database can tell, and nothing else is loosened.
 It is one line in the privacy ledger itself, `repull-merge-accepted`, appended to `.nemar/corrections.jsonl` on `main` in a commit of its own, after the merge, by NEMAR's Worker.
-The line names the accepted merge commit by its full id (`commit`) and the record's plan digest (`plan`), carries the version as a tag, empty counts, the `scanner` of the `repull-scrubbed` line the merge appended, the verification `squash-merge-verified`, and the re-pull's fixed actor `nemar-repull`, and nothing else (`shared/repull-merge-acceptance.ts`).
+The line names the accepted merge commit by its full id (`commit`) and the record's plan digest (`plan`), carries the version as a tag, empty counts, the `scanner` of the `repull-scrubbed` line the merge appended, the verification `squash-merge-verified` (*Annotated 2026-11-09: for a plain merge commit too*), and the re-pull's fixed actor `nemar-repull`, and nothing else (`shared/repull-merge-acceptance.ts`).
 
 Why the ledger, and not the other places a fact could live:
 
@@ -2452,3 +2463,49 @@ The proof's rule (`ledgerChecks` in `scripts/scrub/git/git-lib.ts`), as amended:
 The suites drive the real `resume` (`test/repull-accept-merge-trailers-cli.test.ts`; N.0.1 over NEMAR's acceptance commit in `test/repull-accept-merge-trailers-patch-cli.test.ts`; an N.0.1 merged outside the gate, after and before its gates, in `test/repull-patch-cli.test.ts`; the dispatched finish in `test/repull-automatic-cli.test.ts`), the plan over a ledger holding the word (`test/repull-plan.test.ts`), the real Worker routes over bun:sqlite, the real `git` and `git-annex`, and the proof's own rule on a fresh clone of the origin the Worker wrote to, and the proof's rule through `git-scrub verify --fresh-clone` on hand-made histories (`test/scrub/git/fresh-clone.test.ts`).
 GitHub is the suites' stand-in, answering from and writing to the bare origin, so these are what only production can show: that the Contents API takes the write leased on the blob's `sha` and answers a stale one with 409 or a 422 that says it does not match; that GitHub's comparison lists the files as the stand-in does, compares a commit with `main` by name, and answers 404 for two commits with no common history; and that the Git Data API answers a commit's parents and a tree's entries as the stand-in does.
 The stand-in's squash also takes the head's tree, where GitHub's is a three-way merge onto `main`; the two differ only when `main` moved since the pull request's base, which the suites that move `main` read for the parent and the tree, not for what GitHub would merge.
+
+## Amendment 2026-11-09 (#2108): a plain merge commit of the re-pull's own pull request is accepted too
+
+The first use of the acceptance (on000117, re-pull #5) met a merge made with GitHub's merge button using the merge method, not the squash: `703396f2dd34`, two parents (the record's base and the pull request's head), GitHub's default message.
+Its tree was identical to the gated head's, it created the ledger with one `repull-scrubbed` line, and it carries no trailers; the tag and the version DOI were made from it.
+The CLI and the Worker both refused it (`merge-not-squash`), so the record stopped at `merged` and the dataset fails the fresh-clone proof, with no way to finish.
+The decision text above is unchanged.
+Earlier text of the 2026-10-29 amendment is annotated, in a note that begins "Annotated 2026-11-09", where this amendment changes what it says.
+
+### What is accepted
+
+- A merge commit of one parent (a squash), or of two parents whose first is the record's base, or a commit enrichment moved it to, and whose second is exactly the head GitHub reports for the merged pull request, which is the recorded head or a commit enrichment moved it to.
+- One predicate, `classifyMergeParents` in `shared/repull-merge-acceptance.ts`, decides the shape for the CLI and the Worker.
+  Each then compares the first or only parent with the base, and the head with the record's, through the readings it already made.
+- No parent, or three or more parents, is `merge-not-squash`.
+  The word is kept so that no word changes meaning for a caller that reads it, and its message says what is accepted.
+- Two parents whose second is not the merged head (the head first among them) is `merge-second-parent-foreign`.
+- Everything else of the 2026-10-29 amendment is unchanged: the record an administrator opened and the administrator who opened it; the pull request from the record's branch into `main` of the dataset's own repository; the tree outside `.nemar/**` and `.github/**`, read from the merge commit's own tree; what the merge did to the privacy ledger; `main` still holding the merge; the one line and the reasons it carries.
+
+### What differs from a squash, and why that is tolerable
+
+- A plain merge makes the release branch's history reachable from `main` through the second parent: the recorded head, the enrichment commits made on the branch since (at most `ENRICHMENT_MAX_COMMITS`, each read as enrichment-shaped content on a single parent by `enrichmentOnlySince`), and their ancestors.
+  A squash kept that history off `main`.
+- That history is what the gates already cleared: the head is pinned to the recorded head plus enrichment, and the re-pull commit in it is the one that carries the two trailers (decision 2).
+- A second parent with a different tree cannot be accepted, because the tree check is made on the merge commit itself and not on the head.
+- The fresh-clone proof reads the ledger by `git log --first-parent`, so a merge on `main` is judged by its diff against its first parent, which is the diff the acceptance checks, and the same `repull-merge-accepted` line vouches for it as for a squash.
+  The proof's other scans are unchanged; none of them was run on production data for this shape, only on the suites' repositories.
+
+### The ledger word does not change
+
+- The line keeps the verification word `squash-merge-verified` for both shapes, because a ledger validator already deployed accepts that word and no other.
+  A different word would make every older CLI mark the line `ledger-invalid`.
+- The line names the merge commit by its full id, so which shape it has is read from the commit, not from the word.
+  Documents that quote the word say so.
+
+### What the acceptance does not claim
+
+- It verifies the shape, the parents, the tree and the ledger effect of the commit; it does not verify that GitHub made it, as it did not for a squash.
+  Its output says "a plain merge commit", not "GitHub's".
+- Only an administrator can use it, on a record they opened, and the Worker reads all of it again on GitHub with its own credential.
+
+### Checked only against stand-ins
+
+The suites drive the real `resume` against a bare origin and a GitHub stand-in whose `merge` method writes a two-parent commit holding the head's tree (`test/repull-accept-merge-trailers-cli.test.ts`, and N.0.1 in `test/repull-patch-cli.test.ts`).
+GitHub's own merge is a three-way merge onto `main`, which is the head's tree only while `main` is the pull request's base; the suites that move `main` read the parent and the tree, not what GitHub would merge.
+The first production use is on000117.

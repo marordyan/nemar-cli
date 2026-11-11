@@ -262,7 +262,7 @@ export async function releaseTurn(
       // 2026-10-29); the flag would be refused as `accept-automatic` on any other.
       const way =
         row.origin === "administrator"
-          ? `If it was merged outside NEMAR's gate (GitHub's merge button, say), read what it holds, then run nemar admin repull resume ${row.dataset_id} --accept-merge-trailers "<reason>", which accepts it only once it is shown to be this re-pull's own squash merge, and only for the administrator who opened the re-pull.`
+          ? `If it was merged outside NEMAR's gate (GitHub's merge button, say), read what it holds, then run nemar admin repull resume ${row.dataset_id} --accept-merge-trailers "<reason>", which accepts it only once it is shown to be this re-pull's own squash merge or GitHub's plain merge of its pull request, and only for the administrator who opened the re-pull.`
           : "The automatic path opened this re-pull, and the Worker merges its pull requests with the trailers, so a merge made another way is not accepted and no command moves this record on; tell the owner.";
       throw await fail(
         "merge-trailers",
@@ -272,7 +272,10 @@ export async function releaseTurn(
   }
   let tagSha: string | undefined;
   try {
-    tagSha = (await originRefs(scratch, [tag])).get(tag);
+    // The peeled line is asked for by name: `git ls-remote` shows it for an exact ref only then,
+    // and without it an annotated tag (the dataset workflow's) answers its own object id, which
+    // is not the commit the Worker compares (tag-mismatch on the first two production re-pulls).
+    tagSha = (await originRefs(scratch, [tag, `${tag}^{}`])).get(tag);
   } catch (err) {
     if (err instanceof ExecuteRefused) err.resumable = true;
     throw err;

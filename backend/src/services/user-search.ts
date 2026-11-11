@@ -48,6 +48,10 @@ import {
  *   secret  NEVER searched and NEVER returned. A credential, a hash, a token, or
  *           the expiry that belongs to one. Searching a secret is an oracle: an
  *           admin could recover a hash prefix by prefix from the match count.
+ *           `oidc_subject` is here too, though it is not a credential: it is the
+ *           name a third party stores for the account (ADR 0119), so it leaves the
+ *           database through the one route that resolves it and through nothing
+ *           that lists, searches or describes an account.
  *   omit    neither searched nor returned. Not a secret; just not account
  *           detail (the notification preferences have their own route).
  */
@@ -101,6 +105,7 @@ export const USER_COLUMN_ROLES = {
   verification_expires_at: "secret",
   aws_access_key_id_encrypted: "secret",
   aws_secret_access_key_encrypted: "secret",
+  oidc_subject: "secret",
 
   email_preferences: "omit",
 } as const satisfies Record<string, UserColumnRole>;

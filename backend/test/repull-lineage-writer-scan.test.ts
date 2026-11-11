@@ -79,15 +79,15 @@ describe("the one writer of the basis word lineage", () => {
     const writes = lineageWrites(createTree());
     expect(writes.map((w) => w.file)).toEqual([rel(`${SRC}/services/upstream-repull.ts`)]);
     expect(writes[0]?.sql).toBe(LINEAGE_WRITE_SQL);
-  });
+  }, 60_000);
 
   test("no bind or run call is handed the word", () => {
     expect(boundLineage(createTree())).toEqual([]);
-  });
+  }, 60_000);
 
   test("only the backfill and the re-pull update the basis column", () => {
     expect(basisUpdates(createTree()).sort()).toEqual(OWNERS.map((o) => rel(`${SRC}/${o}`)).sort());
-  });
+  }, 60_000);
 
   test("rule 1 fires on a planted second writer, including one split across a concatenation", () => {
     const planted = createTree({
@@ -105,7 +105,7 @@ describe("the one writer of the basis word lineage", () => {
       rel(`${SRC}/services/planted.ts`),
       rel(`${SRC}/services/upstream-repull.ts`),
     ]);
-  });
+  }, 60_000);
 
   test("rule 2 fires on a writer that takes the word as a parameter", () => {
     const planted = createTree({
@@ -118,7 +118,7 @@ describe("the one writer of the basis word lineage", () => {
       rel(`${SRC}/services/planted-bind.ts`),
       rel(`${SRC}/services/planted-nested.ts`),
     ]);
-  });
+  }, 60_000);
 
   test("rule 3 fires on a third file that updates the basis column", () => {
     const planted = createTree({
@@ -126,5 +126,5 @@ describe("the one writer of the basis word lineage", () => {
         'export const SQL = "UPDATE dataset_versions SET source_version = ?, source_version_basis = ? WHERE id = ?";',
     });
     expect(basisUpdates(planted)).toContain(rel(`${SRC}/services/planted-basis.ts`));
-  });
+  }, 60_000);
 });

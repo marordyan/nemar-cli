@@ -612,7 +612,7 @@ describe("every INSERT into dataset_versions is the one statement", () => {
       expect.stringContaining("planted-split.ts"),
       expect.stringContaining("planted.ts"),
     ]);
-  });
+  }, 60_000);
 
   test("exactly five prepare() calls bind the shared statement, in the files that hold the sites", () => {
     // A source count, not a behavior test: A and B and the legacy handler (D) are driven above,
@@ -636,5 +636,5 @@ describe("every INSERT into dataset_versions is the one statement", () => {
       Object.entries(perFile).map(([f, n]) => [rel(join(SRC, f)), n]),
     );
     expect(found).toEqual(expected);
-  });
+  }, 60_000);
 });

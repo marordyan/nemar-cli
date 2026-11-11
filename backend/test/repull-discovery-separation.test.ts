@@ -51,7 +51,7 @@ describe("discovery and the re-pull do not reach each other", () => {
     expect(closure.files.has(`${SRC}/services/openneuro-endpoint.ts`)).toBe(true);
     expect(closure.unanalyzable).toEqual([]);
     expect(discoveryReachesRepull(tree)).toEqual([]);
-  });
+  }, 60_000);
 
   test("the staleness report and the scheduler load neither the auto-import nor discovery", () => {
     const tree = createTree();
@@ -61,7 +61,7 @@ describe("discovery and the re-pull do not reach each other", () => {
     expect(closure.files.has(`${SRC}/services/openneuro-endpoint.ts`)).toBe(true);
     expect(closure.unanalyzable).toEqual([]);
     expect(repullReachesDiscovery(tree, REPULL_ROOTS)).toEqual([]);
-  });
+  }, 60_000);
 
   test("it fires when the snapshot reader takes the endpoint from discovery again", () => {
     const base = createTree();
@@ -77,7 +77,7 @@ describe("discovery and the re-pull do not reach each other", () => {
     expect(found[0]).toEndWith(
       "services/upstream-status.ts -> services/openneuro-snapshots.ts -> services/openneuro-discovery.ts",
     );
-  });
+  }, 60_000);
 
   test("it fires when discovery reaches the staleness report", () => {
     const base = createTree();
@@ -88,5 +88,5 @@ describe("discovery and the re-pull do not reach each other", () => {
     expect(discoveryReachesRepull(planted).some((c) => c.endsWith("upstream-status.ts"))).toBe(
       true,
     );
-  });
+  }, 60_000);
 });

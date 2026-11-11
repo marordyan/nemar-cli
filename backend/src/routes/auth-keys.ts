@@ -11,7 +11,7 @@
  *                                (bearer path only)
  *
  * Every route accepts either credential `resolveActingAccount` accepts (the
- * CLI's bearer token, or the dashboard's `nemar_session` cookie, #1266, ADR
+ * CLI's bearer token, or the dashboard's session cookie, #1266, ADR
  * 0044) -- but goes one check further than that helper on the cookie half:
  * `resolveActingAccount` deliberately ADMITS a `pending` account on cookies,
  * because the email-change flow needs that (ADR 0044). A pending account

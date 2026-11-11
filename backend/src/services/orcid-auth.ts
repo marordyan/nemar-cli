@@ -13,8 +13,8 @@
  * access token (ORCID tokens live ~20 years -- nothing worth storing).
  *
  * No PKCE: ORCID deliberately does not support it (orcid/ORCID-Source#5977).
- * CSRF is the `state` param compared against the `nemar_oauth_state` cookie in
- * the callback route.
+ * CSRF is the `state` param compared against the state cookie (`__Host-nemar_oauth_state`)
+ * in the callback route.
  *
  * The security-critical decisions (link outcome, discovered-vs-verified iD
  * reconciliation) live as pure functions here so they are unit-tested
@@ -25,10 +25,114 @@ import { timingSafeEqual } from "../lib/constant-time";
 import type { Bindings } from "../types/bindings";
 
 export const ORCID_SCOPE = "/authenticate";
-export const STATE_COOKIE_NAME = "nemar_oauth_state";
+
+/**
+ * The two cookies that can mint or link a session (the CSRF state of the ORCID flow, and the
+ * pending signup that carries a verified iD across the email step) are host-only and `__Host-`
+ * prefixed, like the session cookie (ADR 0119, decision 10). A cookie the API trusts to
+ * authenticate or link a session must be one a page on a sibling host cannot set: the partner-host
+ * rule does not stop a sibling from setting a cookie for the parent domain, and a `__Host-` cookie
+ * (Secure, Path=/, no Domain) is the one kind a browser will not accept from any other host.
+ *
+ * NOT behind `HOST_PREFIXED_SESSION_COOKIE`: nothing on the website reads the state cookie, and
+ * the website checks the pending cookie only for presence, under either name. The state cookie
+ * is read ONLY under the new name, with no fallback, so an old-name state cookie is no state
+ * (it lives ten minutes, so a flow that was in flight at the deploy fails once with
+ * `orcid_state`).
+ */
+export const STATE_COOKIE_NAME = "__Host-nemar_oauth_state";
 /** Pending-signup cookie for a brand-new ORCID with no NEMAR account yet
  *  (carries the verified iD + name across the email-collection step). */
-export const PENDING_COOKIE_NAME = "nemar_orcid_pending";
+export const PENDING_COOKIE_NAME = "__Host-nemar_orcid_pending";
+/** The names before the move. Still CLEARED, never read (except on an http loopback request). */
+export const LEGACY_STATE_COOKIE_NAME = "nemar_oauth_state";
+export const LEGACY_PENDING_COOKIE_NAME = "nemar_orcid_pending";
+
+/**
+ * True for a plain-http request to a loopback host: local development (`wrangler dev`).
+ *
+ * A `__Host-` cookie must be `Secure`, and a browser on plain http may refuse it, so local
+ * development keeps the unprefixed names, the same way the website's dev login keeps the legacy
+ * session cookie name (`devSessionCookie` in the website's `auth-dev.ts`). `Secure` itself is
+ * set on every one of these cookies today and stays set: it is the NAME that changes. Anything
+ * that is not plain http on loopback gets the prefixed names, including https on localhost.
+ */
+export function isLoopbackHttp(requestUrl: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(requestUrl);
+  } catch {
+    return false;
+  }
+  const host = url.hostname;
+  return (
+    url.protocol === "http:" &&
+    (host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "[::1]" ||
+      host.endsWith(".localhost"))
+  );
+}
+
+function cookie(
+  name: string,
+  value: string,
+  opts: { domain?: string; maxAgeSeconds?: number } = {},
+): string {
+  const parts = [`${name}=${value}`, "HttpOnly", "Secure", "SameSite=Lax", "Path=/"];
+  if (opts.domain) parts.push(`Domain=${opts.domain}`);
+  if (typeof opts.maxAgeSeconds === "number") parts.push(`Max-Age=${opts.maxAgeSeconds}`);
+  return parts.join("; ");
+}
+
+/** The state and pending cookies of the ORCID flow, for ONE request: the names to read, and the
+ *  `Set-Cookie` values to write and to clear. */
+export interface OauthCookies {
+  /** The name the state cookie is read under for this request. */
+  stateName: string;
+  /** The name the pending cookie is read under for this request. */
+  pendingName: string;
+  state(value: string, maxAgeSeconds: number): string;
+  pending(value: string, maxAgeSeconds: number): string;
+  clearState(): string[];
+  clearPending(): string[];
+}
+
+/**
+ * The cookie set for a request. `domain` is `WEB_SESSION_COOKIE_DOMAIN`.
+ *
+ * Off loopback: the `__Host-` names with no `Domain`, and clears of the old names, with the
+ * configured `Domain` and without, so a stale old-name cookie disappears. On plain-http loopback
+ * (see {@link isLoopbackHttp}): the old names with the configured `Domain`, exactly as before.
+ */
+export function oauthCookies(requestUrl: string, domain: string | undefined): OauthCookies {
+  if (isLoopbackHttp(requestUrl)) {
+    const clear = (name: string) => [cookie(name, "", { domain, maxAgeSeconds: 0 })];
+    return {
+      stateName: LEGACY_STATE_COOKIE_NAME,
+      pendingName: LEGACY_PENDING_COOKIE_NAME,
+      state: (value, maxAgeSeconds) =>
+        cookie(LEGACY_STATE_COOKIE_NAME, value, { domain, maxAgeSeconds }),
+      pending: (value, maxAgeSeconds) =>
+        cookie(LEGACY_PENDING_COOKIE_NAME, value, { domain, maxAgeSeconds }),
+      clearState: () => clear(LEGACY_STATE_COOKIE_NAME),
+      clearPending: () => clear(LEGACY_PENDING_COOKIE_NAME),
+    };
+  }
+  const clear = (name: string, legacy: string) => [
+    cookie(name, "", { maxAgeSeconds: 0 }),
+    ...(domain ? [cookie(legacy, "", { domain, maxAgeSeconds: 0 })] : []),
+    cookie(legacy, "", { maxAgeSeconds: 0 }),
+  ];
+  return {
+    stateName: STATE_COOKIE_NAME,
+    pendingName: PENDING_COOKIE_NAME,
+    state: (value, maxAgeSeconds) => cookie(STATE_COOKIE_NAME, value, { maxAgeSeconds }),
+    pending: (value, maxAgeSeconds) => cookie(PENDING_COOKIE_NAME, value, { maxAgeSeconds }),
+    clearState: () => clear(STATE_COOKIE_NAME, LEGACY_STATE_COOKIE_NAME),
+    clearPending: () => clear(PENDING_COOKIE_NAME, LEGACY_PENDING_COOKIE_NAME),
+  };
+}
 
 /** ORCID iD canonical form: 4 groups of 4 digits, last char may be X (checksum). */
 const ORCID_ID_RE = /^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/;

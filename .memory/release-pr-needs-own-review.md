@@ -5,7 +5,7 @@ metadata:
   type: feedback
 ---
 
-On the v0.10.0 release of nemar-cli (2026-09-08), after the epic #1272 had per-phase reviews and an epic-level review, Yahya added: "promoting dev to main needs its own PR review to find things that might have fallen from seams."
+On the v0.10.0 release of nemar-cli (2026-09-08), after the epic #1272 had per-phase reviews and an epic-level review, the owner added: "promoting dev to main needs its own PR review to find things that might have fallen from seams."
 
 **Why:** between the epic review and the release, `dev` accumulates follow-ups (live-tier fixes, config notes, an email fence, version bumps) that were each reviewed alone but never together against `main`; the release diff is the only place their interactions, config and workflow drift, and the release-safety checklist are visible at once.
 

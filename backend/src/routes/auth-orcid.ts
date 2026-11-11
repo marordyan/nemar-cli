@@ -26,21 +26,26 @@
  * -- a row in `orcid_link_intents` (migration 0078) the callback consumes.
  * Unlink needs no browser at all and takes a bearer token directly.
  *
- * Linking is initiated via `GET /auth/orcid/start?mode=link` and completed in
- * the same callback (the callback links to whichever user the session cookie
- * resolves to), so there is no separate `POST /auth/orcid/link` route in the
- * issue's sketch -- the callback covers it. Noted here so the divergence from
- * the issue's 4-route list is intentional, not an omission.
+ * Linking is initiated by a form POST to `/auth/orcid/start?mode=link`
+ * (Settings' "Connect your ORCID") and completed in the same callback (in a
+ * link flow, the callback links to the user the session cookie resolves to),
+ * so there is no separate `POST /auth/orcid/link` route in the issue's sketch
+ * -- the callback covers it. Noted here so the divergence from the issue's
+ * 4-route list is intentional, not an omission. A plain sign-in (`mode=login`)
+ * never links to a session's account: it signs in the account the iD names, or
+ * starts a sign-up, and always mints a fresh session (ADR 0119 rule 10).
  *
  * Re-linking (#913): Settings' confirm step submits a form POST to
- * `/auth/orcid/start?mode=relink` — POST is the ONLY entry that can mint
- * relink intent, because it carries an Origin header the route verifies and
- * requires a live session (the same gate as /orcid/unlink). A GET with
- * mode=relink quietly degrades to login: a bare cross-site link rides the
- * victim's ambient cookies, and an unauthenticated GET must never be able
- * to arm an identity swap. The callback then swaps the linked identity when
- * the finished iD is unclaimed; without relink mode a second, different iD
- * is refused (`orcid_already_have`), as before.
+ * `/auth/orcid/start?mode=relink`.
+ *
+ * POST is the ONLY entry that can mint link or relink intent, because it
+ * carries an Origin header the route verifies and requires a live session (the
+ * same gate as /orcid/unlink). A GET with mode=link or mode=relink quietly
+ * degrades to login: a cross-site navigation rides the person's ambient
+ * cookies, and a GET must never be able to choose which account an iD attaches
+ * to or arm an identity swap. The callback then swaps the linked identity when
+ * the finished iD is unclaimed; without relink mode a second, different iD is
+ * refused (`orcid_already_have`), as before.
  *
  * Identity uniqueness (#1254, ADR 0043): an iD backs at most one LIVE account,
  * and "backs" means `users.orcid` OR an `oauth_identities` row -- not just the
@@ -52,8 +57,17 @@
  *
  * Host/cookie model: these routes run on api.nemar.org but the browser reaches
  * them through the app.nemar.org same-origin proxy (like /auth/code/*), which
- * mirrors our Set-Cookie. Cookies therefore carry Domain=WEB_SESSION_COOKIE_DOMAIN
- * (app.nemar.org in prod) and the OAuth redirect_uri points at the app host.
+ * mirrors our Set-Cookie, and the OAuth redirect_uri points at the app host.
+ * Every cookie that can authenticate or link a session is host-only and
+ * `__Host-` prefixed, because a page on a sibling host can set a cookie for the
+ * parent domain and cannot set a `__Host-` one (ADR 0119 decision 10): the state
+ * cookie (`__Host-nemar_oauth_state`) and the pending-signup cookie
+ * (`__Host-nemar_orcid_pending`) carry NO Domain, and the two session issuances
+ * (the callback's sign-in and finalize's sign-up) go through `sessionCookieHeaders`.
+ * The old state and pending names are only CLEARED (with and without
+ * Domain=WEB_SESSION_COOKIE_DOMAIN, app.nemar.org in prod), never read. On a
+ * plain-http loopback request (local development) the old unprefixed names are
+ * kept, see `oauthCookies` in services/orcid-auth.ts.
  */
 
 import { zValidator } from "@hono/zod-validator";
@@ -78,16 +92,16 @@ import {
   normalizeEmail,
   normalizeOrcid,
 } from "../services/identity";
+import { oidcEndStatements } from "../services/oidc-cascade";
+import { deferLogoutDelivery } from "../services/oidc-logout";
 import {
   CLI_STATE_TTL_MS,
   type CliOauthState,
   type OauthMode,
   type OauthState,
-  PENDING_COOKIE_NAME,
   RELINK_DELETE_IDENTITY_SQL,
   RELINK_INSERT_IDENTITY_SQL,
   RELINK_UPDATE_USER_SQL,
-  STATE_COOKIE_NAME,
   buildAuthorizeUrl,
   decideLinkOutcome,
   decideSecondOrcidOutcome,
@@ -98,6 +112,7 @@ import {
   fetchOrcidName,
   generateCsrf,
   getOrcidConfig,
+  oauthCookies,
   orcidPubBase,
   relinkParams,
   safeNextPath,
@@ -109,11 +124,13 @@ import {
 import { profileRefusal } from "../services/profile";
 import { type UsernameAssignmentSource, autoAssignUsername } from "../services/username-assignment";
 import {
-  buildSessionCookie,
+  SESSION_COOKIE_NAME,
   clientIp,
+  hostPrefixedSessionCookie,
   isAllowedOrigin,
   issueSession,
   parseCookieHeader,
+  sessionCookieHeaders,
 } from "../services/web-session";
 import type { Bindings, Variables } from "../types/bindings";
 
@@ -140,22 +157,6 @@ const finalizeSchema = z.object({
 
 function cookieDomain(env: Bindings): string | undefined {
   return env.WEB_SESSION_COOKIE_DOMAIN || undefined;
-}
-
-interface CookieOpts {
-  domain?: string;
-  maxAgeSeconds?: number;
-}
-
-function buildCookie(name: string, value: string, opts: CookieOpts = {}): string {
-  const parts = [`${name}=${value}`, "HttpOnly", "Secure", "SameSite=Lax", "Path=/"];
-  if (opts.domain) parts.push(`Domain=${opts.domain}`);
-  if (typeof opts.maxAgeSeconds === "number") parts.push(`Max-Age=${opts.maxAgeSeconds}`);
-  return parts.join("; ");
-}
-
-function clearCookie(name: string, domain: string | undefined): string {
-  return buildCookie(name, "", { domain, maxAgeSeconds: 0 });
 }
 
 function redirect(location: string, cookies: string[] = []): Response {
@@ -266,6 +267,13 @@ async function relinkIdentity(
       resourceId: String(userId),
       details: JSON.stringify({ from: fromOrcid, to: toOrcid }),
     }),
+    // The proof the `person_proven_orcid` clients granted on was the OLD iD: a person who replaces it
+    // has to be asked again, and those clients are told (ADR 0119 rule 12). The other grants stay,
+    // because they never depended on an iD. Not conditional on the swap, because the batch is one
+    // transaction: it lands with the swap or not at all.
+    ...oidcEndStatements(userId, "orcid_changed", { rule: "person_proven_orcid" }).map((s) =>
+      env.DB.prepare(s.sql).bind(...s.binds),
+    ),
   ]);
 }
 
@@ -337,7 +345,11 @@ function claimedByAnother(err: unknown): boolean {
 // ------------------------------- routes --------------------------------
 
 /** Shared start body: mint the CSRF state cookie, bounce to ORCID authorize. */
-function startOrcidFlow(c: { env: Bindings }, mode: OauthMode, next: string): Response {
+function startOrcidFlow(
+  c: { env: Bindings; req: { url: string } },
+  mode: OauthMode,
+  next: string,
+): Response {
   const frontend = appBase(c.env);
   const config = getOrcidConfig(c.env);
   if (!config) {
@@ -345,10 +357,10 @@ function startOrcidFlow(c: { env: Bindings }, mode: OauthMode, next: string): Re
   }
 
   const csrf = generateCsrf();
-  const stateCookie = buildCookie(STATE_COOKIE_NAME, encodeState({ csrf, mode, next }), {
-    domain: cookieDomain(c.env),
-    maxAgeSeconds: STATE_TTL_SECONDS,
-  });
+  const stateCookie = oauthCookies(c.req.url, cookieDomain(c.env)).state(
+    encodeState({ csrf, mode, next }),
+    STATE_TTL_SECONDS,
+  );
   const authorizeUrl = buildAuthorizeUrl({
     config,
     redirectUri: `${frontend}/auth/orcid/callback`,
@@ -359,20 +371,22 @@ function startOrcidFlow(c: { env: Bindings }, mode: OauthMode, next: string): Re
 
 authOrcidRoutes.get("/orcid/start", (c) => {
   const url = new URL(c.req.url);
-  const rawMode = url.searchParams.get("mode");
-  // A GET can be forged by a bare cross-site link riding the victim's
-  // ambient cookies, so it may never mint relink intent (#913). mode=relink
-  // here degrades to login: for an account that already has a linked iD the
-  // callback then refuses with orcid_already_have — the pre-#913 behavior.
-  const mode: OauthMode = rawMode === "link" ? "link" : "login";
+  // A GET can be forged by a cross-site navigation riding the person's ambient
+  // cookies, so it never mints link or relink intent (#913, ADR 0119 rule 10):
+  // whatever `mode` says, it starts a plain sign-in, which signs in the account
+  // the iD names (or starts a sign-up) and never attaches the iD to the account
+  // a session cookie names. Only the POST below, which checks Origin and
+  // requires a session, starts a link.
+  const mode: OauthMode = "login";
   return startOrcidFlow(c, mode, safeNextPath(url.searchParams.get("next")));
 });
 
 /**
- * POST variant (#913) — the only entry that can mint mode=relink. The
- * Settings confirm step submits a real form here, so the browser attaches
- * an Origin header; the same-origin check plus the session requirement make
- * relink intent unforgeable by a link click (the /orcid/unlink gate).
+ * POST variant (#913) — the only entry that can mint mode=link or mode=relink.
+ * Settings' Connect button and its relink confirm step submit a real form
+ * here, so the browser attaches an Origin header; the same-origin check plus
+ * the session requirement make link and relink intent unforgeable by a
+ * cross-site navigation (the /orcid/unlink gate).
  * Without them, a crafted GET link plus an ambient ORCID session could
  * silently swap which iD backs the account — see PR #1051's review.
  */
@@ -746,10 +760,10 @@ authOrcidRoutes.post("/orcid/cli-handoff/continue", webSessionMiddleware, async 
   const config = getOrcidConfig(c.env);
   if (!config) return redirect(`${frontend}/login?error=orcid_unavailable`);
 
-  const stateCookie = buildCookie(STATE_COOKIE_NAME, token, {
-    domain: cookieDomain(c.env),
-    maxAgeSeconds: Math.floor(CLI_STATE_TTL_MS / 1000),
-  });
+  const stateCookie = oauthCookies(c.req.url, cookieDomain(c.env)).state(
+    token,
+    Math.floor(CLI_STATE_TTL_MS / 1000),
+  );
   const authorizeUrl = buildAuthorizeUrl({
     config,
     redirectUri: `${frontend}/auth/orcid/callback`,
@@ -760,13 +774,13 @@ authOrcidRoutes.post("/orcid/cli-handoff/continue", webSessionMiddleware, async 
 
 authOrcidRoutes.get("/orcid/callback", webSessionMiddleware, async (c) => {
   const frontend = appBase(c.env);
-  const domain = cookieDomain(c.env);
-  const clearState = clearCookie(STATE_COOKIE_NAME, domain);
+  const oauth = oauthCookies(c.req.url, cookieDomain(c.env));
+  const clearState = oauth.clearState();
   const url = new URL(c.req.url);
 
   const fail = (reason: string, next = "/login"): Response => {
     const sep = next.includes("?") ? "&" : "?";
-    return redirect(`${frontend}${next}${sep}error=${reason}`, [clearState]);
+    return redirect(`${frontend}${next}${sep}error=${reason}`, clearState);
   };
 
   if (url.searchParams.get("error")) return fail("orcid_denied");
@@ -778,7 +792,7 @@ authOrcidRoutes.get("/orcid/callback", webSessionMiddleware, async (c) => {
   // cookie from linking an iD to somebody else's row. Everything downstream —
   // the csrf compare, the mode, the landing path — reads the same three
   // fields either way.
-  const stateCookieRaw = parseCookieHeader(c.req.header("Cookie"), STATE_COOKIE_NAME);
+  const stateCookieRaw = parseCookieHeader(c.req.header("Cookie"), oauth.stateName);
   const cliState = c.env.ENCRYPTION_KEY
     ? await verifyCliState(stateCookieRaw, c.env.ENCRYPTION_KEY, Date.now())
     : null;
@@ -827,6 +841,17 @@ authOrcidRoutes.get("/orcid/callback", webSessionMiddleware, async (c) => {
     // #1269 review). The handoff already refused it once; this is the same
     // rule at the other end, because the two steps are minutes apart and a
     // browser can sign in between them.
+    //
+    // A website flow attaches the iD to the session's account ONLY when it was
+    // started as a link (`link` or `relink` in the state cookie, which only the
+    // Origin-checked, session-requiring POST start mints). A plain
+    // sign-in never does, whatever session cookie the browser holds: the
+    // account is the one the iD itself names, or a new one, and the sign-in
+    // mints a fresh session for it below. Two rules rest on that (ADR 0119
+    // rule 10): an iD is never attached to an account by a cookie the person
+    // did not choose to link from, and every completed sign-in ends with a new
+    // session, which is what the authorization endpoint waits for when it
+    // asks for one.
     let actingUserId: number | null = null;
     if (cliState) {
       if (sessionDisagreesWithIntent(c.var.webUser, cliState)) {
@@ -841,21 +866,31 @@ authOrcidRoutes.get("/orcid/callback", webSessionMiddleware, async (c) => {
         return fail("orcid_intent_used", state.next);
       }
       actingUserId = cliUser.id;
-    } else if (c.var.webUser) {
+    } else if ((state.mode === "link" || state.mode === "relink") && c.var.webUser) {
+      // While sessions are issued under the `__Host-` name, only a session read
+      // under it may have an iD attached: the legacy name is one a sibling host
+      // can set, the same rule the authorization routes apply to a grant.
+      // With the flag off the legacy name is the only one there is, so this
+      // branch still takes it. The link itself was started by the POST start,
+      // which a cross-site navigation cannot reach, but the session it acts
+      // for may be a legacy cookie a sibling host set rather than the person's
+      // own. That residual closes only when the production flag is on (ADR
+      // 0119 rule 10).
+      if (hostPrefixedSessionCookie(c.env) && c.var.webSessionCookieName !== SESSION_COOKIE_NAME) {
+        return fail("session_required", `/login?next=${encodeURIComponent(state.next)}`);
+      }
       actingUserId = c.var.webUser.id;
     }
 
-    // An already-authenticated session (or a CLI intent) => link to that user
-    // (regardless of the start mode, so a logged-in user can never
-    // accidentally spawn a duplicate account). The default landing is the
-    // carried `next` (the onboarding gate passes /welcome).
+    // A link flow with a session (or a CLI intent) => link to that user. The
+    // default landing is the carried `next` (Settings passes /settings).
     if (actingUserId !== null) {
       const outcome = decideLinkOutcome(ident?.user_id ?? null, actingUserId);
       if (outcome === "conflict") return fail("orcid_linked_other", state.next);
       if (outcome === "already_linked") {
         await touchIdentityLogin(c.env, orcid);
         afterResponse(c, refreshUserName(c.env, actingUserId, orcid));
-        return redirect(`${frontend}${state.next}`, [clearState]);
+        return redirect(`${frontend}${state.next}`, clearState);
       }
       // link_new says only that no oauth_identities row claims the iD. That
       // is not the same as unclaimed (#1254, ADR 0043): a row whose identity
@@ -884,8 +919,10 @@ authOrcidRoutes.get("/orcid/callback", webSessionMiddleware, async (c) => {
           if (claimedByAnother(err)) return fail("orcid_in_use", state.next);
           throw err;
         }
+        // The grants that rested on the old iD were ended in the swap's batch; tell their clients.
+        deferLogoutDelivery(c.env, actingUserId, (work) => afterResponse(c, work));
         afterResponse(c, refreshUserName(c.env, actingUserId, orcid));
-        return redirect(`${frontend}${state.next}`, [clearState]);
+        return redirect(`${frontend}${state.next}`, clearState);
       }
       try {
         await linkIdentity(c.env, actingUserId, orcid, name);
@@ -894,7 +931,7 @@ authOrcidRoutes.get("/orcid/callback", webSessionMiddleware, async (c) => {
         throw err;
       }
       afterResponse(c, refreshUserName(c.env, actingUserId, orcid));
-      return redirect(`${frontend}${state.next}`, [clearState]);
+      return redirect(`${frontend}${state.next}`, clearState);
     }
 
     // No session, but a relink intent in the state: the session that minted
@@ -906,8 +943,10 @@ authOrcidRoutes.get("/orcid/callback", webSessionMiddleware, async (c) => {
       return fail("orcid_relink_session");
     }
 
-    // No session: sign in the linked account, or hand a brand-new ORCID off to
-    // email collection (ORCID returns no email; users.email is NOT NULL).
+    // A sign-in (or a link with no session): sign in the account the iD names,
+    // with a fresh session whatever cookie the browser already holds, or hand a
+    // brand-new ORCID off to email collection (ORCID returns no email;
+    // users.email is NOT NULL).
     if (ident) {
       const user = await loadActiveUser(c.env, ident.user_id);
       if (!user) return fail("orcid_account");
@@ -921,9 +960,12 @@ authOrcidRoutes.get("/orcid/callback", webSessionMiddleware, async (c) => {
       );
       await touchIdentityLogin(c.env, orcid);
       afterResponse(c, refreshNameThenAssignUsername(c.env, user.id, orcid, "orcid_signin"));
-      const session = buildSessionCookie(cookieIdRaw, { domain, maxAgeSeconds });
+      const session = sessionCookieHeaders(c.env, cookieIdRaw, {
+        maxAgeSeconds,
+        cookieHeader: c.req.header("Cookie"),
+      });
       const next = state.next !== "/" ? state.next : "/dashboard";
-      return redirect(`${frontend}${next}`, [clearState, session]);
+      return redirect(`${frontend}${next}`, [...clearState, ...session]);
     }
 
     if (!c.env.ENCRYPTION_KEY) {
@@ -934,10 +976,7 @@ authOrcidRoutes.get("/orcid/callback", webSessionMiddleware, async (c) => {
       { orcid, name, exp: Date.now() + PENDING_TTL_MS },
       c.env.ENCRYPTION_KEY,
     );
-    const pendingCookie = buildCookie(PENDING_COOKIE_NAME, pending, {
-      domain,
-      maxAgeSeconds: Math.floor(PENDING_TTL_MS / 1000),
-    });
+    const pendingCookie = oauth.pending(pending, Math.floor(PENDING_TTL_MS / 1000));
     // Hand off to the email-collection page. It lives under /auth (an app-host
     // route) so the Domain=app.nemar.org pending cookie is actually sent to it;
     // the public /signup page is not app-scoped. See website#128.
@@ -955,7 +994,7 @@ authOrcidRoutes.get("/orcid/callback", webSessionMiddleware, async (c) => {
       state.next !== "/"
         ? `${frontend}/auth/orcid/complete?next=${encodeURIComponent(state.next)}`
         : `${frontend}/auth/orcid/complete`;
-    return redirect(completeUrl, [clearState, pendingCookie]);
+    return redirect(completeUrl, [...clearState, pendingCookie]);
   } catch (err) {
     console.error("[auth-orcid] callback failed after token exchange", err);
     // Carry state.next so an authenticated user who started from Settings
@@ -973,14 +1012,16 @@ authOrcidRoutes.post("/orcid/finalize", zValidator("json", finalizeSchema), asyn
     return c.json({ error: "ORCID sign-up unavailable" }, 503);
   }
 
-  const domain = cookieDomain(c.env);
-  const clearPending = clearCookie(PENDING_COOKIE_NAME, domain);
+  const oauth = oauthCookies(c.req.url, cookieDomain(c.env));
+  const clearPending = () => {
+    for (const ck of oauth.clearPending()) c.header("Set-Cookie", ck, { append: true });
+  };
 
   try {
-    const pendingRaw = parseCookieHeader(c.req.header("Cookie"), PENDING_COOKIE_NAME);
+    const pendingRaw = parseCookieHeader(c.req.header("Cookie"), oauth.pendingName);
     const pending = await verifyPending(pendingRaw, c.env.ENCRYPTION_KEY, Date.now());
     if (!pending) {
-      c.header("Set-Cookie", clearPending);
+      clearPending();
       return c.json({ error: "orcid_pending_expired" }, 401);
     }
 
@@ -997,7 +1038,7 @@ authOrcidRoutes.post("/orcid/finalize", zValidator("json", finalizeSchema), asyn
     const orcid = normalizeOrcid(pending.orcid);
     if (!orcid) {
       console.error(`[auth-orcid] finalize: pending token carried a malformed iD ${pending.orcid}`);
-      c.header("Set-Cookie", clearPending);
+      clearPending();
       return c.json({ error: "orcid_pending_expired" }, 401);
     }
 
@@ -1027,7 +1068,7 @@ authOrcidRoutes.post("/orcid/finalize", zValidator("json", finalizeSchema), asyn
         .bind(orcid)
         .first<{ user_id: number }>();
       const code = identExists ? "orcid_already_linked" : "orcid_in_use";
-      c.header("Set-Cookie", clearPending);
+      clearPending();
       return c.json({ error: code, ...identityRefusal(code) }, 409);
     }
 
@@ -1060,11 +1101,11 @@ authOrcidRoutes.post("/orcid/finalize", zValidator("json", finalizeSchema), asyn
         .run();
     } catch (insertErr) {
       if (isUniqueViolationOn(insertErr, "email")) {
-        c.header("Set-Cookie", clearPending);
+        clearPending();
         return c.json({ error: "email_in_use", ...identityRefusal("email_in_use") }, 409);
       }
       if (isUniqueViolationOn(insertErr, "orcid")) {
-        c.header("Set-Cookie", clearPending);
+        clearPending();
         return c.json({ error: "orcid_in_use", ...identityRefusal("orcid_in_use") }, 409);
       }
       throw insertErr;
@@ -1097,7 +1138,7 @@ authOrcidRoutes.post("/orcid/finalize", zValidator("json", finalizeSchema), asyn
         .catch((delErr) =>
           console.error("[auth-orcid] finalize: failed to roll back orphan user", delErr),
         );
-      c.header("Set-Cookie", clearPending);
+      clearPending();
 
       // ONLY the identity UNIQUE means somebody else claimed the iD. Reporting
       // `orcid_already_linked` for any failure -- a D1 outage, a schema error
@@ -1127,10 +1168,13 @@ authOrcidRoutes.post("/orcid/finalize", zValidator("json", finalizeSchema), asyn
       clientIp(c),
       "orcid",
     );
-    c.header("Set-Cookie", clearPending);
-    c.header("Set-Cookie", buildSessionCookie(cookieIdRaw, { domain, maxAgeSeconds }), {
-      append: true,
-    });
+    clearPending();
+    for (const cookie of sessionCookieHeaders(c.env, cookieIdRaw, {
+      maxAgeSeconds,
+      cookieHeader: c.req.header("Cookie"),
+    })) {
+      c.header("Set-Cookie", cookie, { append: true });
+    }
     // Canonical name from ORCID, after the response (best-effort; never blocks
     // signup), and then the username derived from it (#1268, ADR 0045): the
     // INSERT above leaves `username` NULL by design, and onboarding is where
@@ -1175,10 +1219,30 @@ authOrcidRoutes.post("/orcid/finalize", zValidator("json", finalizeSchema), asyn
     return c.json(body);
   } catch (err) {
     console.error("[auth-orcid] finalize failed", err);
-    c.header("Set-Cookie", clearPending);
+    clearPending();
     return c.json({ error: "Sign-up failed" }, 500);
   }
 });
+
+/**
+ * Remove the account's ORCID link completely, in ONE batch: the identity row, `orcid_verified` and
+ * `users.orcid`, and, with them, what a `person_proven_orcid` client granted on that proof (ADR 0119
+ * rule 12). The grants, tokens and unused codes of those clients end and each is queued to be told;
+ * the grants of a client that asks only for an active account stay, because they never depended on an
+ * iD. All of it lands or none of it does, so an unlink can never leave the identity gone with a client
+ * still honouring the session.
+ */
+async function unlinkOrcid(env: Bindings, userId: number): Promise<void> {
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM oauth_identities WHERE user_id = ? AND provider = 'orcid'").bind(
+      userId,
+    ),
+    env.DB.prepare("UPDATE users SET orcid = NULL, orcid_verified = 0 WHERE id = ?").bind(userId),
+    ...oidcEndStatements(userId, "orcid_changed", { rule: "person_proven_orcid" }).map((s) =>
+      env.DB.prepare(s.sql).bind(...s.binds),
+    ),
+  ]);
+}
 
 authOrcidRoutes.post("/orcid/unlink", webSessionMiddleware, async (c) => {
   // Cookie or bearer token (#1266, ADR 0044). Unlink is the one ORCID
@@ -1210,17 +1274,12 @@ authOrcidRoutes.post("/orcid/unlink", webSessionMiddleware, async (c) => {
   // locks the account out. The writes go in one D1 batch so we never leave
   // orcid_verified=1 with the identity row already gone (or vice versa).
   try {
-    await c.env.DB.batch([
-      c.env.DB.prepare(
-        "DELETE FROM oauth_identities WHERE user_id = ? AND provider = 'orcid'",
-      ).bind(actor.id),
-      c.env.DB.prepare("UPDATE users SET orcid = NULL, orcid_verified = 0 WHERE id = ?").bind(
-        actor.id,
-      ),
-    ]);
+    await unlinkOrcid(c.env, actor.id);
   } catch (err) {
     console.error("[auth-orcid] unlink failed", err);
     return c.json({ error: "Unlink failed" }, 500);
   }
+  // The `person_proven_orcid` clients were queued in the batch; the first attempt follows the response.
+  deferLogoutDelivery(c.env, actor.id, (work) => afterResponse(c, work));
   return c.json({ ok: true });
 });

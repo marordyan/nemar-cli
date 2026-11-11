@@ -1,0 +1,292 @@
+# Runs the OpenID Foundation conformance suite against the NEMAR OpenID Connect provider (epic #2014
+# phase #2020, nemar-cli#2020).
+#
+# WHAT RUNS. The suite's own server, its MongoDB and its TLS front, as the foundation's public images
+# at a pinned release tag and digest (scripts/oidc-conformance/compose.override.yml), on the runner.
+# Beside them, on the runner's host, the RIG (scripts/oidc-conformance/rig.ts): the real Worker over a
+# throwaway SQLite database behind a self-signed certificate, with a stand-in for the website's
+# sign-in and authorization pages (the suite's scripted browser cannot run the website's scripts).
+# The certificate is made inside the run and stored nowhere. Two plans run, the configuration plan first
+# as a smoke test (it needs no browser) and then the Basic plan.
+#
+# WHAT IT CLAIMS. Nothing about certification. NEMAR deliberately differs from what certification
+# expects in three places (PKCE is required, client_secret_post is refused, ES256 is the only signing
+# algorithm), and scripts/oidc-conformance/expected-failures*.json record each with the decision that
+# approved it (one file per plan, because the suite counts an entry that no module of the run met as a
+# failure). The results are an engineering check of the provider against the suite's tests.
+#
+# SECRETS AND ARTIFACTS. No secret is used: the job has read access to the repository and nothing else.
+# The plan configurations hold the throwaway clients' secrets, so they live outside the artifact paths
+# and are never uploaded; only the exported result files and the logs are. Those do contain throwaway
+# secrets, authorization codes and tokens (the suite logs every request it makes), but they belong to a
+# database that lives in the rig's memory and dies when the job ends, so nothing live is uploaded. The
+# rig and the suite are stopped before the upload to make that true at the moment the files are read.
+#
+# THE AUTHORIZATION CHECK. The expected-failures entries match a module by test name, condition and
+# block, so on their own they would accept ANY error from the authorization endpoint as the approved PKCE
+# deviation. The rig therefore logs, for every authorization response, its error code and whether the
+# request carried a code_challenge, and the step "Check the authorization errors" fails the run if an
+# error code is outside this allowed set, or if invalid_request answered a request that DID carry a
+# code_challenge. The allowed set (scripts/oidc-conformance/authz-log.ts) is exactly what the approved
+# deviations and the two REVIEW modules produce:
+#   invalid_request            no code_challenge (decision 3a), and the missing-response-type module
+#   request_not_supported      the unsigned request object module, skipped on this answer (decision 4)
+#   page:invalid_redirect_uri  the error page the two REVIEW modules expect
+#
+# TWO TARGETS (input `target`). `rig` (the default) is everything above. `dev` runs the same suite against
+# the DEPLOYED development system instead: the issuer is the development API and the authorization page is
+# the staging website's own, so the rig, its pre-flight and its log are skipped. The suite's browser cannot
+# sign in on the real page (it asks for a code mailed to the person), so a dev run selects only the modules
+# that need no sign-in, 34 of the 35 (`oidcc-ensure-request-with-valid-pkce-succeeds` is left out and is
+# covered by a manual sign-in). They stop before the token endpoint, so no client secret is used: one
+# client, registered on the development system beforehand by the owner (the runbook is in the pull request
+# that added this mode), stands for the three the suite reads, its id is the input `dev_client_id` (a public
+# id), and the secret in the plan configuration is a fixed fake. The workflow still holds no secret. The
+# issuer and the page are checked against the development system's two hosts and refused otherwise
+# (scripts/oidc-conformance/dev-target.ts), so a run can never be pointed at production.
+#
+# THE SUITE'S OWN CHECK. The step "Check the suite's authorization stops" runs in both targets. From the
+# exported results it requires that every module that stops at the authorization endpoint (27 of them)
+# was answered exactly invalid_request and sent no code_challenge. In `dev` there is no rig log, so this
+# is the only check of that cause; in `rig` it adds to the log check above. It does not know which
+# parameter was refused, which is the same residual risk as the log's.
+#
+# TRIGGER. Manual only (`workflow_dispatch`, from the Actions tab or `gh workflow run`). GitHub offers
+# it for a workflow file on the default branch, so it is available once this file reaches `dev`.
+# During the phase a temporary `push` trigger on `conformance/**` branches ran it earlier; it is gone.
+
+name: OIDC conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "rig: the suite against the in-runner rig. dev: the suite against the deployed development system."
+        type: choice
+        options:
+          - rig
+          - dev
+        default: rig
+      dev_client_id:
+        description: "dev only: the public id of the conformance client the owner registered on the development system."
+        type: string
+        required: false
+        default: ""
+      dev_issuer:
+        description: "dev only: the issuer (it must be exactly the development API)."
+        type: string
+        required: false
+        default: "https://api-test.nemar.org"
+      dev_authorization_base:
+        description: "dev only: the origin of the authorization page (it must be exactly the staging website)."
+        type: string
+        required: false
+        default: "https://test.nemar.org"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oidc-conformance
+  cancel-in-progress: false
+
+env:
+  # `rig` or `dev`; a dispatch with no input is a rig run.
+  TARGET: ${{ inputs.target || 'rig' }}
+  SUITE_TAG: release-v5.3.3
+  # The commit the tag must point at; a moved tag fails the run instead of changing what is tested.
+  SUITE_COMMIT: 7d420f716e49d44f8a6b04f0a3e240ad6d68ab55
+  # The suite's own address. run-test-plan.py is NOT given CONFORMANCE_SERVER: left unset, it takes this
+  # same address and runs in its local mode (no API token, certificates unchecked); set, it would ask
+  # for a token a local suite does not have.
+  SUITE_URL: https://localhost.emobix.co.uk:8443/
+  # run-test-plan.py aborts a run after three modules in a row end INTERRUPTED, on the reading that the
+  # suite's server is unhealthy. NEMAR requires PKCE and the suite's Basic modules send none, so most of
+  # them end INTERRUPTED at their first authorization request, by design; the breaker is set out of
+  # reach so every module runs and each outcome is recorded.
+  CONFORMANCE_MAX_CONSECUTIVE_FAILURES: "1000"
+  RIG_HOST: rig.example.org
+  RIG_PORT: "9443"
+  # The exported results go under the directory that is uploaded. The plan configurations (throwaway
+  # client secrets) go to RIG_OUT_DIR, set below from the runner's temporary directory, and are not.
+  RESULTS_DIR: ${{ github.workspace }}/conformance-artifacts/results
+
+jobs:
+  conformance:
+    name: conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+
+      - name: Install dependencies
+        run: |
+          bun install --frozen-lockfile
+          cd backend && bun install --frozen-lockfile
+
+      - name: Fetch the suite at the pinned release
+        run: |
+          git clone --quiet --depth 1 --branch "$SUITE_TAG" https://gitlab.com/openid/conformance-suite.git "$RUNNER_TEMP/suite"
+          actual=$(git -C "$RUNNER_TEMP/suite" rev-parse HEAD)
+          if [ "$actual" != "$SUITE_COMMIT" ]; then
+            echo "::error::$SUITE_TAG is $actual, not $SUITE_COMMIT"
+            exit 1
+          fi
+          mkdir -p "$RESULTS_DIR" "$RUNNER_TEMP/rig-out"
+          echo "RIG_OUT_DIR=$RUNNER_TEMP/rig-out" >> "$GITHUB_ENV"
+
+      - name: Write the dev plan configurations
+        if: ${{ env.TARGET == 'dev' }}
+        # The inputs reach the script as environment variables, never inside the script text.
+        env:
+          DEV_ISSUER: ${{ inputs.dev_issuer }}
+          DEV_AUTHORIZATION_BASE: ${{ inputs.dev_authorization_base }}
+          DEV_CLIENT_ID: ${{ inputs.dev_client_id }}
+        run: bun run scripts/oidc-conformance/dev-config.ts
+
+      - name: Name the rig and the suite on this host
+        run: |
+          echo "127.0.0.1 rig.example.org localhost.emobix.co.uk" | sudo tee -a /etc/hosts >/dev/null
+
+      - name: Start the rig
+        if: ${{ env.TARGET == 'rig' }}
+        run: |
+          nohup bun run scripts/oidc-conformance/rig.ts > conformance-artifacts/rig.log 2>&1 &
+          echo $! > "$RUNNER_TEMP/rig.pid"
+
+      - name: Wait for the rig, then walk a sign-in
+        if: ${{ env.TARGET == 'rig' }}
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sk --max-time 3 -o /dev/null -w '%{http_code}' "https://$RIG_HOST:$RIG_PORT/.well-known/openid-configuration" | grep -q 200; then break; fi
+            sleep 2
+          done
+          NODE_TLS_REJECT_UNAUTHORIZED=0 bun run scripts/oidc-conformance/smoke.ts
+
+      - name: Start the suite
+        timeout-minutes: 12
+        run: |
+          cd "$RUNNER_TEMP/suite"
+          docker compose -f docker-compose-prebuilt.yml -f "$GITHUB_WORKSPACE/scripts/oidc-conformance/compose.override.yml" pull --quiet
+          docker compose -f docker-compose-prebuilt.yml -f "$GITHUB_WORKSPACE/scripts/oidc-conformance/compose.override.yml" up -d
+          for _ in $(seq 1 90); do
+            # The suite's front page answers 302 (to its sign-in page); a 502 is its TLS front without the server.
+            if curl -sk --max-time 5 -o /dev/null -w '%{http_code}' "$SUITE_URL" | grep -qE '^(200|30[0-9])$'; then echo "suite is up"; exit 0; fi
+            sleep 5
+          done
+          echo "::error::the suite did not come up in 7 minutes"
+          exit 1
+
+      - name: Record what ran
+        env:
+          DEV_ISSUER: ${{ inputs.dev_issuer }}
+          DEV_AUTHORIZATION_BASE: ${{ inputs.dev_authorization_base }}
+        run: |
+          {
+            echo "### Conformance run"
+            echo "- NEMAR commit: \`$GITHUB_SHA\`"
+            echo "- Suite: \`$SUITE_TAG\` (\`$SUITE_COMMIT\`)"
+            if [ "$TARGET" = "dev" ]; then
+              echo "- Target: the deployed development system (issuer $DEV_ISSUER, page $DEV_AUTHORIZATION_BASE), 34 modules that need no sign-in"
+            else
+              echo "- Target: the rig, topology C1 (stand-in sign-in and authorization pages)"
+            fi
+            echo "- Images:"
+            for img in $(docker compose -f "$RUNNER_TEMP/suite/docker-compose-prebuilt.yml" -f scripts/oidc-conformance/compose.override.yml config --images); do
+              echo "  - \`$img\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Configuration plan (smoke test, no browser)
+        id: config_plan
+        timeout-minutes: 10
+        continue-on-error: true
+        run: |
+          uv run --no-project --python 3.12 --exclude-newer 2026-11-05 --with httpx==0.28.1 --with pyparsing==3.3.3 \
+            python "$RUNNER_TEMP/suite/scripts/run-test-plan.py" \
+            --export-dir "$RESULTS_DIR" --verbose \
+            --expected-failures-file "$GITHUB_WORKSPACE/scripts/oidc-conformance/expected-failures-config.json" \
+            "oidcc-config-certification-test-plan" "$RIG_OUT_DIR/config-plan.json" \
+            2>&1 | tee "$GITHUB_WORKSPACE/conformance-artifacts/config-plan.log"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Basic plan
+        id: basic_plan
+        timeout-minutes: 30
+        continue-on-error: true
+        run: |
+          # The rig run takes the whole plan; the dev run takes it with the modules selected (the suite's
+          # own `plan[variants]:module,module` syntax), as dev-config.ts wrote it.
+          if [ "$TARGET" = "dev" ]; then
+            PLAN="$(cat "$RIG_OUT_DIR/basic-plan-arg.txt")"
+          else
+            PLAN="oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
+          fi
+          uv run --no-project --python 3.12 --exclude-newer 2026-11-05 --with httpx==0.28.1 --with pyparsing==3.3.3 \
+            python "$RUNNER_TEMP/suite/scripts/run-test-plan.py" \
+            --export-dir "$RESULTS_DIR" --verbose \
+            --expected-failures-file "$GITHUB_WORKSPACE/scripts/oidc-conformance/expected-failures.json" \
+            --expected-skips-file "$GITHUB_WORKSPACE/scripts/oidc-conformance/expected-skips.json" \
+            "$PLAN" "$RIG_OUT_DIR/basic-plan.json" \
+            2>&1 | tee "$GITHUB_WORKSPACE/conformance-artifacts/basic-plan.log"
+          exit "${PIPESTATUS[0]}"
+
+      - name: Collect the suite's logs
+        if: ${{ always() }}
+        run: |
+          cd "$RUNNER_TEMP/suite"
+          docker compose -f docker-compose-prebuilt.yml -f "$GITHUB_WORKSPACE/scripts/oidc-conformance/compose.override.yml" logs --no-color > "$GITHUB_WORKSPACE/conformance-artifacts/suite-compose.log" 2>&1 || true
+
+      - name: Stop the rig and the suite
+        if: ${{ always() }}
+        run: |
+          pid=$(cat "$RUNNER_TEMP/rig.pid" 2>/dev/null || true)
+          if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+          cd "$RUNNER_TEMP/suite"
+          docker compose -f docker-compose-prebuilt.yml -f "$GITHUB_WORKSPACE/scripts/oidc-conformance/compose.override.yml" down --timeout 10 || true
+          # The upload must not start while the rig can still write. Wait up to 10 seconds for it to exit,
+          # then kill it outright and wait again; fail only if it is still there.
+          [ -n "$pid" ] || exit 0
+          for _ in $(seq 1 20); do
+            kill -0 "$pid" 2>/dev/null || exit 0
+            sleep 0.5
+          done
+          kill -9 "$pid" 2>/dev/null || true
+          for _ in $(seq 1 20); do
+            kill -0 "$pid" 2>/dev/null || exit 0
+            sleep 0.5
+          done
+          echo "::error::the rig is still running after it was told to stop and then killed"
+          exit 1
+
+      - name: Check the authorization errors
+        if: ${{ always() && env.TARGET == 'rig' }}
+        run: bun run scripts/oidc-conformance/check-authz.ts conformance-artifacts/rig.log
+
+      - name: Check the suite's authorization stops
+        if: ${{ always() }}
+        run: bun run scripts/oidc-conformance/check-suite-authz.ts conformance-artifacts/results 27
+
+      - name: Upload results and logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: oidc-conformance-${{ github.run_id }}
+          # Results and logs only. The plan configurations are in RIG_OUT_DIR, outside this path.
+          path: conformance-artifacts/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Fail the job if a plan did
+        if: ${{ always() }}
+        run: |
+          echo "config plan: ${{ steps.config_plan.outcome }}; basic plan: ${{ steps.basic_plan.outcome }}"
+          [ "${{ steps.config_plan.outcome }}" = "success" ] && [ "${{ steps.basic_plan.outcome }}" = "success" ]

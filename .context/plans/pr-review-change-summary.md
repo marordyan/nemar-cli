@@ -50,7 +50,7 @@ All numbers in this document come from a throwaway prototype run on real data, n
 
 - **Data.** `gh search prs --owner nemarDatasets --state open` returned 89 pull requests on 2026-10-20; 86 are dataset pull requests (three are in `.github`).
   Each was fetched the way the workflow fetches: `git init`, a promisor remote, `git fetch --no-tags --filter=blob:none` of the base and `refs/pull/N/head`, no checkout.
-  65 are by the canary account, 18 by a second contributor, 4 by `nemarAdmin` or `neuromechanist` (exempt in production).
+  65 are by the canary account, 18 by a second contributor, 4 by `nemarAdmin` or the owner's account (exempt in production).
 - **Prototype.** TypeScript on Bun 1.4.3, in the scratchpad (`design/proto/`): `parse.ts` (strict TSV and JSON parsers), `relabel.ts` (relabel rules and key pairing), `summary.ts` (classes, render, coverage), `run.ts` (runs the repository's real `gatherListing` and `gatherContent` beside the summary), `partb.ts` (Part B facts), `render2.ts` (the prompt format of section 8).
   It imports the worktree's `scripts/ci/pr-review-evidence.ts` read-only, so "current" numbers are the production code's.
 - **Machine.** A laptop over residential network to GitHub; a GitHub-hosted runner is expected to fetch faster and parse slower.

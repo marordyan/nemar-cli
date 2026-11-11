@@ -1,6 +1,6 @@
 # PR 1 spec: rebuild `datasets` as an 87-column table (issue #1182)
 
-Worktree `/Users/yahya/Documents/git/nemar/column-budget`, branch
+Worktree `<repo root>/../column-budget`, branch
 `feature/issue-reclaim-column-budget`, based on `origin/dev`.
 
 ## Why a rebuild (not ALTER)

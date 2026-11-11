@@ -1,0 +1,21 @@
+# Pins the three public images the OpenID Foundation conformance suite runs on, by tag AND digest, and
+# lets the suite's server reach the rig (epic #2014 phase #2020).
+#
+# Layered over the suite's own `docker-compose-prebuilt.yml` at the same release tag:
+#   docker compose -f docker-compose-prebuilt.yml -f compose.override.yml up -d
+#
+# The digests are those of the multi-architecture indexes the registries served for these tags on
+# 2026-11-05. A tag can move; a digest cannot, so a run is repeatable and its record says what ran.
+# To move to a newer release, change the tag in the workflow and all three lines here together.
+
+services:
+  mongodb:
+    image: mongo:6.0.13@sha256:b415b12f638e2685d06c58ab7fb5943577c50fadec6d9340ef67d21aeac72070
+  nginx:
+    image: registry.gitlab.com/openid/conformance-suite/nginx:release-v5.3.3@sha256:d80183af68cb51c72c86b498780d94d6192cbc6adcc70a7d28ac6a01eff0d0db
+  server:
+    image: registry.gitlab.com/openid/conformance-suite:release-v5.3.3@sha256:377ab51f011d821c4b6f7729053e85adf062d691e51a3615f40507fd900a2436
+    extra_hosts:
+      # The rig runs on the runner, not in a container; the suite's own process (which also hosts its
+      # scripted browser) reaches it by this name. The host side resolves the same name to loopback.
+      - "rig.example.org:host-gateway"

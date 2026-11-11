@@ -559,6 +559,14 @@ describe("the owner-only delete route shares the tombstone", () => {
       );
     }
 
+    // The one column that differs between two rows by design: each row has its own OpenID Connect
+    // subject (migration 0120). What the tombstone owes it is that it keeps it, so it is compared
+    // with the row's OWN value from before, not with the other row's.
+    const subjectOf = (id: number) =>
+      db.query<{ s: string }, [number]>("SELECT oidc_subject AS s FROM users WHERE id = ?").get(id)
+        ?.s as string;
+    const subjectsBefore = { [viaRoute]: subjectOf(viaRoute), [viaSweep]: subjectOf(viaSweep) };
+
     const res = await app.request(
       `/admin/users/by-id/${viaRoute}`,
       { method: "DELETE", headers: { Authorization: `Bearer ${OWNER_KEY}` } },
@@ -574,7 +582,16 @@ describe("the owner-only delete route shares the tombstone", () => {
     const shape = (id: number) => {
       const u = db.query("SELECT * FROM users WHERE id = ?").get(id) as Record<string, unknown>;
       // Fields that legitimately differ between two rows.
-      const { id: _id, email, created_at: _c, updated_at: _u, deleted_at, revoked_at, ...rest } = u;
+      const {
+        id: _id,
+        email,
+        created_at: _c,
+        updated_at: _u,
+        deleted_at,
+        revoked_at,
+        oidc_subject: _s,
+        ...rest
+      } = u;
       return JSON.stringify({
         ...rest,
         masked: email === maskedDeletedEmail(id),
@@ -589,6 +606,10 @@ describe("the owner-only delete route shares the tombstone", () => {
     };
     expect(shape(viaSweep)).toBe(shape(viaRoute));
     expect(JSON.parse(shape(viaRoute)).masked).toBe(true);
+    // Both paths kept the subject their row had, and the two rows still differ.
+    expect(subjectOf(viaRoute)).toBe(subjectsBefore[viaRoute]);
+    expect(subjectOf(viaSweep)).toBe(subjectsBefore[viaSweep]);
+    expect(subjectOf(viaRoute)).not.toBe(subjectOf(viaSweep));
   });
 });
 

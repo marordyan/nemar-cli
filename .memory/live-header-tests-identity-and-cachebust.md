@@ -4,7 +4,6 @@ description: "a live test asserting response headers must cache-bust and request
 metadata: 
   node_type: memory
   type: project
-  originSessionId: feb870a5-d2bd-421c-b0db-8061cdd93a33
   modified: 2026-09-16T21:29:24.564Z
 ---
 

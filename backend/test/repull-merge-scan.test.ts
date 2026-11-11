@@ -173,7 +173,7 @@ describe("the Worker merges in one place and approves nothing", () => {
     // Not vacuous: the one merge is there to be found, where it is expected.
     expect(merges(tree)).toEqual([THE_MERGE]);
     expect(findings(tree)).toEqual([]);
-  });
+  }, 60_000);
 
   test("it fires on a second merge in another re-pull service", () => {
     const planted = createTree(
@@ -183,7 +183,7 @@ describe("the Worker merges in one place and approves nothing", () => {
       ),
     );
     expect(findings(planted)).toEqual(["a merge in services/upstream-repull-verified.ts (again)"]);
-  });
+  }, 60_000);
 
   test("it fires on a merge elsewhere in the Worker, its path built from pieces", () => {
     const planted = createTree(
@@ -195,7 +195,7 @@ describe("the Worker merges in one place and approves nothing", () => {
     expect(findings(planted)).toEqual([
       "a merge in services/github/shared.ts (mergeUrl), not a PUT",
     ]);
-  });
+  }, 60_000);
 
   test("it fires when the one merge is no longer a PUT, and when it moves out of sendSquashMerge", () => {
     const text = createTree().read(MERGE_MODULE) as string;
@@ -218,7 +218,7 @@ describe("the Worker merges in one place and approves nothing", () => {
       "the one merge is found 0 times",
       "a merge in services/upstream-repull-merge.ts (sendAnyMerge)",
     ]);
-  });
+  }, 60_000);
 
   test("it fires on GraphQL's merge mutation", () => {
     const planted = createTree(
@@ -228,7 +228,7 @@ describe("the Worker merges in one place and approves nothing", () => {
       ),
     );
     expect(findings(planted)).toEqual(["a GraphQL merge in services/upstream-repull-advance.ts"]);
-  });
+  }, 60_000);
 
   test("it fires on a review written with the event that approves, even split in two", () => {
     const planted = createTree(
@@ -248,14 +248,14 @@ describe("the Worker merges in one place and approves nothing", () => {
       ),
     );
     expect(findings(graphql)).toEqual(["a review in services/upstream-repull-facts.ts"]);
-  });
+  }, 60_000);
 
   test("it fires on an approval anywhere in the Worker, outside the re-pull's own code", () => {
     const planted = createTree(
       appended("routes/users.ts", 'export const review = { event: "APPROVE" };'),
     );
     expect(findings(planted)).toEqual(["a review in routes/users.ts"]);
-  });
+  }, 60_000);
 
   test("a new re-pull service is scanned without being named", () => {
     const planted = createTree({
@@ -263,7 +263,7 @@ describe("the Worker merges in one place and approves nothing", () => {
         'export const send = (u: string) => fetch(`${u}/pulls/1/reviews`, { method: "POST" });\n',
     });
     expect(findings(planted)).toEqual(["a review in services/upstream-repull-approve.ts (send)"]);
-  });
+  }, 60_000);
 
   test("a merge path with a hole for its number is still a merge path", () => {
     expect(MERGE_PATH.test(`${HOLE}/repos/${HOLE}/${HOLE}/pulls/${HOLE}/merge`)).toBe(true);

@@ -1005,7 +1005,7 @@ describe("recording the release", () => {
     // Every other dataset's stamps and values are as they were.
     expect(stampsOf("on099998")).toEqual(STAMPS);
     expect(gh.requests).toEqual([
-      "GET /repos/nemarDatasets/on099999/commits/tags/v2.0.0",
+      "GET /repos/nemarDatasets/on099999/commits/refs/tags/v2.0.0",
       `GET /repos/nemarDatasets/on099999/compare/${MERGE}...${TAG}`,
     ]);
     const audit = db

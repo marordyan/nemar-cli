@@ -3,11 +3,14 @@
  *
  * `.github/workflows/test.yml` routes a file by text, not by header: a file whose text holds one
  * of three marker names (read from the workflow below, never spelled here) goes to the
- * `integration-dev` job, which runs with `--retry=2 --timeout 30000` and is not required on dev;
+ * `integration-dev-shard` matrix (gated by `integration-dev`), which runs with `--retry=2 --timeout 30000` and is not required on dev;
  * every other file goes to the required `unit-pure` job (sharded as `unit-pure-shard`; its file list comes
  * from `scripts/ci/unit-pure-files.sh`, shared with the deploy gate), which runs `bun test` with the default
  * five-second timeout and no retry; a file named `*.integration.test.ts` goes to the integration
- * job whatever its text says. When the spawn of the CLI moved out of six suites into a shared
+ * job whatever its text says. A file whose header claims the process tier, with that word first after the
+ * label, goes to neither: `scripts/ci/process-files.sh` lists it, the `process-tier` job runs it, and
+ * `scripts/ci/unit-pure-files.sh` skips it, because a file that spawns processes or serves the Worker on
+ * loopback must not sit inside a `unit-pure` shard. When the spawn of the CLI moved out of six suites into a shared
  * helper, none of them held a marker any more, all six moved to `unit-pure` while their headers
  * still said "integration", and nothing noticed: a header is a claim, and a claim nothing checks
  * drifts. This file checks it.
@@ -28,10 +31,11 @@ import { parse } from "yaml";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
-type Tier = "unit-pure" | "integration";
+type Tier = "unit-pure" | "integration" | "process";
 
 interface Job {
   steps?: { run?: string }[];
+  strategy?: unknown;
 }
 
 const workflow = parse(readFileSync(`${ROOT}.github/workflows/test.yml`, "utf8")) as {
@@ -83,7 +87,31 @@ function routingOfScripts(label: string, scripts: string[]): Routing {
 const unitPure = routingOfScripts("scripts/ci/unit-pure-files.sh", [
   readFileSync(`${ROOT}scripts/ci/unit-pure-files.sh`, "utf8"),
 ]);
-const integrationDev = routingOf("integration-dev");
+// The gate `integration-dev` runs nothing; its shards (`integration-dev-shard`) route the files.
+const integrationDev = routingOf("integration-dev-shard");
+
+const PROCESS_LISTER = readFileSync(`${ROOT}scripts/ci/process-files.sh`, "utf8");
+const UNIT_PURE_LISTER = readFileSync(`${ROOT}scripts/ci/unit-pure-files.sh`, "utf8");
+
+/**
+ * The pattern `scripts/ci/process-files.sh` greps the first marker line for, read out of the script
+ * so a change to it is followed. A pattern that cannot be read fails loudly.
+ */
+function processPatternOf(script: string): RegExp {
+  const found = [...script.matchAll(/grep -Eq '(CI TIER: [^']+)'/g)];
+  if (found.length !== 1) {
+    throw new Error(
+      `expected exactly one tier grep in scripts/ci/process-files.sh, found ${found.length}: this guard must be updated with the script`,
+    );
+  }
+  return new RegExp(found[0][1]);
+}
+const PROCESS_PATTERN = processPatternOf(PROCESS_LISTER);
+
+/** The first line holding the marker, which is the line `process-files.sh` reads (`grep -m1`). */
+function markerLine(text: string): string {
+  return text.split("\n").find((line) => line.includes("CI TIER:")) ?? "";
+}
 
 /**
  * The marker names, unescaped, so a test can build a file that holds one without this file
@@ -96,6 +124,7 @@ const ROUTING_PATTERN = new RegExp(unitPure.pattern);
 /** The tier the workflow gives a file of this name and text: `grep -E` over the whole file. */
 function routedTo(name: string, text: string): Tier {
   if (name.endsWith(".integration.test.ts")) return "integration";
+  if (PROCESS_PATTERN.test(markerLine(text))) return "process";
   return ROUTING_PATTERN.test(text) ? "integration" : "unit-pure";
 }
 
@@ -103,12 +132,14 @@ function routedTo(name: string, text: string): Tier {
  * The tier a header claims, from the first `CI TIER:` in the file: the first tier word after it,
  * so "integration, like the other suites" and "this file runs in the integration tier, not
  * `unit-pure`" both read as integration. `undefined` when the file makes no claim, `"unreadable"`
- * when it makes one that names neither tier.
+ * when it makes one that names no tier.
  */
 function claimedBy(text: string): Tier | "unreadable" | undefined {
   const at = text.indexOf("CI TIER:");
   if (at === -1) return undefined;
-  const word = text.slice(at + "CI TIER:".length, at + 400).match(/unit-pure|integration/);
+  const word = text
+    .slice(at + "CI TIER:".length, at + 400)
+    .match(/unit-pure|integration|process\b/);
   return word ? (word[0] as Tier) : "unreadable";
 }
 
@@ -152,10 +183,11 @@ describe("the workflow's routing can be read", () => {
 });
 
 describe("a header's tier claim is the tier the workflow gives the file", () => {
-  test("the guard reads claims from files at all, in both tiers", () => {
+  test("the guard reads claims from files at all, in every tier", () => {
     // A guard whose scan found nothing would pass for ever.
     expect(claimants.some((f) => f.claim === "unit-pure")).toBe(true);
     expect(claimants.some((f) => f.claim === "integration")).toBe(true);
+    expect(claimants.some((f) => f.claim === "process")).toBe(true);
   });
 
   for (const { path, text, claim } of claimants) {
@@ -177,6 +209,64 @@ describe("a header's tier claim is the tier the workflow gives the file", () => 
     expect(self).toBeDefined();
     expect(claimedBy(self?.text ?? "")).toBe("unit-pure");
     expect(routedTo("ci-tier-routing.unit.test.ts", self?.text ?? "")).toBe("unit-pure");
+  });
+});
+
+describe("the process tier is its own job and no unit-pure shard runs a process file", () => {
+  const processFiles = claimants.filter((f) => f.claim === "process");
+
+  test("a file claiming process is routed to process, so it cannot fall back to unit-pure", () => {
+    expect(processFiles.length).toBeGreaterThan(0);
+    for (const f of processFiles) {
+      expect(markerLine(f.text), f.path).toMatch(/CI TIER: process([^A-Za-z-]|$)/);
+      expect(routedTo(basename(f.path), f.text), f.path).toBe("process");
+    }
+  });
+
+  test("a process file holds no integration marker and is not named *.integration.test.ts", () => {
+    // Otherwise the integration-dev job would run it as well and it would run twice.
+    for (const f of processFiles) {
+      expect(f.path, f.path).not.toMatch(/\.integration\.test\.ts$/);
+      expect(ROUTING_PATTERN.test(f.text), f.path).toBe(false);
+    }
+  });
+
+  test("unit-pure-files.sh skips whatever process-files.sh lists", () => {
+    expect(UNIT_PURE_LISTER).toContain("scripts/ci/process-files.sh");
+    expect(UNIT_PURE_LISTER).toMatch(/grep -Fxq -- "\$f" <<<"\$process_files"; then continue/);
+  });
+
+  test("the process-tier job runs the lister and refuses an empty list", () => {
+    const scripts = scriptsOf("process-tier").join("\n");
+    expect(scripts).toContain("scripts/ci/process-files.sh");
+    expect(scripts).toMatch(/\$\{#files\[@\]\}" -gt 0/);
+    expect(scripts).not.toContain("unit-pure-files.sh");
+  });
+
+  test("the deploy gate also runs the process list, and refuses an empty one", () => {
+    // The pure list skips process files, so without this step a deploy would not run them.
+    const deploy = parse(readFileSync(`${ROOT}.github/workflows/deploy-backend.yml`, "utf8")) as {
+      jobs: Record<string, Job>;
+    };
+    const steps = (deploy.jobs["test-gate-static"]?.steps ?? []).flatMap((s) => (s.run ? [s.run] : []));
+    const runners = steps.filter((s) => s.includes("scripts/ci/process-files.sh"));
+    expect(runners.length).toBe(1);
+    expect(runners[0]).toMatch(/\$\{#files\[@\]\}" -gt 0/);
+    expect(runners[0]).toMatch(/bun test "\$\{files\[@\]\}"/);
+  });
+
+  test("no unit-pure shard runs the process lister, and the process job is not a shard", () => {
+    expect(scriptsOf("unit-pure-shard").join("\n")).not.toContain("process-files.sh");
+    expect(workflow.jobs["process-tier"]?.strategy).toBeUndefined();
+  });
+
+  test("the header is read as the first word after the marker", () => {
+    expect(claimedBy(" * CI TIER: process. It spawns a child process.")).toBe("process");
+    expect(claimedBy(" * CI TIER: unit-pure. It does not spawn a process.")).toBe("unit-pure");
+    expect(routedTo("a.test.ts", " * CI TIER: process. Spawns the rig.")).toBe("process");
+    // A header that merely mentions the word later is not in the tier the script lists.
+    expect(routedTo("a.test.ts", " * CI TIER: unit-pure, not a process.")).toBe("unit-pure");
+    expect(routedTo("a.test.ts", " * CI TIER: processing.")).toBe("unit-pure");
   });
 });
 
@@ -214,7 +304,7 @@ describe("the pure tier has one classifier, used by both gates", () => {
     jobs: Record<string, Job>;
   };
   const shardScripts = scriptsOf("unit-pure-shard");
-  const gateScripts = (deploy.jobs["test-gate"]?.steps ?? []).flatMap((s) =>
+  const gateScripts = (deploy.jobs["test-gate-shard"]?.steps ?? []).flatMap((s) =>
     s.run ? [s.run] : [],
   );
   const INLINE_LOOP = /for f in [^;]*\*\.test\.ts/;

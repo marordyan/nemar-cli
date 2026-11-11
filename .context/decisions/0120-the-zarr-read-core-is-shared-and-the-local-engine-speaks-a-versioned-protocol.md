@@ -1,4 +1,4 @@
-# ADR 0118: The Zarr read core is shared, and the local engine speaks a versioned protocol
+# ADR 0120: The Zarr read core is shared, and the local engine speaks a versioned protocol
 
 **Status:** proposed
 **Date:** 2026-11-05
@@ -96,8 +96,8 @@ A Zarr store is not the file, though: one recording can have several groups, and
   A client written against it can break until v1; `unsupported_version` in answer to `hello` makes that a clear refusal instead of a silent misread.
 - **Requests are serialized.**
   The `id` field is already there, so concurrent requests can be added without breaking the format.
-- **This ADR's number is provisional.**
-  Upstream's compute epic (nemarOrg/nemar-cli#2021) has reserved 0118 and 0119, so this record will be renumbered when the work goes upstream; the gapless-index test is why it is 0118 here.
+- **This ADR's number was settled when the epic merged upstream `dev`.**
+  It was drafted as 0118, but upstream's compute gateway and OpenID Connect records took 0118 and 0119 first, so it is 0120.
 
 ## Alternatives considered
 

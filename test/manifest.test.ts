@@ -4,10 +4,11 @@
  * Tests for: manifest parsing utilities, CLI manifest command.
  */
 
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "bun";
+import { useTestGitIdentity } from "./helpers/git-identity";
 import { sleep } from "./setup";
 
 const TMP_DIR = join(import.meta.dir, ".test-manifest");
@@ -73,13 +74,24 @@ async function runCmd(
   return { stdout, stderr, exitCode };
 }
 
+let restoreGitIdentity: () => void;
+
+// `git annex init` commits, so the repositories this file creates need an identity (CI runners have none).
+beforeAll(() => {
+  restoreGitIdentity = useTestGitIdentity();
+});
+
 beforeEach(async () => {
   await sleep(100);
 });
 
 afterAll(() => {
-  if (existsSync(TMP_DIR)) {
-    rmSync(TMP_DIR, { recursive: true, force: true });
+  try {
+    if (existsSync(TMP_DIR)) {
+      rmSync(TMP_DIR, { recursive: true, force: true });
+    }
+  } finally {
+    restoreGitIdentity?.();
   }
 });
 

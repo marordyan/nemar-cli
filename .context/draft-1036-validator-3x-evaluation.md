@@ -2,12 +2,12 @@
 
 Research date: 2026-08-10. Read-only evaluation; nothing was posted to GitHub and no repository was modified.
 Bundling and runtime findings below were verified empirically in a scratchpad spike
-(`/private/tmp/claude-501/-Users-yahya-Documents-git-nemar-website/9464ebc3-6d29-4f9a-8ebc-36cc5071753d/scratchpad/spike/`),
+(`<scratchpad>/spike/`),
 not just read off release notes.
 
 ## 1. Current state in nemar-cli (exact pins and call sites)
 
-The pin is `/Users/yahya/Documents/git/nemar/nemar-cli/validator-version.json`:
+The pin is `<repo root>/validator-version.json`:
 
 ```json
 { "version": "2.4.1", "specifier": "jsr:@bids/validator" }
@@ -19,7 +19,7 @@ command-line interface (CLI), so the 3.0 library-API reorganization does not tou
 
 Call sites:
 
-- `/Users/yahya/Documents/git/nemar/nemar-cli/src/lib/bids-validator.ts:19-23` — imports the pin,
+- `<repo root>/src/lib/bids-validator.ts:19-23` — imports the pin,
   exports `VALIDATOR_VERSION`, builds the JSR specifier `jsr:@bids/validator@2.4.1`.
 - `src/lib/bids-validator.ts:192-232` (`buildValidatorArgs`) — invocation is
   `deno run --node-modules-dir=none [-​-reload=<spec>] -ERWN jsr:@bids/validator@<v> <path>`
@@ -32,13 +32,13 @@ Call sites:
   for `nemar dataset validate`.
 - `src/lib/bids-validator.ts:135-186` — `--version` output parsed with `/(\d+\.\d+\.\d+)/` for cache
   refresh and version display.
-- `/Users/yahya/Documents/git/nemar/nemar-cli/src/lib/upload/preflight.ts:129` — upload preflight calls
+- `<repo root>/src/lib/upload/preflight.ts:129` — upload preflight calls
   `validateBidsDataset(absolutePath, { prune: true })`; errors block upload.
-- `/Users/yahya/Documents/git/nemar/nemar-cli/src/commands/dataset.ts:67-70, 377` — the
+- `<repo root>/src/commands/dataset.ts:67-70, 377` — the
   `nemar dataset validate` command; unknown flags are passed through to the validator CLI.
-- `/Users/yahya/Documents/git/nemar/nemar-cli/backend/src/services/github/shared.ts:12-14` — the backend
+- `<repo root>/backend/src/services/github/shared.ts:12-14` — the backend
   re-imports the same pin and exports `VALIDATOR_VERSION`.
-- `/Users/yahya/Documents/git/nemar/nemar-cli/backend/src/services/github/workflows.ts:131-178` — the
+- `<repo root>/backend/src/services/github/workflows.ts:131-178` — the
   per-dataset-repo `bids-validation.yml` shim template interpolates
   `client_payload[validator_version]=${VALIDATOR_VERSION}` into a `repository_dispatch` to
   `nemarDatasets/.github`.
@@ -51,7 +51,7 @@ Call sites:
   `https://jsr.io/@bids/validator/meta.json` with `select(test("^2\\.[0-9]+\\.[0-9]+\\.?[0-9]*$"))`
   style regex, literally `select(test("^2\\.[0-9]+\\.[0-9]+$"))` — hard-locked to major 2, exactly as
   issue #1036 states. It runs `bun test` against the new pin before opening a PR to `dev`.
-- Tests asserting lockstep: `/Users/yahya/Documents/git/nemar/nemar-cli/test/workflow-yaml.test.ts:178-207`
+- Tests asserting lockstep: `<repo root>/test/workflow-yaml.test.ts:178-207`
   (shim interpolation and pin shape), `backend/test/bids-validation-dispatch.test.ts:19-31`
   (dispatch payload equals the pin), `test/cli.test.ts:434-442` (raw JSON output has
   `{ issues: { issues: [...] }, summary: {...} }`).

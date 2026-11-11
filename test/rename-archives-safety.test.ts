@@ -29,7 +29,7 @@
  * Skipped when `aws` is not on PATH.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { which } from "bun";
 import { runRenameScript } from "./helpers/rename-archives-run";
 import { type RenameS3Standin, startRenameS3Standin } from "./helpers/s3-rename-standin";
@@ -50,29 +50,101 @@ const awsInstalled = which("aws") !== null;
 // has the 5s default).
 const TEST_TIMEOUT_MS = 60000;
 
-describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-in S3)", () => {
-  let s: RenameS3Standin;
+// Every scenario owns its stand-in (ephemeral ports) and its private HOME and
+// AWS config, so scenarios are independent and run in a small pool: the first
+// test to run starts the pool, which works through the scenarios in order,
+// MAX_CONCURRENT at a time (each spawns `bun` plus the real `aws` CLI several
+// times, and CI runners have four cores shared with other files). Each test
+// then waits for its own scenario and reports its failure, so the per-test
+// timeout still bounds one scenario and not the queue ahead of it. A retried
+// test runs its scenario again on its own.
+const MAX_CONCURRENT = 3;
 
-  beforeEach(() => {
-    s = startRenameS3Standin();
-  });
+type Outcome = { error: unknown } | null;
 
-  afterEach(() => {
-    // Invariant across every scenario: the script only ever deletes BY VERSION
-    // ID. On this versioned bucket a bare DELETE just adds a delete marker and
-    // frees nothing.
-    const bare = s.log.filter((e) => e.op === "DeleteObject" && e.versionId === null);
-    s.stop();
+interface Scenario {
+  run: () => Promise<void>;
+  outcome: Promise<Outcome>;
+  settle: (o: Outcome) => void;
+}
+
+const scenarios: Scenario[] = [];
+let poolStarted = false;
+
+function startPool(): void {
+  if (poolStarted) return;
+  poolStarted = true;
+  let next = 0;
+  const lane = async (): Promise<void> => {
+    for (let i = next++; i < scenarios.length; i = next++) {
+      const sc = scenarios[i] as Scenario;
+      try {
+        await sc.run();
+        sc.settle(null);
+      } catch (error) {
+        sc.settle({ error });
+      }
+    }
+  };
+  for (let n = 0; n < MAX_CONCURRENT; n++) void lane();
+}
+
+type Ops = (op: string) => RenameS3Standin["log"];
+
+/** One scenario against a fresh stand-in, checked for the invariant below once it ends. */
+function scenario(name: string, body: (s: RenameS3Standin, ops: Ops) => Promise<void>): void {
+  const run = async (): Promise<void> => {
+    const s = startRenameS3Standin();
+    let bare: RenameS3Standin["log"] = [];
+    let failed = false;
+    let failure: unknown;
+    try {
+      await body(s, (op) => s.log.filter((e) => e.op === op));
+    } catch (e) {
+      failed = true;
+      failure = e;
+    } finally {
+      // Invariant across every scenario: the script only ever deletes BY
+      // VERSION ID. On this versioned bucket a bare DELETE just adds a
+      // delete marker and frees nothing.
+      bare = s.log.filter((e) => e.op === "DeleteObject" && e.versionId === null);
+      s.stop();
+    }
+    // The invariant is judged even when the body failed, as the afterEach it replaced was: a
+    // scenario that both fails and issues a bare DELETE reports both.
+    if (failed && bare.length > 0) {
+      throw new AggregateError(
+        [failure, new Error(`bare DELETE requests: ${JSON.stringify(bare)}`)],
+        "the scenario failed and the script also issued a bare DELETE",
+      );
+    }
+    if (failed) throw failure;
     expect(bare).toEqual([]);
+  };
+  let settle: (o: Outcome) => void = () => {};
+  const outcome = new Promise<Outcome>((resolve) => {
+    settle = resolve;
   });
+  scenarios.push({ run, outcome, settle });
+  let attempts = 0;
+  test(
+    name,
+    async () => {
+      if (attempts++ > 0) return run();
+      startPool();
+      const result = await outcome;
+      if (result) throw result.error;
+    },
+    TEST_TIMEOUT_MS,
+  );
+}
 
-  const ops = (op: string) => s.log.filter((e) => e.op === op);
-
+describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-in S3)", () => {
   // ---- multipart ----------------------------------------------------------
 
-  test(
+  scenario(
     "multipart copy (20 MiB): parts copied, completed, verified, tagged, then the old version deleted by id",
-    async () => {
+    async (s, ops) => {
       const oldVersionId = s.putObject(B, oldKey(ID, "1.0.0"), {
         size: 20 * MiB,
         etag: '"aaaa-3"',
@@ -100,12 +172,11 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       const del = s.log.find((e) => e.op === "DeleteObject");
       expect(del?.op === "DeleteObject" && del.versionId).toBe(oldVersionId);
     },
-    TEST_TIMEOUT_MS,
   );
 
-  test(
+  scenario(
     "a plain-MD5 source above the multipart threshold still verifies: its copy has a multipart ETag",
-    async () => {
+    async (s, ops) => {
       // Uploaded in a single PUT (plain MD5 ETag), but 20 MiB, so `aws s3 cp`
       // copies it multipart and the copy comes out with a `-<parts>` ETag.
       s.putObject(B, oldKey(ID, "1.0.0"), {
@@ -120,12 +191,11 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       expect(s.has(B, oldKey(ID, "1.0.0"))).toBe(false);
       expect(s.getObject(B, newKey(ID, "1.0.0"))?.tags["nemar-kind"]).toBe("archive");
     },
-    TEST_TIMEOUT_MS,
   );
 
-  test(
+  scenario(
     "a part that fails mid-copy leaves the old object intact and no destination",
-    async () => {
+    async (s, ops) => {
       s.putObject(B, oldKey(ID, "1.0.0"), { size: 20 * MiB, etag: '"aaaa-3"', lastModified: T1 });
       s.inject("UploadPartCopy", { code: "AccessDenied", status: 403, after: 1 });
 
@@ -140,12 +210,11 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       expect(ops("PutObjectTagging")).toEqual([]);
       expect(ops("DeleteObject")).toEqual([]);
     },
-    TEST_TIMEOUT_MS,
   );
 
-  test(
+  scenario(
     "a destination one byte short after a 'successful' copy is refused: nothing tagged, nothing deleted",
-    async () => {
+    async (s, ops) => {
       s.putObject(B, oldKey(ID, "1.0.0"), { size: 20 * MiB, etag: '"aaaa-3"', lastModified: T1 });
       s.shortenNextMultipartCompleteBy(1);
 
@@ -161,12 +230,11 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       expect(ops("DeleteObject")).toEqual([]);
       expect(s.has(B, oldKey(ID, "1.0.0"))).toBe(true);
     },
-    TEST_TIMEOUT_MS,
   );
 
-  test(
+  scenario(
     "a re-run over that short destination is a collision, not a rename: nothing deleted, exit nonzero",
-    async () => {
+    async (s, ops) => {
       s.putObject(B, oldKey(ID, "1.0.0"), { size: 20 * MiB, etag: '"aaaa-3"', lastModified: T1 });
       // A destination already there and one byte short (an earlier run's
       // leftover), newer than the source.
@@ -188,12 +256,11 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       expect(ops("DeleteObject")).toEqual([]);
       expect(s.getObject(B, newKey(ID, "1.0.0"))?.size).toBe(20 * MiB - 1);
     },
-    TEST_TIMEOUT_MS,
   );
 
-  test(
+  scenario(
     "a HEAD that errors after the copy is a failed verification, not a 'missing destination'; a re-run resumes",
-    async () => {
+    async (s, ops) => {
       s.putObject(B, oldKey(ID, "1.0.0"), { size: 500, etag: '"a"', lastModified: T1 });
       // The destination's first HEAD (the pre-check, before the copy) passes;
       // the second (the verification after it) hits an expired token.
@@ -220,14 +287,13 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       expect(s.has(B, oldKey(ID, "1.0.0"))).toBe(false);
       expect(s.getObject(B, newKey(ID, "1.0.0"))?.tags["nemar-kind"]).toBe("archive");
     },
-    TEST_TIMEOUT_MS,
   );
 
   // ---- versions and prefixes ----------------------------------------------
 
-  test(
+  scenario(
     "a legacy key with an older version and a delete marker: warned, counted, never deleted",
-    async () => {
+    async (s, ops) => {
       const key = oldKey(ID, "1.0.0");
       const olderId = s.putObject(B, key, { size: 700, etag: '"old"', lastModified: T1 });
       const markerId = s.putDeleteMarker(B, key);
@@ -252,12 +318,11 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       expect(del.op === "DeleteObject" && del.versionId).toBe(currentId);
       expect(s.versions(B, key).map((v) => v.versionId)).toEqual([olderId, markerId]);
     },
-    TEST_TIMEOUT_MS,
   );
 
-  test(
+  scenario(
     "deleting the current version resurrects an older one: warned, and a re-run flags it as a collision",
-    async () => {
+    async (s, ops) => {
       const key = oldKey(ID, "1.0.0");
       const olderId = s.putObject(B, key, { size: 700, etag: '"old"', lastModified: T1 });
       s.putObject(B, key, { size: 1000, etag: '"cur"', lastModified: T2 });
@@ -276,12 +341,11 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       expect(s.getObject(B, key)?.size).toBe(700);
       expect(s.log.filter((e) => e.op === "DeleteObject")).toHaveLength(1);
     },
-    TEST_TIMEOUT_MS,
   );
 
-  test(
+  scenario(
     "keys that are prefixes of each other: every version listing is filtered to the exact key",
-    async () => {
+    async (s, ops) => {
       // v1.0.1.zip and v1.0.10.zip are the pair a sloppy match confuses, and
       // v1.0.1.zip.bak is a real prefix neighbour: `list-object-versions
       // --prefix .../v1.0.1.zip` returns it too. It is not a .zip, so it is
@@ -321,12 +385,11 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       // The neighbour is untouched.
       expect(s.versions(B, bak).map((v) => v.versionId)).toEqual([bakId]);
     },
-    TEST_TIMEOUT_MS,
   );
 
-  test(
+  scenario(
     "a legacy object replaced between the copy and the delete is NOT deleted",
-    async () => {
+    async (s, ops) => {
       const key = oldKey(ID, "1.0.0");
       s.putObject(B, key, { size: 1000, etag: '"planned"', lastModified: T1 });
       // The first version listing happens just before the delete. Rebuild the
@@ -344,30 +407,25 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       expect(s.versions(B, key)).toHaveLength(2);
       expect(s.getObject(B, newKey(ID, "1.0.0"))?.size).toBe(1000);
     },
-    TEST_TIMEOUT_MS,
   );
 
-  test(
-    "a delete that S3 refuses is a failed item, not a rename",
-    async () => {
-      s.putObject(B, oldKey(ID, "1.0.0"), { size: 500, etag: '"a"', lastModified: T1 });
-      s.inject("DeleteObject", { code: "AccessDenied", status: 403 });
+  scenario("a delete that S3 refuses is a failed item, not a rename", async (s, ops) => {
+    s.putObject(B, oldKey(ID, "1.0.0"), { size: 500, etag: '"a"', lastModified: T1 });
+    s.inject("DeleteObject", { code: "AccessDenied", status: 403 });
 
-      const run = await runRenameScript(s, apply());
-      expect(run.exitCode).not.toBe(0);
-      expect(run.stdout).toContain("Renamed: 0");
-      expect(run.stdout).toContain("failed: 1");
-      expect(run.stderr).toContain("FAILED to delete old version");
-      expect(s.has(B, oldKey(ID, "1.0.0"))).toBe(true);
-    },
-    TEST_TIMEOUT_MS,
-  );
+    const run = await runRenameScript(s, apply());
+    expect(run.exitCode).not.toBe(0);
+    expect(run.stdout).toContain("Renamed: 0");
+    expect(run.stdout).toContain("failed: 1");
+    expect(run.stderr).toContain("FAILED to delete old version");
+    expect(s.has(B, oldKey(ID, "1.0.0"))).toBe(true);
+  });
 
   // ---- head errors, listing errors, region, exit status -------------------
 
-  test(
+  scenario(
     "a dropped connection whose URL contains 404 is not read as 'no destination': nothing is overwritten",
-    async () => {
+    async (s, ops) => {
       // nm000404's key embeds "404", and the CLI's connection-error text embeds
       // the request URL, so the error line contains "404" without being a 404.
       const id = "nm000404";
@@ -389,12 +447,11 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       expect(s.getObject(B, newKey(id, "1.0.0"))?.etag).toBe('"fresh"');
       expect(s.getObject(B, newKey(id, "1.0.0"))?.size).toBe(900);
     },
-    TEST_TIMEOUT_MS,
   );
 
-  test(
+  scenario(
     "a failed version listing fails that ITEM, not the run, and a re-run resumes",
-    async () => {
+    async (s, ops) => {
       s.putObject(B, oldKey(ID, "1.0.0"), { size: 500, etag: '"a"', lastModified: T1 });
       s.putObject(B, oldKey(ID, "1.0.1"), { size: 600, etag: '"b"', lastModified: T1 });
       // Credentials expire between the tag and the delete.
@@ -419,12 +476,11 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       expect(s.has(B, oldKey(ID, "1.0.0"))).toBe(false);
       expect(s.has(B, oldKey(ID, "1.0.1"))).toBe(false);
     },
-    TEST_TIMEOUT_MS,
   );
 
-  test(
+  scenario(
     "the region is passed to every call, guard included, with no AWS_DEFAULT_REGION in the environment",
-    async () => {
+    async (s, ops) => {
       s.putObject(B, oldKey(ID, "1.0.0"), { size: 500, etag: '"a"', lastModified: T1 });
 
       const run = await runRenameScript(s, [
@@ -440,36 +496,30 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       expect([...s.regions.s3]).toEqual(["eu-west-1"]);
       expect([...s.regions.sts]).toEqual(["eu-west-1"]);
     },
-    TEST_TIMEOUT_MS,
   );
 
-  test(
-    "the region defaults to us-east-2, again without AWS_DEFAULT_REGION",
-    async () => {
-      s.putObject(B, oldKey(ID, "1.0.0"), { size: 500, etag: '"a"', lastModified: T1 });
+  scenario("the region defaults to us-east-2, again without AWS_DEFAULT_REGION", async (s, ops) => {
+    s.putObject(B, oldKey(ID, "1.0.0"), { size: 500, etag: '"a"', lastModified: T1 });
 
-      const run = await runRenameScript(s, ["--dataset", ID, "--bucket", B]);
-      expect(run.exitCode).toBe(0);
-      expect([...s.regions.s3]).toEqual(["us-east-2"]);
-      expect([...s.regions.sts]).toEqual(["us-east-2"]);
-    },
-    TEST_TIMEOUT_MS,
-  );
+    const run = await runRenameScript(s, ["--dataset", ID, "--bucket", B]);
+    expect(run.exitCode).toBe(0);
+    expect([...s.regions.s3]).toEqual(["us-east-2"]);
+    expect([...s.regions.sts]).toEqual(["us-east-2"]);
+  });
 
-  test(
+  scenario(
     "a region that is not an AWS region name is refused before any request",
-    async () => {
+    async (s, ops) => {
       const run = await runRenameScript(s, ["--dataset", ID, "--region", "us-east-2; echo hi"]);
       expect(run.exitCode).not.toBe(0);
       expect(run.stderr).toContain("is not an AWS region name");
       expect(s.log).toEqual([]);
     },
-    TEST_TIMEOUT_MS,
   );
 
-  test(
+  scenario(
     "a collision exits nonzero, names the collision, and tells the operator to inspect first",
-    async () => {
+    async (s, ops) => {
       s.putObject(B, oldKey(ID, "1.0.0"), { size: 500, etag: '"a"', lastModified: T1 });
       s.putObject(B, newKey(ID, "1.0.0"), { size: 900, etag: '"different"', lastModified: T2 });
 
@@ -480,12 +530,11 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       expect(ops("DeleteObject")).toEqual([]);
       expect(ops("PutObjectTagging")).toEqual([]);
     },
-    TEST_TIMEOUT_MS,
   );
 
-  test(
+  scenario(
     "--delete-stale-legacy refuses a destination that is SMALLER than the legacy object",
-    async () => {
+    async (s, ops) => {
       // Newer and non-empty, but smaller: a truncated or partial destination,
       // not a fresh build. Deleting the legacy object here would destroy the
       // only intact copy.
@@ -499,6 +548,5 @@ describe.skipIf(!awsInstalled)("rename-archives.ts safety (real aws CLI, stand-i
       expect(ops("PutObjectTagging")).toEqual([]);
       expect(s.has(B, oldKey(ID, "1.0.0"))).toBe(true);
     },
-    TEST_TIMEOUT_MS,
   );
 });

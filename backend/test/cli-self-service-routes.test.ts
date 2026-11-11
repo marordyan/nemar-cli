@@ -682,7 +682,7 @@ function continueHandoff(token: string, sessionCookie?: string): Promise<Respons
   };
   if (sessionCookie) headers.Cookie = sessionCookie;
   return app.request(
-    "/auth/orcid/cli-handoff/continue",
+    "https://app.nemar.org/auth/orcid/cli-handoff/continue",
     { method: "POST", headers, body: `t=${encodeURIComponent(token)}` },
     env(),
   );
@@ -715,7 +715,7 @@ async function walkHandoff(
 
 function callback(csrf: string, cookies: string[]): Promise<Response> {
   return app.request(
-    `/auth/orcid/callback?code=orcid-code&state=${encodeURIComponent(csrf)}`,
+    `https://app.nemar.org/auth/orcid/callback?code=orcid-code&state=${encodeURIComponent(csrf)}`,
     { headers: { Cookie: cookies.join("; ") } },
     env(),
   );

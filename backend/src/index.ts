@@ -10,7 +10,6 @@
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { logger } from "hono/logger";
 import { secureHeaders } from "hono/secure-headers";
 
 // Single source of truth for the version. The worker reads the repo-root
@@ -20,6 +19,7 @@ import { secureHeaders } from "hono/secure-headers";
 // the two manifests fails the bump rather than silently shipping.
 import pkg from "../../package.json" with { type: "json" };
 import { notFoundResponse } from "./lib/not-found";
+import { accessLogger } from "./middleware/access-log";
 import { optionalAuthMiddleware } from "./middleware/auth";
 import { maintenanceMode } from "./middleware/maintenance";
 import { rateLimiter } from "./middleware/rateLimit";
@@ -28,26 +28,43 @@ import { authRoutes } from "./routes/auth";
 import { authDeviceRoutes } from "./routes/auth-device";
 import { authDocsRoutes } from "./routes/auth-docs";
 import { authKeysRoutes } from "./routes/auth-keys";
+import { authOidcRoutes } from "./routes/auth-oidc";
 import { authOrcidRoutes } from "./routes/auth-orcid";
 import { authPrivateRoutes } from "./routes/auth-private";
 import { authWebRoutes } from "./routes/auth-web";
+import { computeRoutes } from "./routes/compute";
 import { catalogIndexResponse, dataRoutes } from "./routes/data";
 import { datasetRoutes } from "./routes/datasets";
 import { mcpRoutes } from "./routes/mcp";
 import { neurobagelRoutes } from "./routes/neurobagel";
 import { newsRoutes } from "./routes/news";
+import { oauthRoutes } from "./routes/oauth";
+import { oidcDiscoveryRoutes } from "./routes/oidc-discovery";
 import { openApiRoutes } from "./routes/openapi";
 import { sandboxRoutes } from "./routes/sandbox";
 import { schemaRoutes } from "./routes/schemas";
 import { userRoutes } from "./routes/users";
 import webhooks from "./routes/webhooks";
 import { zarrDataRoutes } from "./routes/zarr-data";
+import { accessReportsLogLine, runAccessReportCron } from "./services/access-attributes";
 import { runAnonymitySweepCron } from "./services/anonymity-sweep";
 import { archiveRetrySweep } from "./services/archive-retry";
 import { AUTO_IMPORT_CRON, autoImportTick } from "./services/auto-import";
 import { runAvailabilityReportSweepCron } from "./services/availability-report";
 import type { BroadcastOutboxMessage } from "./services/broadcast";
 import { fetchAndSyncCitationCounts } from "./services/citation-counts-sync";
+import {
+  cancellationsLogLine,
+  computeAdvanceLogLine,
+  runComputeAdvanceCron,
+  sweepComputeCancellations,
+} from "./services/compute-advance";
+import {
+  pipelineDispatchLogLine,
+  runComputePipelineDispatchCron,
+} from "./services/compute-pipeline-dispatch";
+import { retentionLogLine, runComputeRetentionSweep } from "./services/compute-retention";
+import { sweepTenantJobs, tenantLogLine } from "./services/compute-tenant-sweep";
 import { isNemarWebOrigin, isOscOrigin } from "./services/cors-origins";
 import { sweepLogLines } from "./services/cron-sweep-log";
 import { fetchAndSyncDataPapers } from "./services/data-papers-sync";
@@ -96,6 +113,7 @@ import {
   verificationLogLine,
 } from "./services/neurobagel-verify";
 import { getActiveNotices } from "./services/notices";
+import { logoutTickLogLine, runOidcLogoutRetryTick } from "./services/oidc-logout";
 import { sweepStalePrReviews } from "./services/pr-review";
 import { sweepPublicationReviews } from "./services/publication-review";
 import { sweepBlockedBidsValidationRequests } from "./services/publication-sweep";
@@ -128,7 +146,7 @@ import type { Bindings, Variables } from "./types/bindings";
 const api = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 // Global middleware
-api.use("*", logger());
+api.use("*", accessLogger());
 api.use("*", secureHeaders());
 api.use(
   "*",
@@ -221,6 +239,18 @@ api.route("/news", newsRoutes);
 // re-checked against D1. Off (404) until NEUROBAGEL_READ_TOKEN and the bucket exist.
 api.route("/neurobagel", neurobagelRoutes);
 
+// OpenID Connect discovery and the signing keys' public set (epic #2014 phase #2016, ADR 0119): the
+// issuer is this host, permanently, so both documents are exempt from the maintenance mode and the
+// rate limiter, and both are 404 unless OIDC_SECRET is set and the request names the issuer's own
+// host with no /nemar prefix (routes/oidc-discovery.ts, `oidcSurface`).
+api.route("/", oidcDiscoveryRoutes);
+// The token, userinfo, revocation and introspection endpoints (epic #2014 phase #2018, ADR 0119):
+// /oauth/token, /oauth/userinfo, /oauth/revoke and /oauth/introspect. 404 until OIDC_SECRET is set
+// AND HOST_PREFIXED_SESSION_COOKIE is "1", on the issuer's host with no /nemar prefix, as the
+// authorization routes are (routes/oauth.ts). Unlike discovery and the key set they are rate limited
+// (the `oauth-ip` bucket) and under the maintenance mode.
+api.route("/oauth", oauthRoutes);
+
 // Mount route handlers
 api.route("/auth", authRoutes);
 // Web-dashboard auth (#569). Mounted at the same /auth prefix as the
@@ -245,10 +275,19 @@ api.route("/auth", authDocsRoutes);
 // /auth/private/grant. The exchange, the per-request check and sign-out are
 // service-binding methods (ADR 0078), not routes.
 api.route("/auth", authPrivateRoutes);
+// The OpenID Connect authorization endpoint's check and consent (epic #2014 phase #2017, ADR 0119).
+// Same /auth prefix; paths /auth/oidc/authorize and /auth/oidc/consent, called by the website's
+// /oauth/authorize page server-side with its caller marker. 404 until OIDC_SECRET is set AND
+// HOST_PREFIXED_SESSION_COOKIE is "1" (routes/auth-oidc.ts).
+api.route("/auth", authOidcRoutes);
 api.route("/users", userRoutes);
 api.route("/admin", adminRoutes);
 api.route("/datasets", datasetRoutes);
 api.route("/sandbox", sandboxRoutes);
+// The compute gateway: the launcher's job callbacks (a per-job token, no session) and, per route, the
+// person's own cancel and links (epic #2005 phase A5, #2010). Its routes are pinned by
+// test/compute-route-inventory.test.ts.
+api.route("/compute", computeRoutes);
 api.route("/webhooks", webhooks);
 // Public JSON Schema documents (issue #1059). Static, D1-free, cached: the
 // bytes are the repo's own shared/*.schema.json, the same files the Zarr
@@ -386,6 +425,21 @@ app.route("/", api);
 // apps: `POST /auth/docs/grant` answers 404 for a signed-in non-admin, and a
 // 404 that does not look like the others is a 404 that identifies itself.
 app.notFound(notFoundResponse);
+
+/**
+ * The Worker's whole route table, for the test that calls every route with an OpenID Connect access
+ * token and requires the answer an unknown API key gets (epic #2014 phase #2018; ADR 0119 rule 4):
+ * built from this table, a route added later is in that test without anyone listing it. A function
+ * and not the app itself, because a named export that is an object with a `fetch` method could be
+ * read by the runtime as an entrypoint.
+ */
+export function __workerRouteTable(): ReadonlyArray<{
+  method: string;
+  path: string;
+  handler: unknown;
+}> {
+  return app.routes;
+}
 
 /**
  * Scheduled cleanup handler (Cloudflare Workers cron trigger).
@@ -1148,6 +1202,118 @@ export default {
               ),
             ),
         );
+        // #2010 (epic #2005 phase A5, ADR 0118): the compute gateway's backstop for the Tapis
+        // webhook hints. It reads each live job back from Tapis a few at a time, in rotation, submits
+        // a `created` job, marks one Tapis has not answered for in a day `unreported`, repairs a
+        // terminal job whose settlement or copy of its files is owed, and clears the webhook nonce a
+        // day after a job ends. PRODUCTION-ONLY, and deliberately NOT in DEV_CRON_ALLOWLIST: it acts
+        // on a Tapis tenant and moves the allocation ledger, and the dev database shares real users.
+        // It also refuses outside exact production on its own, and it reads no switch, so a live job
+        // is never stranded by turning compute off. One log line, only when it changed or failed.
+        ctx.waitUntil(
+          runComputeAdvanceCron(env)
+            .then((r) => {
+              const log = r ? computeAdvanceLogLine(r) : null;
+              if (log?.level === "error") console.error(log.line);
+              else if (log?.level === "warn") console.warn(log.line);
+              else if (log) console.log(log.line);
+            })
+            .catch((err) =>
+              console.error(
+                "[compute-advance] tick failed:",
+                err instanceof Error ? err.name : typeof err,
+              ),
+            ),
+        );
+        // The retry of every Tapis cancellation a person or an administrator asked for (the intent is
+        // recorded in the database in one batch and the network call is made here, never inside it).
+        // Production-only for the same reasons, NOT in DEV_CRON_ALLOWLIST, and self-fenced.
+        ctx.waitUntil(
+          sweepComputeCancellations(env)
+            .then((r) => {
+              const log = r ? cancellationsLogLine(r) : null;
+              if (log?.level === "error") console.error(log.line);
+              else if (log) console.log(log.line);
+            })
+            .catch((err) =>
+              console.error(
+                "[compute-cancel] sweep failed:",
+                err instanceof Error ? err.name : typeof err,
+              ),
+            ),
+        );
+        // #2013 (epic #2005 phase A8, ADR 0118 decision 9): the ACCESS gateway-attributes reporter.
+        // It sends each Slurm job's pseudonymous gateway user to ACCESS ONCE (the claim is one
+        // conditional UPDATE made before the POST, and a report that may have been recorded is never
+        // sent again by code), ten due rows a tick, retrying only what ACCESS visibly refused. The
+        // POST is never made inside a batch. PRODUCTION-ONLY, and deliberately NOT in
+        // DEV_CRON_ALLOWLIST: it reaches a third party with an owner-set key, and the dev database
+        // shares real users. It also refuses outside exact production on its own, reads no switch
+        // (a job that ran is owed its report whether or not compute is on), and with no key or
+        // resource name set sends nothing. One log line, only when it changed something or a row
+        // needs a person: counts and fixed words, never the key, an address or an id of ACCESS's.
+        ctx.waitUntil(
+          runAccessReportCron(env)
+            .then((r) => {
+              const log = r ? accessReportsLogLine(r) : null;
+              if (log?.level === "error") console.error(log.line);
+              else if (log) console.log(log.line);
+            })
+            .catch((err) =>
+              console.error(
+                "[access-report] tick failed:",
+                err instanceof Error ? err.name : typeof err,
+              ),
+            ),
+        );
+        // #2012 (epic #2005 phase A7, ADR 0118): the tenant sweep, "live" mode. It lists the jobs in
+        // the Tapis tenant that have not ended, and any that no row owns (one that skipped the
+        // reservation) is indexed, cancelled and charged to the partner pool `tenant`, never to a
+        // person; a job tagged for a row is bound to it (the submit race) or, if the row has another
+        // job, cancelled as a duplicate. PRODUCTION-ONLY, and deliberately NOT in DEV_CRON_ALLOWLIST:
+        // it cancels jobs in a tenant and moves the ledger. It also refuses outside exact production
+        // on its own, and acts only while COMPUTE_ENABLED is exactly "1". A listing that fails
+        // changes nothing. One log line, only when it acted or something needs a person.
+        ctx.waitUntil(
+          sweepTenantJobs(env, "live")
+            .then((r) => {
+              const log = r ? tenantLogLine(r) : null;
+              if (log?.level === "error") console.error(log.line);
+              else if (log) console.log(log.line);
+            })
+            .catch((err) =>
+              console.error(
+                "[compute-tenant] sweep failed:",
+                err instanceof Error ? err.name : typeof err,
+              ),
+            ),
+        );
+        // Epic #2014 phase #2019 (ADR 0119 rule 15): the back-channel logout retry tick. A client that
+        // registered a logout address is told when an account's grants end, from `waitUntil` right after
+        // the commit; a delivery that did not go through (a 5xx, a timeout, no connection) is retried
+        // here on its own schedule (1 minute, 5 minutes, 30 minutes, 2 hours and 12 hours, so a short
+        // wait is taken up at the next half hour), at most 20 a tick, each in its own try and catch.
+        // PRODUCTION-ONLY, and deliberately NOT in DEV_CRON_ALLOWLIST: it makes OUTBOUND requests to
+        // addresses partners registered, and the dev Worker shares real accounts. It also refuses outside
+        // exact production on its own, and a delivery is sent only to an https host the registry
+        // validated. It mails nobody, calls no GitHub and touches no DOI or bucket. It reads no switch.
+        // One count line only when it found a delivery, pruned one or failed, with counts and a fixed
+        // word and nothing else; while OIDC_SECRET is set in the wrong form it also warns on every tick
+        // (`skipped reason=oidc_secret_malformed`), and an absent secret is silent.
+        ctx.waitUntil(
+          runOidcLogoutRetryTick(env)
+            .then((r) => {
+              const log = r ? logoutTickLogLine(r) : null;
+              if (log?.level === "error") console.error(log.line);
+              else if (log) console.log(log.line);
+            })
+            .catch((err) =>
+              console.error(
+                "[oidc-logout] tick failed:",
+                err instanceof Error ? (err.stack ?? err.message) : err,
+              ),
+            ),
+        );
       }
       return;
     }
@@ -1256,6 +1422,68 @@ export default {
             console.error(
               "[repull-scheduler] tick failed:",
               err instanceof Error ? (err.stack ?? err.message) : err,
+            ),
+          ),
+      );
+      // #2011 (epic #2005 phase A6, ADR 0118): NEMAR's own pipelines. Dispatches the automatic recipes
+      // over the datasets they have not been run over, within the owner's daily and live caps, and
+      // syncs the stamps first. PRODUCTION-ONLY, and deliberately NOT in DEV_CRON_ALLOWLIST: it makes
+      // jobs that take the allocation ledger's holds and reach a Tapis tenant. It also refuses outside
+      // exact production on its own, and does NOTHING (it touches no table) until the owner has turned
+      // on both COMPUTE_ENABLED and COMPUTE_PIPELINES_DISPATCH_ENABLED. It sends no mail and reaches no
+      // GitHub. One log line, only when it dispatched, skipped for a reason or failed.
+      ctx.waitUntil(
+        runComputePipelineDispatchCron(env)
+          .then((r) => {
+            const log = r ? pipelineDispatchLogLine(r) : null;
+            if (log?.level === "error") console.error(log.line);
+            else if (log?.level === "warn") console.warn(log.line);
+            else if (log) console.log(log.line);
+          })
+          .catch((err) =>
+            console.error(
+              "[compute-pipeline-dispatch] tick failed:",
+              err instanceof Error ? err.name : typeof err,
+            ),
+          ),
+      );
+      // #2012 (epic #2005 phase A7, ADR 0118): the tenant sweep, "week" mode, once a day: every job of
+      // the last seven days, then the day's reconciliation (Expanse's own figures from the observer
+      // against the ledger, and the ACCESS reports in `failed` that a person has to look at).
+      // PRODUCTION-ONLY, NOT in DEV_CRON_ALLOWLIST, self-fenced, and it acts only while COMPUTE_ENABLED
+      // is exactly "1". A listing that fails changes nothing.
+      ctx.waitUntil(
+        sweepTenantJobs(env, "week")
+          .then((r) => {
+            const log = r ? tenantLogLine(r) : null;
+            if (log?.level === "error") console.error(log.line);
+            else if (log) console.log(log.line);
+          })
+          .catch((err) =>
+            console.error(
+              "[compute-tenant] week sweep failed:",
+              err instanceof Error ? err.name : typeof err,
+            ),
+          ),
+      );
+      // #2012 (epic #2005 phase A7, ADR 0118, decision 9): the compute retention sweep. Deletes
+      // `records/<id>/` and `logs/<id>/` of terminal jobs past their retention (honoring a job or
+      // account legal hold, counting any refusal of the bucket's lock as `locked` and asking again
+      // tomorrow), reconciles the results bucket, and anonymizes a deleted account's pools and ledger
+      // actors. By count, never per job. PRODUCTION-ONLY, NOT in DEV_CRON_ALLOWLIST: it deletes from
+      // the private compute buckets. It also refuses outside exact production on its own and reads no
+      // compute switch (a record that is due goes whether or not compute is on).
+      ctx.waitUntil(
+        runComputeRetentionSweep(env)
+          .then((r) => {
+            const log = r ? retentionLogLine(r) : null;
+            if (log?.level === "error") console.error(log.line);
+            else if (log) console.log(log.line);
+          })
+          .catch((err) =>
+            console.error(
+              "[compute-retention] sweep failed:",
+              err instanceof Error ? err.name : typeof err,
             ),
           ),
       );

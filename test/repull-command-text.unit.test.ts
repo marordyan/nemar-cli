@@ -6,6 +6,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { confirmQuestion, repullCommand } from "../src/commands/admin-repull";
 import { releaseBody } from "../src/lib/repull/execute/pull-request";
 import type { ExecuteSummary } from "../src/lib/repull/execute/run";
@@ -67,13 +70,24 @@ describe("the confirmation depends on --until", () => {
   });
 });
 
+/**
+ * The help a user sees for `nemar admin repull <name> --help-all`, read through the real entry
+ * point in its own process. In-process it depends on the order the test files load in:
+ * `src/lib/help.ts` patches `Command.prototype.addHelpText` at load time to replace every "after"
+ * text with a one-line hint, so a file that loads it before `admin-repull.ts` is first imported
+ * leaves this one reading the hint, and the deploy gate (one process, one file order) failed four of
+ * these cases while the sharded pull request run passed them.
+ */
 function helpOf(name: string): string {
-  const sub = repullCommand.commands.find((c) => c.name() === name);
-  if (!sub) throw new Error(`no ${name} command`);
-  const chunks: string[] = [];
-  sub.configureOutput({ writeOut: (s) => chunks.push(s), writeErr: (s) => chunks.push(s) });
-  sub.outputHelp();
-  return chunks.join("").replace(/\s+/g, " ");
+  const run = Bun.spawnSync(
+    ["bun", "run", "src/index.ts", "admin", "repull", name, "--help-all", "--no-color"],
+    {
+      cwd: join(import.meta.dir, ".."),
+      env: { ...process.env, NEMAR_CONFIG_DIR: mkdtempSync(join(tmpdir(), "nemar-help-")) },
+    },
+  );
+  expect(run.exitCode, new TextDecoder().decode(run.stderr)).toBe(0);
+  return new TextDecoder().decode(run.stdout).replace(/\s+/g, " ");
 }
 
 describe("no text names a command that does not exist", () => {

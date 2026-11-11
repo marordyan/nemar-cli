@@ -26,6 +26,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import "./setup";
 import { deleteSeededAccounts, rememberSeededAccount } from "./helpers/seeded-account-teardown";
+import { sessionCookiePair } from "./helpers/session-cookie";
 import { LIVE_TARGET_BLOCKED, TEST_CONFIG } from "./setup";
 
 const API = TEST_CONFIG.apiUrl;
@@ -189,12 +190,12 @@ describe.skipIf(PROD_GUARD_ACTIVE)("passwordless email-code auth (#569)", () => 
     expect(cookieAttrs).toContain("path=/");
 
     // Extract the cookie value for subsequent requests.
-    const m = v.setCookie?.match(/nemar_session=([^;]+)/);
+    const m = sessionCookiePair(v.setCookie);
     expect(m).toBeTruthy();
-    const cookieValue = m?.[1] as string;
+    const cookieValue = m as string;
 
     const me = await fetch(`${API}/auth/me`, {
-      headers: { ...baseHeaders, Cookie: `nemar_session=${cookieValue}` },
+      headers: { ...baseHeaders, Cookie: cookieValue },
     });
     expect(me.status).toBe(200);
     const meBody = (await me.json()) as MeResponse;
@@ -219,12 +220,12 @@ describe.skipIf(PROD_GUARD_ACTIVE)("passwordless email-code auth (#569)", () => 
 
     const logout = await fetch(`${API}/auth/logout`, {
       method: "POST",
-      headers: { ...baseHeaders, Origin: ORIGIN, Cookie: `nemar_session=${cookieValue}` },
+      headers: { ...baseHeaders, Origin: ORIGIN, Cookie: cookieValue },
     });
     expect(logout.status).toBe(200);
 
     const meAfter = await fetch(`${API}/auth/me`, {
-      headers: { ...baseHeaders, Cookie: `nemar_session=${cookieValue}` },
+      headers: { ...baseHeaders, Cookie: cookieValue },
     });
     const meAfterBody = (await meAfter.json()) as MeResponse;
     expect(meAfterBody.user).toBeNull();
@@ -284,10 +285,10 @@ describe.skipIf(PROD_GUARD_ACTIVE)("passwordless email-code auth (#569)", () => 
     }
 
     // /me returns the same populated payload.
-    const m = v.setCookie?.match(/nemar_session=([^;]+)/);
+    const m = sessionCookiePair(v.setCookie);
     expect(m).toBeTruthy();
     const me = await fetch(`${API}/auth/me`, {
-      headers: { ...baseHeaders, Cookie: `nemar_session=${m?.[1] as string}` },
+      headers: { ...baseHeaders, Cookie: m as string },
     });
     expect(me.status).toBe(200);
     const meBody = (await me.json()) as MeResponse;
@@ -482,16 +483,16 @@ describe.skipIf(PROD_GUARD_ACTIVE)("passwordless email-code auth (#569)", () => 
     expect(typeof code).toBe("string");
     const v = await verifyCode(email, code, true);
     expect(v.status).toBe(200);
-    const m = v.setCookie?.match(/nemar_session=([^;]+)/);
+    const m = sessionCookiePair(v.setCookie);
     expect(m).toBeTruthy();
-    const cookieValue = m?.[1] as string;
+    const cookieValue = m as string;
 
     // GET /datasets?mine=true with cookie only (no Authorization
     // header). Pre-#572 this returned 401 "Authentication required to
     // view your datasets" because the bearer-only middleware never saw
     // the cookie.
     const mine = await fetch(`${API}/datasets?mine=true`, {
-      headers: { ...baseHeaders, Cookie: `nemar_session=${cookieValue}` },
+      headers: { ...baseHeaders, Cookie: cookieValue },
     });
     expect(mine.status).toBe(200);
     const mineBody = (await mine.json()) as { datasets: unknown[] };
@@ -535,15 +536,15 @@ describe.skipIf(PROD_GUARD_ACTIVE)("passwordless email-code auth (#569)", () => 
     expect(typeof code).toBe("string");
     const v = await verifyCode(email, code, true);
     expect(v.status).toBe(200);
-    const m = v.setCookie?.match(/nemar_session=([^;]+)/);
+    const m = sessionCookiePair(v.setCookie);
     expect(m).toBeTruthy();
-    const cookieValue = m?.[1] as string;
+    const cookieValue = m as string;
 
     // Demote the account out from under the already-issued session.
     await seedWebUser(email, "pending");
 
     const mine = await fetch(`${API}/datasets?mine=true`, {
-      headers: { ...baseHeaders, Cookie: `nemar_session=${cookieValue}` },
+      headers: { ...baseHeaders, Cookie: cookieValue },
     });
     expect(mine.status).toBe(401);
   });
@@ -565,9 +566,9 @@ describe.skipIf(PROD_GUARD_ACTIVE)("passwordless email-code auth (#569)", () => 
     const req = await requestCode(cookieEmail);
     const code = req.body.dev_code as string;
     const v = await verifyCode(cookieEmail, code, true);
-    const m = v.setCookie?.match(/nemar_session=([^;]+)/);
+    const m = sessionCookiePair(v.setCookie);
     expect(m).toBeTruthy();
-    const cookieValue = m?.[1] as string;
+    const cookieValue = m as string;
 
     // /users/me uses `authMiddleware` and returns the resolved user's
     // email — perfect identity probe.
@@ -575,7 +576,7 @@ describe.skipIf(PROD_GUARD_ACTIVE)("passwordless email-code auth (#569)", () => 
       headers: {
         ...baseHeaders,
         Authorization: `Bearer ${TEST_CONFIG.userApiKey}`,
-        Cookie: `nemar_session=${cookieValue}`,
+        Cookie: cookieValue,
       },
     });
     expect(me.status).toBe(200);
@@ -603,7 +604,7 @@ describe.skipIf(PROD_GUARD_ACTIVE)("PATCH /auth/profile (#912)", () => {
       ...baseHeaders,
     };
     if (origin) headers.Origin = origin;
-    if (cookieValue) headers.Cookie = `nemar_session=${cookieValue}`;
+    if (cookieValue) headers.Cookie = cookieValue;
     const r = await fetch(`${API}/auth/profile`, {
       method: "PATCH",
       headers,
@@ -618,9 +619,9 @@ describe.skipIf(PROD_GUARD_ACTIVE)("PATCH /auth/profile (#912)", () => {
     const code = req.body.dev_code as string;
     const v = await verifyCode(email, code, false);
     expect(v.status).toBe(200);
-    const m = v.setCookie?.match(/nemar_session=([^;]+)/);
+    const m = sessionCookiePair(v.setCookie);
     expect(m).toBeTruthy();
-    return m?.[1] as string;
+    return m as string;
   }
 
   // FIXED email, deliberately not freshEmail(): the GitHub-handle test below
@@ -652,7 +653,7 @@ describe.skipIf(PROD_GUARD_ACTIVE)("PATCH /auth/profile (#912)", () => {
     expect(r.body.user?.affiliation).toBe("UCSD");
 
     const me = await fetch(`${API}/auth/me`, {
-      headers: { ...baseHeaders, Cookie: `nemar_session=${cookie}` },
+      headers: { ...baseHeaders, Cookie: cookie },
     });
     const meBody = (await me.json()) as MeResponse;
     expect(meBody.user?.city).toBe("San Diego");
@@ -829,7 +830,7 @@ describe.skipIf(PROD_GUARD_ACTIVE)("email change flow (#911)", () => {
       ...baseHeaders,
     };
     if (origin) headers.Origin = origin;
-    if (cookieValue) headers.Cookie = `nemar_session=${cookieValue}`;
+    if (cookieValue) headers.Cookie = cookieValue;
     const r = await fetch(`${API}${path}`, { method: "POST", headers, body: JSON.stringify(body) });
     return { status: r.status, body: (await r.json()) as Record<string, unknown> };
   }
@@ -839,9 +840,9 @@ describe.skipIf(PROD_GUARD_ACTIVE)("email change flow (#911)", () => {
     expect(req.status).toBe(200);
     const v = await verifyCode(email, req.body.dev_code as string, false);
     expect(v.status).toBe(200);
-    const m = v.setCookie?.match(/nemar_session=([^;]+)/);
+    const m = sessionCookiePair(v.setCookie);
     expect(m).toBeTruthy();
-    return m?.[1] as string;
+    return m as string;
   }
 
   const originalEmail = freshEmail("emailchange");
@@ -929,7 +930,7 @@ describe.skipIf(PROD_GUARD_ACTIVE)("email change flow (#911)", () => {
 
     // The session cookie survives the change (sessions key on user id).
     const me = await fetch(`${API}/auth/me`, {
-      headers: { ...baseHeaders, Cookie: `nemar_session=${cookie}` },
+      headers: { ...baseHeaders, Cookie: cookie },
     });
     expect(me.status).toBe(200);
     const meBody = (await me.json()) as MeResponse;

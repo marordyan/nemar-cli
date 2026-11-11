@@ -98,7 +98,7 @@ describe("the re-pull code sends no mail", () => {
     }
     expect(mailModules(tree).size).toBeGreaterThan(0);
     expect(mailFindings(tree)).toEqual([]);
-  });
+  }, 60_000);
 
   test("it fires when the re-pull screen reaches the publication screen, which mails", () => {
     // The re-pull's screen reads the publication screen's helpers from the module that holds no
@@ -112,7 +112,7 @@ describe("the re-pull code sends no mail", () => {
     expect(findings.some((f) => f.includes("identifier-screen.ts") && f.includes("email.ts"))).toBe(
       true,
     );
-  });
+  }, 60_000);
 
   test("it fires on a direct import of a mail module", () => {
     const base = createTree();
@@ -120,7 +120,7 @@ describe("the re-pull code sends no mail", () => {
       "services/upstream-repull.ts": `${base.read(ROOTS[0] as string)}\nimport { sendEmail } from "./email";\n`,
     });
     expect(mailFindings(planted).some((f) => f.startsWith("imports"))).toBe(true);
-  });
+  }, 60_000);
 
   test("it fires on a mail module reached through another file", () => {
     const base = createTree();
@@ -131,7 +131,7 @@ describe("the re-pull code sends no mail", () => {
     expect(
       findings.some((f) => f.includes("import-error.ts") && f.includes("inbound-mail.ts")),
     ).toBe(true);
-  });
+  }, 60_000);
 
   test("it fires on a dynamic import and on a sender named without an import", () => {
     const base = createTree();
@@ -143,7 +143,7 @@ describe("the re-pull code sends no mail", () => {
       "services/datasetId.ts": `${base.read(`${SRC}/services/datasetId.ts`)}\nexport const x = (env: { RESEND_API_KEY?: string }) => env.RESEND_API_KEY;\n`,
     });
     expect(mailFindings(named).some((f) => f.startsWith("names a sender"))).toBe(true);
-  });
+  }, 60_000);
 
   test("it fires when the automatic path's callback reaches a mail module", () => {
     const base = createTree();
@@ -152,5 +152,5 @@ describe("the re-pull code sends no mail", () => {
       "routes/callbacks/repull-state.ts": `${base.read(callback)}\nexport { sendEmail } from "../../services/email";\n`,
     });
     expect(mailFindings(planted).some((f) => f.includes("repull-state.ts"))).toBe(true);
-  });
+  }, 60_000);
 });

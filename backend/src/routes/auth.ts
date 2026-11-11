@@ -14,6 +14,7 @@ import {
   ORCID_ID_PATTERN,
   type OrcidNameLookupStatus,
 } from "../../../shared/contract/publication.js";
+import { OIDC_SUBJECT_PREFIX } from "../../../shared/oidc-subject.js";
 import { escapeHtml } from "../lib/escape";
 import { inactiveAccountBody, isActiveAccountStatus } from "../services/account-tier";
 import { revokeDocsCredentials } from "../services/docs-auth";
@@ -35,6 +36,7 @@ import {
   generateVerificationToken,
   hashApiKey,
 } from "../services/token";
+import { isReservedUsername } from "../services/username";
 import type { Bindings, Variables } from "../types/bindings";
 
 export const authRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -78,6 +80,13 @@ authRoutes.get("/check-username", async (c) => {
     return c.json({
       available: false,
       reason: "Username can only contain letters, numbers, underscores, and hyphens",
+    });
+  }
+  // Reserved for OpenID Connect subjects (ADR 0119): never available, whoever asks.
+  if (isReservedUsername(username)) {
+    return c.json({
+      available: false,
+      reason: `Usernames starting with ${OIDC_SUBJECT_PREFIX} are reserved`,
     });
   }
 

@@ -64,7 +64,7 @@ import {
 import { ORG_NAME } from "../services/github";
 import { getDatasetsToken } from "../services/github-auth";
 import { fetchGitTrackedFile } from "../services/github/git-file-broker";
-import type { ManifestFile } from "../services/manifest";
+import { type ManifestFile, repairStoredChecksum } from "../services/manifest";
 import {
   type ManifestJsonCacheHit,
   manifestJsonCacheKey,
@@ -502,6 +502,13 @@ function manifestJsonTooLarge(
 /** ADR 0066's maximum downstream authorization-staleness window. */
 const MANIFEST_JSON_CACHE_CONTROL = "public, max-age=300";
 
+/** Entries whose stored checksum was re-derived or could not be, for one manifest build. */
+interface ChecksumTally {
+  repaired: number;
+  malformed: number;
+  firstMalformed: string | null;
+}
+
 /** Shared manifest fields, computed once for both annex and git-tracked files. */
 function manifestEntryBase(
   env: Bindings,
@@ -509,12 +516,19 @@ function manifestEntryBase(
   version: string,
   path: string,
   file: ManifestFile,
+  tally: ChecksumTally,
 ): Omit<PublicManifestEntry, "url"> {
-  const checksum = parseChecksum(file.checksum);
+  const parsed = parseChecksum(file.checksum);
+  const checksum = repairStoredChecksum(parsed.algorithm, parsed.value, file.key);
+  if (checksum.status === "repaired") tally.repaired++;
+  if (checksum.status === "malformed") {
+    tally.malformed++;
+    tally.firstMalformed ??= path;
+  }
   return {
     path,
     size: file.size,
-    checksum_algorithm: checksum.algorithm,
+    checksum_algorithm: parsed.algorithm,
     checksum: checksum.value,
     bytes_url: buildBytesUrl({
       datasetId,
@@ -536,10 +550,20 @@ function buildManifestEntries(
   version: string,
   files: Record<string, ManifestFile>,
 ): PublicManifestEntry[] {
-  return Object.entries(files).map(([path, file]) => {
-    const base = manifestEntryBase(env, datasetId, version, path, file);
+  const tally: ChecksumTally = { repaired: 0, malformed: 0, firstMalformed: null };
+  const entries = Object.entries(files).map(([path, file]) => {
+    const base = manifestEntryBase(env, datasetId, version, path, file, tally);
     return { ...base, url: base.bytes_url };
   });
+  // A stored digest with the wrong shape is repaired from its key when the key
+  // allows it (#2118); one that cannot be is still served, so the entry stays
+  // listed, but it is reported here and not left to a client's verification.
+  if (tally.repaired > 0 || tally.malformed > 0) {
+    console.error(
+      `[data] MANIFEST CHECKSUM: dataset=${datasetId} version=${version} repaired=${tally.repaired} malformed=${tally.malformed}${tally.firstMalformed === null ? "" : ` first_malformed=${tally.firstMalformed}`}`,
+    );
+  }
+  return entries;
 }
 
 /**

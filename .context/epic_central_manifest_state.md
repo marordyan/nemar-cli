@@ -10,7 +10,7 @@
 integration_branch: dev
 epic_issue: 559
 epic_branch: feature/issue-559-epic-central-manifest
-epic_worktree: /Users/yahya/Documents/git/nemar/epic-central-manifest
+epic_worktree: <repo root>/../epic-central-manifest
 merge_strategy_phase_to_epic: squash
 merge_strategy_epic_to_integration: merge
 
@@ -159,7 +159,7 @@ Ops sequence (USER STEP, BLOCKS flag flip):
    all repos) — `gh secret list --org nemarDatasets`
 2. `gh secret set MANIFEST_CALLBACK_SECRET --org nemarDatasets --visibility all`
    (use the same value as the Workers secret below)
-3. `npx cfman wrangler --account neuromechanist -c backend/wrangler.toml secret put MANIFEST_CALLBACK_SECRET`
+3. `npx cfman wrangler --account <retired personal account> -c backend/wrangler.toml secret put MANIFEST_CALLBACK_SECRET`
    then same for `--env dev`
 4. `npx cfman wrangler --account sccn -c backend/wrangler-sccn.toml secret put MANIFEST_CALLBACK_SECRET`
    then same for `--env dev`

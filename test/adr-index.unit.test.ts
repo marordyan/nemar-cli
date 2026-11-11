@@ -29,6 +29,31 @@ function indexedFiles(readme: string): string[] {
   return [...readme.matchAll(/\]\((\d{4}-[a-z0-9-]+\.md)\)/g)].map((m) => m[1]);
 }
 
+/**
+ * ADR numbers another epic has reserved and not landed yet, so the numbering has a gap this
+ * directory is not responsible for. Empty now: ADR 0118 (the compute gateway) has landed beside
+ * ADR 0119 (the OpenID Connect provider). Add a number here only while a reserved ADR is on
+ * another branch, and delete it in the first change that brings the file.
+ */
+const TOLERATED_GAPS: ReadonlySet<number> = new Set([]);
+
+/** The numbers missing between 1 and the highest one present, ascending. */
+function findGaps(nums: number[]): number[] {
+  const present = new Set(nums);
+  const top = Math.max(0, ...nums);
+  const gaps: number[] = [];
+  for (let n = 1; n <= top; n++) if (!present.has(n)) gaps.push(n);
+  return gaps;
+}
+
+/** The gaps nothing has said it is waiting for. */
+function untoleratedGaps(
+  nums: number[],
+  tolerated: ReadonlySet<number> = TOLERATED_GAPS,
+): number[] {
+  return findGaps(nums).filter((n) => !tolerated.has(n));
+}
+
 describe("ADR index", () => {
   const readme = readFileSync(README, "utf8");
   const onDisk = adrFiles();
@@ -54,10 +79,32 @@ describe("ADR index", () => {
     expect(indexed).toEqual([...indexed].sort());
   });
 
-  test("ADR numbers are unique and gapless from 0001", () => {
+  test("ADR numbers are unique and gapless from 0001, apart from the tolerated gaps", () => {
     const nums = onDisk.map((f) => Number(f.slice(0, 4)));
     expect(new Set(nums).size).toBe(nums.length);
-    expect(nums).toEqual(Array.from({ length: nums.length }, (_, i) => i + 1));
+    expect(untoleratedGaps(nums)).toEqual([]);
+  });
+
+  test("a tolerated gap is still a gap on disk (a stale entry must be deleted)", () => {
+    // The entry exists because another epic reserved a number and has not landed it yet. The
+    // pull request that adds that ADR has to delete the entry, and this is what makes it: with the
+    // file present the entry stops being a gap and this test names it.
+    const nums = new Set(onDisk.map((f) => Number(f.slice(0, 4))));
+    const stale = [...TOLERATED_GAPS].filter((n) => nums.has(n));
+    expect(stale).toEqual([]);
+  });
+
+  test("a gap outside the tolerated set is reported, and one inside it is not", () => {
+    // The gap check is a pure function so its two outcomes can be seen without touching the
+    // directory: a check that cannot fail passes whatever the directory holds.
+    expect(findGaps([1, 2, 3, 5, 6, 8])).toEqual([4, 7]);
+    expect(findGaps([1, 2, 3])).toEqual([]);
+    expect(untoleratedGaps([1, 2, 3, 5, 6, 8], new Set([4]))).toEqual([7]);
+    expect(untoleratedGaps([1, 2, 3, 5, 6, 8], new Set([4, 7]))).toEqual([]);
+    // The real directory without its tolerance: the numbers the tolerance covers are exactly the
+    // ones the unfiltered check reports.
+    const nums = onDisk.map((f) => Number(f.slice(0, 4)));
+    expect(findGaps(nums)).toEqual([...TOLERATED_GAPS].sort((a, b) => a - b));
   });
 
   test("every ADR carries a Status and a Date", () => {

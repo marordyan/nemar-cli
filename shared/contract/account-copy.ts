@@ -29,7 +29,7 @@
  * 2. *Placeholders are `{name}`, filled by {@link fillCopy}.* A sentence with a
  *    moving part is a template, not a function, so it stays comparable as a
  *    string. The whole placeholder vocabulary is `{label} {blocks} {web} {cli}
- *    {date}`, plus `{reason}` on the CLI-only keys below.
+ *    {date} {client} {redirect_host}`, plus `{reason}` on the CLI-only keys below.
  * 3. *Keys are stable and dotted.* They are the mirroring contract; renaming
  *    one is a change on both sides.
  * 4. *A `cli.` prefix means the website ignores it.* The mirroring is
@@ -221,6 +221,62 @@ export const ACCOUNT_COPY = {
   "welcome.upload_access.title": "Ask for upload access when you’re ready to contribute",
   "welcome.upload_access.body":
     "Reading is open to every verified account. Uploading and compute need one extra grant, because an admin has to check your GitHub handle and location against export-control and local-jurisdiction rules first. You ask once, from Settings.",
+
+  // -------------------------------------------------------------------------
+  // Signing in to another site with a NEMAR account (ADR 0119): the page at
+  // app.nemar.org/oauth/authorize. `{client}` is the client's registered name.
+  // Only the website renders these; the CLI has no authorization screen.
+  // -------------------------------------------------------------------------
+  // The consent screen. A client that is not first-party is always told that it
+  // can act as the person (ADR 0119 rule 8), and a client that may reserve or
+  // submit compute is told it can spend the person's compute time.
+  "oidc.consent.title": "{client} wants to use your NEMAR account",
+  "oidc.consent.acts_as_you":
+    "If you allow it, {client} can act as you on NEMAR in the ways listed below.",
+  "oidc.consent.compute_spend":
+    "If you sign in and run compute with this app, it counts against your NEMAR compute allocation.",
+  "oidc.consent.scopes_title": "It is asking to:",
+  // One line per scope a person can grant, keyed by the scope's name. The
+  // machine-only `compute.stats` has none: it is never on a consent screen.
+  "oidc.consent.scope.openid": "Know which NEMAR account is yours",
+  "oidc.consent.scope.profile": "See your name",
+  "oidc.consent.scope.email": "See your email address",
+  "oidc.consent.scope.orcid":
+    "See your ORCID iD, and whether you proved it by signing in with ORCID",
+  "oidc.consent.scope.nemar.account": "See your account type, status and access level",
+  "oidc.consent.scope.offline_access": "Keep this access when you are not using it",
+  "oidc.consent.scope.compute.read": "See your compute access, balances, usage and jobs",
+  "oidc.consent.scope.compute.reserve":
+    "Reserve compute time, report jobs and release reservations for you",
+  "oidc.consent.scope.compute.submit": "Submit compute jobs that NEMAR runs for you",
+  // Where the answer sends the person: the host of the redirect address, so they can see which
+  // site receives the answer before giving it.
+  "oidc.consent.redirect_host": "Either answer sends you to {redirect_host}.",
+  "oidc.consent.allow": "Allow",
+  "oidc.consent.deny": "Deny",
+  // The account may not sign in to this client under its sign-in rule
+  // (ADR 0119 rule 7). One sentence per reason the API gives.
+  "oidc.rule.title": "You can’t sign in to {client} with this account",
+  "oidc.rule.account_inactive": "Your NEMAR account is not active.",
+  "oidc.rule.account_not_person":
+    "{client} is only for personal accounts, and this account is not one.",
+  "oidc.rule.orcid_not_proven":
+    "{client} needs an ORCID iD you proved by signing in to NEMAR with ORCID. Link your ORCID iD in Settings, then try again.",
+  "oidc.rule.return": "Return to {client}",
+  // The request could not go on and the person is sent nowhere. One sentence per
+  // error-page code the API gives, plus `rate_limited`, which the page reaches on
+  // its own when the API refuses the call.
+  "oidc.error.title": "This sign-in can’t continue",
+  "oidc.error.invalid_client": "The site that sent you here is not one NEMAR signs people in to.",
+  "oidc.error.invalid_redirect_uri":
+    "The site that sent you here asked NEMAR to send you to an address it has not registered, so NEMAR will not send you there.",
+  "oidc.error.invalid_request":
+    "The sign-in request is incomplete or malformed. Go back to the site you came from and start again.",
+  "oidc.error.consent_invalid":
+    "This page has expired. Go back to the site you came from and start again.",
+  "oidc.error.unavailable":
+    "NEMAR could not complete this sign-in right now. Try again in a moment.",
+  "oidc.error.rate_limited": "Too many sign-in attempts. Try again in a minute.",
 
   // ===========================================================================
   // CLI-ONLY (`cli.` prefix). The website has no surface for these and its

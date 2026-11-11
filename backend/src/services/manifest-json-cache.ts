@@ -93,9 +93,12 @@ export interface ManifestJsonCacheHit {
  */
 export function manifestJsonCacheKey(origin: string, datasetId: string, version: string): string {
   const tag = toVersionTag(version);
-  // v2 isolates the stable data-plane URL contract from v1 documents, which
-  // could contain direct or presigned S3 URLs and remain stored for seven days.
-  return `${origin}/__nemar-internal/manifest-json-cache/v2/${encodeURIComponent(datasetId)}/${encodeURIComponent(tag)}.json`;
+  // v2 isolated the stable data-plane URL contract from v1 documents, which
+  // could contain direct or presigned S3 URLs and remained stored for seven days.
+  // v3 isolates the checksum repair (#2118) from v2 documents: a stored document is
+  // revalidated only against the source manifest's ETag, which has not changed, so a
+  // v2 document built before the repair would otherwise keep serving the wrong digest.
+  return `${origin}/__nemar-internal/manifest-json-cache/v3/${encodeURIComponent(datasetId)}/${encodeURIComponent(tag)}.json`;
 }
 
 /**

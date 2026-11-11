@@ -55,8 +55,8 @@
 ### Deployment Info
 - **URL:** https://api.nemar.org (the worker is also mounted at `/nemar`; the old
   `api.osc.earth/nemar` spelling now 404s and `src/lib/config.ts` migrates stored configs off it)
-- **Database:** D1 `nemar-db` (0a168b1a-1923-4436-9509-6e4a9b5bb7ae)
-- **Rate Limit KV:** 9afb2679c6ea4ed4acd1a5916cf291d7
+- **Database:** D1 `nemar-db` (`<D1 database id>`)
+- **Rate Limit KV:** `<KV namespace id>`
 - **Email:** Resend, sending as `noreply@nemar.org` (`DEFAULT_FROM_EMAIL`, overridable by `FROM_EMAIL`)
 
 ### Completed Tasks
@@ -70,7 +70,7 @@
 - [x] Add dataset endpoints (create, list, get)
 - [x] Implement rate limiting middleware (KV-based)
 - [x] Deploy to Cloudflare Workers
-- [x] Create admin user (yahya)
+- [x] Create admin user (the owner)
 - [x] Set all secrets (GITHUB_ADMIN_PAT, AWS credentials, RESEND_API_KEY)
 - [x] Add description field to signup (reason for needing NEMAR access)
 - [x] Add admin notification email when user verifies email and needs approval

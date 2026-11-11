@@ -253,7 +253,7 @@ describe("POST /auth/orcid/finalize", () => {
     );
     return withLocalOrcidPub(() =>
       app.request(
-        "/auth/orcid/finalize",
+        "https://app.nemar.org/auth/orcid/finalize",
         {
           method: "POST",
           headers: {

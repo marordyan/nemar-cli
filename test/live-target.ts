@@ -43,7 +43,7 @@ export const BLOCKED_API_URL = "http://127.0.0.1:1";
  * `api.resend.com`, or to GitHub with ambient credentials is outside it entirely --
  * `test/import-openneuro-s3-copy.integration.test.ts` writes to the PRODUCTION
  * bucket whenever AWS session credentials happen to be exported, which is a state
- * AGENTS.md actively tells people to be in. Those need their own guards.
+ * .rules/datasets-and-fixtures.md actively tells people to be in. Those need their own guards.
  */
 
 export interface LiveTargetDecision {

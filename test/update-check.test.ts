@@ -38,7 +38,8 @@ const currentParsed = semver.parse(currentVersion);
 if (!currentParsed) {
   throw new Error(`test setup: package.json version "${currentVersion}" is not valid semver`);
 }
-// AGENTS.md: "dev always carries an X.Y.Z-devN suffix", so on dev this is
+// Release pipeline page (https://docs.nemar.org/develop/release-pipeline/): `dev` always
+// carries an X.Y.Z-devN suffix, so on dev this is
 // always true and the #1163 rows below exercise the real bug. It is NOT true
 // on main: auto-tag.yml strips the suffix and pushes that commit back without
 // [skip ci], so test.yml runs against a stable X.Y.Z there. Skipping those

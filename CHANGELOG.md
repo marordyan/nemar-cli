@@ -13,6 +13,225 @@ what merged, and this file says what it meant.
 Newest first. Dates are the tag's publication date, UTC. Backfilled from 0.9.16 onward;
 earlier releases are described only by their generated notes.
 
+## Unreleased
+
+NEMAR can now act as an OpenID Connect provider (epic #2014), and the first-party half of the compute gateway is in the code (epic #2005).
+Both stay inert in production until the owner switches them on.
+The OpenID Connect discovery document, key set and owner routes answer 404 until `OIDC_SECRET` is set, and the whole sign-in flow (authorize, consent, token, userinfo, revocation and introspection) stays dark until `HOST_PREFIXED_SESSION_COOKIE` is also `"1"`.
+No job can be submitted and no pipeline is dispatched while the two compute switches are absent.
+Nothing contacts the job scheduler's tenant except an administrator's `nemar admin compute status`, which mints one token and makes one health call when the tenant's credentials are set.
+The release has twelve migrations, 0114 to 0119 (compute), 0120 to 0124 (OpenID Connect) and 0130 (compute anonymization).
+Migration 0114 adds the four platform pools (pipelines and people, CPU and GPU) with nothing granted.
+Migration 0120 gives every existing user, deleted accounts included, a permanent `sub` and adds triggers that keep it unchanged.
+Restoring the database to a point before 0120 and replaying it gives every account a new `sub`.
+That is harmless until the first client is registered; after that, restore only to a point after 0120, or tell every client.
+It sets no Worker secret.
+The production Worker configuration gains the two private compute buckets as bindings and their names as variables; the buckets already exist.
+The CLI gains no runtime dependency: `jose`, `oauth4webapi` and `openid-client` are development dependencies that one test uses.
+Third-party compute (`nemar compute`) and the partner contract are not in this release.
+
+### Production behavior changes
+
+- **The ORCID sign-in flow's two short-lived cookies change name at deploy (ADR 0119 rule 10).**
+  `nemar_oauth_state` and `nemar_orcid_pending` become `__Host-nemar_oauth_state` and `__Host-nemar_orcid_pending`, which a sibling host cannot set.
+  They live for minutes, so a person who starts an ORCID sign-in just before the deploy and finishes it just after may need to start again.
+  The change is not behind a flag, and the website must already accept the new pending-cookie name (see Deploy coupling).
+- **A plain ORCID sign-in no longer links the iD to the account already signed in (ADR 0119 rule 10).**
+  `GET /auth/orcid/start` starts a sign-in whatever its `mode` says; only the form POST from Settings, which checks the Origin and needs a session, starts a link or a relink.
+  A sign-in signs in the account the iD names, or starts a sign-up for an iD no account holds, and always issues a fresh session.
+  The released website's "Connect your ORCID" is a link, so until the website's form POST is released (website #501) it starts a sign-up instead of a link (see Deploy coupling).
+- **Email-code sign-in is closed outside development and test (#2112).**
+  `/auth/code/request` answers the same masked success without issuing a code, and `/auth/code/verify` answers 401, so nothing can obtain or redeem a sign-in code in production.
+  The codes that confirm or change an email address for a signed-in account are separate and unchanged.
+  ORCID is the only upstream identity; the code path stays in the repository, dormant.
+- **Usernames starting with `nmu_` are reserved, and credentials starting with `nmo_` are never read as API keys.**
+  A profile edit, the person's own (`PATCH /auth/profile`) or an owner's (`nemar admin users edit`), refuses a username that starts with `nmu_` in any case (`username_reserved`), and `GET /auth/check-username` reports one as unavailable, because that prefix is the form of the OpenID Connect `sub`.
+  An existing username is not changed.
+  Outside the provider's own routes (discovery, the key set and the four `/oauth` endpoints), a bearer credential starting with `nmo_` is refused before any lookup.
+  A route that needs a signed-in caller answers 401 `oidc_token_not_accepted`, and a route with an anonymous answer gives that answer, as it does for an unknown key.
+- **`compute.nemar.org` is no longer treated as a NEMAR page (ADR 0119 decision 9).**
+  The API sends it no CORS headers and refuses a cookie-authenticated write from it, although it ends in `.nemar.org`, because a partner runs it.
+- **The OpenID Connect back-channel logout retry runs on the 30-minute production tick from deploy.**
+  It reads no switch, and with no client registered it has nothing to send.
+  While `OIDC_SECRET` is set in the wrong form it writes nothing and logs `[oidc-logout] skipped reason=oidc_secret_malformed` at warning level on every tick, and once after each admin revocation, soft delete, kind change and ORCID unlink or relink; an absent secret is silent.
+- **Every cached `manifest.json` is rebuilt on its first request after deploy,** because the cache key moves to `v3` (see Fixed).
+- **The session cookie is unchanged.**
+  `__Host-nemar_session` is written only when the owner sets `HOST_PREFIXED_SESSION_COOKIE` to `"1"`, after both releases are out; the legacy `nemar_session` name keeps being read for at least 31 days after that.
+
+### Added
+
+- **NEMAR as an OpenID Connect provider (epic #2014, ADR 0119).**
+  Authorization code flow with Proof Key for Code Exchange (PKCE), discovery and signing keys, authorization and consent pages, token, userinfo, revocation and introspection, refresh rotation, and back-channel logout that is queued and retried.
+  A person is identified by a stable `sub` (`nmu_` and 32 hexadecimal digits), never an email address or an ORCID iD.
+  `nemar admin oidc` registers and manages clients and keys, and ends an account's grants.
+  Discovery, the key set and the owner routes answer 404 until `OIDC_SECRET` is set, and the secret must have the `nmsso-` form (#2074).
+  Authorize, consent, token, userinfo, revocation and introspection also need `HOST_PREFIXED_SESSION_COOKIE` to be `"1"`, so the whole flow is dark or lit together.
+  Admin revocation, an owner soft delete and a manual account merge end an account's grants and queue a back-channel logout to each client.
+  Unlinking or relinking ORCID, and changing an account's kind away from person, end only the grants of clients that require a proven ORCID iD.
+  No compute suspension exists yet, so none ends a grant.
+  Signing out, revoking an API key and demoting a role deliberately leave grants alone, and every token use re-checks the account against the client's sign-in rule.
+  Discovery and the key set are exempt from the rate limiter, and a read of them from maintenance mode.
+  The token, revocation and introspection endpoints share a limit of 2,000 requests a minute per address (`oauth-ip`), and the authorization check and consent share a limit of 30 a minute per account.
+  In read-only maintenance mode userinfo and introspection still answer and the token endpoint and revocation are refused, so a partner's sessions lapse within the access token's 15 minutes.
+  The protocol is documented at docs.nemar.org under Sign in with NEMAR; the operator runbook is in the gated administrator section.
+- **The compute gateway's first-party half (epic #2005, ADR 0118).**
+  An allocation ledger and owner policy in service units (SU), job records with two private storage buckets, a client for the job scheduler, tested against a stand-in, the job lifecycle with webhooks, settlement and results, revocation that freezes a person's pools, and NEMAR's own processing pipelines dispatched by an administrator.
+  `nemar admin compute` covers the policy, pools, status, jobs (including legal holds and the ACCESS reports), the observer token and `pipeline run|status`.
+  Nothing runs until the owner sets `COMPUTE_ENABLED` and `COMPUTE_PIPELINES_DISPATCH_ENABLED`, which are absent from the production configuration and pinned absent by a test; every compute cron is production-only.
+  The tenant sweep waits for `COMPUTE_ENABLED`, and the pipeline dispatcher waits for both switches.
+  Five never read a switch: job advance, cancellation retry, the ACCESS gateway-attribute reporter, retention and the OpenID Connect logout retry.
+  The four compute ones act only on jobs and pools that exist, so they have nothing to do until the first job, and turning compute off never strands a live job.
+  NEMAR's own pipelines obey their caps on every path, fixed before this release (#2121): the live cap per pool is checked inside the statement that takes each pipeline job's hold, and an administrator's `pipeline run --eligible` also stops at what is left of the daily cap and dispatches at most 10 per invocation, reporting the room it had.
+  One named dataset is refused when its pool is full and counts toward the daily cap without being refused by it.
+  The daily dispatcher's counts and words are unchanged unless it races an administrator's run.
+  When the daily cap ended a `pipeline run --eligible`, the run reports the new word `daily_cap_reached` as its `stopped_by`; the word is declared with status 409, and no path returns it as an error status.
+  In read-only maintenance mode the launcher's three job callbacks stay open, so a job already running can still deliver its results; `full` refuses them.
+- **A development target for the OpenID Connect conformance workflow (#2075).**
+  The suite can run against the deployed development system; the default is unchanged.
+
+### Changed
+
+- **`--debug` redacts `client_secret`.**
+  The client secret that `nemar admin oidc clients add` and `rotate-secret` print once is written as `[REDACTED]` in a `--debug` log, like an API key.
+- **The Worker's request log writes the token of a Tapis webhook address as `[redacted]`.**
+  Its lines are otherwise unchanged: method, path with its query string, status and time, at the same volume.
+
+### Fixed
+
+- **A file whose name has no dot no longer gets that name appended to its checksum in `manifest.json` (#2118).**
+  Some keys in the published datasets were written upstream (OpenNeuro tooling), not by git-annex, with the tail of a dotless file name straight after the digest: `COR-001` has the key `SHA256E-s65536--<64 hex>COR-001`, where git-annex itself would write the bare digest.
+  The central manifest generator wrote the stored manifest from those keys and had the same parse; this change makes the Worker's own reader and builder correct, and the generator now cuts the digest the same way (nemarDatasets/.github #152).
+  The parse took every hex character after `--` as the digest, and the leading `C` of `COR-001` and the `01` of `01_brain_surface` came along: 260 entries in the manifest of `on003104` at `v1.0.0` carried 65 or 66 characters instead of 64.
+  The compute launcher verifies manifest checksums and would refuse those files.
+  The digest is now cut to the backend's length, for every git-annex hash backend whose key the parser identifies (SHA256, SHA512, MD5, SHA1, the SHA3, SKEIN and BLAKE2 families, with or without the `E` suffix), and the backend name now accepts `_` and a size-less key, so `SHA3_512E` keys are no longer read as `sha256`.
+  A key of any other backend (`URL`, `WORM`, one the parser does not know) is read as before.
+  The served `manifest.json` re-derives the value from the stored key when a stored value has the wrong shape for its algorithm, so manifests already published are served correctly with no regeneration.
+  The cached `manifest.json` documents are keyed anew (`v3`), because the old ones are only revalidated against the source manifest's ETag and would otherwise keep serving the old digest for up to seven days.
+  Valid entries and `git` entries are served as before.
+  A value that cannot be repaired is served as stored.
+  Each build of a `manifest.json` that repaired a value or met one it could not repair logs one error-level line, `[data] MANIFEST CHECKSUM: dataset=<id> version=<version> repaired=<n> malformed=<n>`, with the first unrepairable path when there is one.
+  `bun scripts/audit-manifest-checksums.ts` reads every public manifest from the data host, with GET requests only and no credential, and lists each version whose checksums have the wrong shape for their algorithm.
+  It lists the manifests too large for `manifest.json` (413) without failing on them, and exits 1 when it finds a wrong-shaped checksum or cannot read a version.
+  The in-Worker manifest builder never refuses a manifest over a digest: it carries the value as found and logs once per build (dataset, version, path and backend, no checksum value) when an identified backend has a digest of the wrong length.
+
+### Deploy coupling
+
+- **Release the website first (0.2.37), and let its deploy finish.**
+  Its `staging` carries the reader for the `__Host-` session cookie and for the ORCID pending cookie under either name (website #499), the authorization page, the Settings "Connect your ORCID" form POST and the proxy's refusal of `/auth/oidc/*` (#501), and the cross-site form exemption for the authorization request (#503).
+  If this API reaches production first, every brand-new ORCID sign-up fails at the email step, because the released website looks only for `nemar_orcid_pending`.
+  "Connect your ORCID" in Settings then starts a sign-up instead of a link, because the released website sends it as a link this API no longer honors.
+  The released API accepts everything the new website sends, so the website can go first with no gap.
+- **Before merging, check that the two compute buckets exist, and put `OIDC_SECRET` in the `nmsso-` form.**
+  The deploy applies the migrations before it deploys the Worker, so a missing bucket fails the Worker deploy after the schema has changed, and 0.10.32 keeps serving.
+  A valid `OIDC_SECRET` lights discovery, the key set and the owner routes at deploy; the key set is empty until `nemar admin oidc keys rotate`.
+- **Merging the release pull request deploys it twice,** the merge commit under its `-devN` version and then the tagged `0.10.33`; the first deploy applies the twelve migrations.
+- **Then check ORCID sign-in end to end, turn `HOST_PREFIXED_SESSION_COOKIE` on, and check sign-in again.**
+  The flag is a Worker secret, or a `[vars]` entry added by a reviewed change that edits `backend/test/session-cookie-name.test.ts`; a dashboard variable is dropped by the next deploy.
+  Turning the cookie flag on before the website reads the new name logs everyone out of the website.
+- **Rolling back.**
+  The migrations only add tables, one column, triggers and four empty pools, and the 0.10.32 Worker reads none of them, so a rollback to 0.10.32 is safe while the cookie flag is off; ORCID sign-ins in flight fail once, as at deploy.
+  Once the flag is on, a rollback below 0.10.33 signs out everyone who signed in since, because 0.10.32 does not read `__Host-nemar_session`.
+- **Run `bun run migrations:d1-check` before the release pull request.**
+  The twelve migrations replay on real D1; one of them (0130) replaces two append-only triggers, one on the pools and one on the ledger.
+
+### Owner steps after release
+
+None of these is done by the release.
+
+1. `curl -s https://api.nemar.org/health | jq -r .version` prints `0.10.33`.
+2. `nemar admin compute status --json | jq '.switches, .storage'` shows `compute_enabled` and `pipelines_dispatch_enabled` false and both bucket bindings true.
+3. `curl -s -o /dev/null -w '%{http_code}\n' https://api.nemar.org/.well-known/openid-configuration` prints 200 with a valid `OIDC_SECRET` and 404 without, and the same with `-X POST https://api.nemar.org/oauth/token` prints 404 until the cookie flag is on.
+4. `curl -s -H 'Authorization: Bearer nmo_at_x' https://api.nemar.org/users/me` answers 401 with `"code":"oidc_token_not_accepted"`, and `nemar auth whoami` still answers with a CLI key.
+5. Sign in with ORCID at https://nemar.org/login, and connect ORCID from Settings with an account that has none, if one is at hand.
+6. `bun scripts/audit-manifest-checksums.ts` reports no wrong-shaped checksum and lists the manifests that answer 413.
+
+### Known limits
+
+- The pipelines' daily cap is read before a run and not checked in the hold's statement, so two runs at the same moment can together pass it; an atomic daily guard is planned beside the tenant ceiling (#2121, phase P2).
+- The `manifest.json` reader repairs a wrong stored digest at read time, and the central generator now writes the right digest for new manifests.
+  The one stored manifest known to carry wrong digests (`on003104` at `v1.0.0`) has been regenerated, and the per-file `ETag` of those files changed once.
+  If the audit finds another stored manifest written before the generator fix, it is served repaired and stays wrong in storage until it is regenerated.
+- Migration numbers 0125 to 0129 are unused and 0130 is applied; a later migration must be numbered above 0130, or production applies it in a different order from a fresh replay.
+- The authorization flow has run in tests and, without a sign-in, against the development system (34 of the 35 modules of the conformance suite's Basic plan); its first production use is the check.
+
+## 0.10.32 - 2026-11-09
+
+A re-pull merged with GitHub's merge button using the merge method, which makes a two-parent commit, can now be accepted.
+It changes the Worker's acceptance route and the CLI; it carries no migration, sets no Worker variable or secret, and leaves the re-pull switches and caps as they were.
+
+### Fixed
+
+- **`--accept-merge-trailers` takes a plain merge commit of the re-pull's own pull request (#2108).**
+  The first use of the acceptance, on on000117 (re-pull #5), met a merge made with the merge method: two parents, the record's base and the pull request's head.
+  The CLI and the Worker both refused it as `merge-not-squash`, so the record stayed at `merged` and the dataset failed the fresh-clone privacy proof with no way to finish.
+  Both now accept one parent, or two with the merged head second, through one predicate, `classifyMergeParents`.
+  Every other check is unchanged: the pull request, the base, the head, the tree outside `.nemar/**` and `.github/**`, the effect on the privacy ledger, and the administrator-only rule.
+  Three or more parents stay `merge-not-squash`, and two parents whose second is not the merged head are the new `merge-second-parent-foreign`.
+  The acceptance line keeps the verification word `squash-merge-verified` for both shapes, because a ledger validator already deployed accepts that word and no other.
+  ADR 0111 has an amendment section for it.
+
+## 0.10.31 - 2026-11-08
+
+CI and release tooling only, brought from `dev` so that `main` stops needing an administrator override and stops being slower than `dev`.
+It carries no migration, no change to the Worker or the CLI, sets no variable or secret, and leaves the re-pull switches as they were.
+
+### Changed
+
+- **`main` has `dev`'s CI workflows (#2106 and the work before it on `dev`).**
+  `integration-dev` runs as six shards balanced by `test/integration-timings.json` (the unsharded job took 26 minutes), and the production deploy gate runs the same six `unit-pure` shards as the pull request check plus a static leg for typecheck, lint and the process tier, so a test that depends on file order fails the pull request and not the release (what stopped 0.10.28's deploy).
+  The `process-tier` job and its lister, `scripts/ci/process-files.sh`, now exist on `main`, so every required check of branch protection runs on a pull request to `main`; until now `process-tier` did not, and each of 0.10.28 to 0.10.30 had to be merged with an override.
+  The two composite actions `install-git-annex` and `german-locale` and the classifier scripts come with them.
+  `oidc-conformance.yml` and its scripts stay on `dev` with the sign-in epic.
+- **`sync-dev` resolves a hotfix's version conflict (#2106).**
+  A hotfix released from `main` conflicts with `dev` on `package.json` and `backend/package.json`.
+  `scripts/ci/sync-dev-merge.sh` now resolves a conflict whose every conflicting hunk is a `"version"` line to `main`'s side with a three-way merge, which keeps what `dev` changed elsewhere in those files, and aborts for a person on anything else.
+
+## 0.10.30 - 2026-11-08
+
+The first two production re-pulls met a second fault in the release step, one the stand-ins' tags hid.
+It carries no migration, sets no Worker variable or secret, and leaves the re-pull switches and caps off.
+
+### Fixed
+
+- **Release sends the commit an annotated tag names, not the tag object (#2101).**
+  After 0.10.28 the Worker could read the tag, and `nemar admin repull resume` was then refused as `tag-mismatch`: `git ls-remote origin refs/tags/v2.0.0` lists only the annotated tag's own object, and shows the peeled commit line only when `refs/tags/v2.0.0^{}` is also asked for by name.
+  The release read and the upstream-tag check in the executor now ask for both.
+  The test world's tags are annotated now, as the dataset workflow's are, so the suites read the peeled line.
+  An automatic re-pull runs the published CLI, so this release is the one that has to ship before the switches go on.
+
+## 0.10.29 - 2026-11-08
+
+0.10.28's production deploy stopped at its test gate, so this release carries the same fix with the gate made passable.
+It carries no migration, sets no Worker variable or secret, and leaves the re-pull switches and caps off.
+
+### Fixed
+
+- **The re-pull help test no longer depends on test file order (#2104).**
+  `src/lib/help.ts` replaces every "after" help text with a one-line hint once it is loaded, so the deploy gate, which runs the pure tier in one process and loads that module first, failed four cases of `test/repull-command-text.unit.test.ts` that the sharded pull request run passed.
+  The test now reads each help through the real entry point in its own process with `--help-all`.
+  There is no change to the CLI or the Worker beyond a comment on the tag read; 0.10.28's fix (the tag is read by its full ref) is what this release deploys.
+
+## 0.10.28 - 2026-11-08
+
+A one-fix release, cut from `main` and not from `dev`, so that the first two production re-pulls can be released.
+It carries no migration, sets no Worker variable or secret, and leaves the re-pull switches and caps as they were (off and at their defaults).
+It also carries the sign-in consent copy strings that the website's `staging` branch already holds (below), because the release check compares the two repositories' copy tables and fails a pull request to `main` until they agree (ADR 0046).
+
+### Fixed
+
+- **A merged re-pull can be released: the tag is read by its full ref (#2101, #2102).**
+  The release step read the tag's commit at `commits/tags/<tag>`, and GitHub answers 422 to that spelling, so `nemar admin repull resume` refused every merged re-pull with `tag-missing` although the tag existed and pointed at the merge commit.
+  It happened to on003645 and on004362, whose records stopped at `merged`.
+  The read is now `commits/refs/tags/<tag>`.
+  Both re-pull GitHub stand-ins had accepted the short form, which is why the suites passed; they now refuse it as GitHub does, and a direct test on each pins that.
+  Until this release an automatic re-pull would have merged, minted a version DOI, and then failed to release.
+
+### Changed
+
+- **The account copy table mirrors the website's sign-in copy (ADR 0119, from the sign-in epic #2014).**
+  `shared/contract/account-copy.ts` gains the `oidc.consent.*`, `oidc.rule.*` and `oidc.error.*` strings and the `{client}` and `{redirect_host}` placeholders, taken unchanged from `dev`.
+  Nothing on `main` reads them yet, so no behavior changes; the sign-in feature itself ships with the release that carries the epic.
+
 ## 0.10.27 - 2026-10-29
 
 The production canary and the first production re-pulls found three faults that this release fixes, and the release carries the phrase-search rework with them.

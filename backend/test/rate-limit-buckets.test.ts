@@ -747,3 +747,77 @@ describe("the Neurobagel read route has its own IP-keyed bucket (epic #1586 phas
 
 /** The anonymous floor a first load would overrun: three files for each of ~800 datasets, sequentially. */
 const MAX_ANONYMOUS_FLOOR_FOR_LOADER = 500;
+
+describe("the OpenID Connect client endpoints have their own IP-keyed bucket (epic #2014 phase #2018)", () => {
+  const IP = "203.0.113.88";
+  const ROUTES = ["/oauth/token", "/oauth/revoke", "/oauth/introspect"];
+
+  test("token, revocation and introspection are IP-keyed whatever they carry, at the bucket's cap", () => {
+    for (const route of ROUTES) {
+      for (const auth of [
+        undefined,
+        `Basic ${btoa(`oc_${"a".repeat(24)}:nmo_cs_${"b".repeat(43)}`)}`,
+        `Bearer ${VALID_TOKEN}`,
+        `Bearer nmo_at_${"c".repeat(43)}`,
+      ]) {
+        const sel = __selectBucket(route, auth, IP);
+        expect({ route, sel }).toEqual({
+          route,
+          sel: { keyKind: "oauth-ip", rawKey: IP, maxRequests: __limits.OAUTH_MAX_REQUESTS },
+        });
+      }
+    }
+  });
+
+  test("the cap is generous for a partner server behind one address, and not unbounded", () => {
+    // A partner's server redeems, refreshes and introspects for every signed-in person from one
+    // address, so the per-address floor of 1,000 a minute is not its ceiling.
+    expect(__limits.OAUTH_MAX_REQUESTS).toBeGreaterThan(__limits.MAX_REQUESTS);
+    expect(__limits.OAUTH_MAX_REQUESTS).toBeLessThanOrEqual(5000);
+  });
+
+  test("userinfo, the key set, discovery and lookalike paths are not in it", () => {
+    for (const route of [
+      "/oauth/userinfo",
+      "/oauth/tokens",
+      "/oauth/token/x",
+      "/xoauth/token",
+      "/auth/oauth/token",
+    ]) {
+      expect(__selectBucket(route, undefined, IP).keyKind).toBe("ip");
+    }
+    expect(__selectBucket("/oauth/userinfo", `Bearer nmo_at_${"c".repeat(43)}`, IP).keyKind).toBe(
+      "token",
+    );
+  });
+
+  test("the legacy mount is bucketed alike, so the prefix buys no looser limit", () => {
+    for (const route of ROUTES) {
+      expect(__selectBucket(`/nemar${route}`, undefined, IP).keyKind).toBe("oauth-ip");
+    }
+  });
+
+  test("end to end: the cap is counted per address, and a rotated credential mints no bucket", async () => {
+    const app = new Hono<AppEnv>();
+    app.use("*", rateLimiter);
+    app.post("/oauth/token", (c) => c.json({ error: "invalid_client" }, 401));
+    const post = (ip: string, i: number) =>
+      app.fetch(
+        new Request("http://localhost/oauth/token", {
+          method: "POST",
+          headers: { ...edge(ip), Authorization: `Bearer rotating-${i}-${"d".repeat(40)}` },
+        }),
+        PROD_ENV,
+      );
+    let limited = 0;
+    for (let i = 0; i < __limits.OAUTH_MAX_REQUESTS + 5; i++) {
+      const res = await post(IP, i);
+      if (res.status === 429) {
+        limited++;
+        expect(res.headers.get("X-RateLimit-Bucket")).toBe("oauth-ip");
+      } else expect(res.status).toBe(401);
+    }
+    expect(limited).toBe(5);
+    expect((await post("198.51.100.77", 0)).status).toBe(401);
+  });
+});

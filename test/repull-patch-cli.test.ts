@@ -528,6 +528,39 @@ describe.skipIf(!awsInstalled)("N.0.1", () => {
     expect(await mainHead()).toBe(merge);
   });
 
+  test("N.0.1 merged with a plain merge commit is accepted on the patch columns, writes no ledger line, and completes", async () => {
+    await patchGates();
+    // GitHub's merge button with the merge method: two parents, main's tip and N.0.1's head.
+    const merge = await w.mergeOnGitHub({ pr: "n1", method: "merge" });
+    expect(
+      (await gitIn(w.fx.originRepo, ["rev-list", "--parents", "-n", "1", merge])).trim().split(" "),
+    ).toHaveLength(3);
+    await w.tagMain("2.0.1");
+    w.insertVersionRow("2.0.1");
+    const refused = await resume();
+    expect(refused.exitCode, refused.all).toBe(3);
+    expect(refused.all).toContain("merge-trailers");
+    expect(w.row()).toMatchObject({ status: "patch_merged", patch_merge_sha: merge });
+    const reason = "N.0.1 was merged on GitHub's page with the merge method; its tree was read";
+    const run = await resume(["--accept-merge-trailers", reason]);
+    expect(run.exitCode, run.all).toBe(0);
+    expect(run.all).toContain(
+      `is a plain merge commit of pull request #${w.row().patch_pr_number} (release/v2.0.1`,
+    );
+    expect(run.all).toContain("its tree is the re-pull's gated N.0.1 head");
+    expect(w.row()).toMatchObject({ status: "complete", last_error: null });
+    expect(
+      w
+        .db()
+        .query(
+          "SELECT pr, merge_sha, reason, attestation_needed, attested_at FROM upstream_repull_merge_acceptances",
+        )
+        .all(),
+    ).toEqual([{ pr: "n1", merge_sha: merge, reason, attestation_needed: 0, attested_at: null }]);
+    expect(w.ledgerWrites()).toBe(0);
+    expect(await mainHead()).toBe(merge);
+  });
+
   test("N.0.1 merged with GitHub's button before its gates is not accepted: tree-anchor-missing", async () => {
     await patchOpen();
     const merge = await w.mergeOnGitHub({ pr: "n1" });

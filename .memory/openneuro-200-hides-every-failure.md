@@ -4,7 +4,6 @@ description: "OpenNeuro's object endpoint answers 200 for content it cannot serv
 metadata: 
   node_type: memory
   type: reference
-  originSessionId: 869097f1-58ff-4901-90ec-79b7838f21cb
   modified: 2026-09-15T16:42:45.809Z
 ---
 

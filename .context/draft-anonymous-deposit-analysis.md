@@ -67,7 +67,7 @@ That line is committed to the `git-annex` branch and is public when the repo is 
 On `nm000281`, which is public right now:
 
 ```
-b6200c43-...  bpinto@login01:/expanse/projects/nemar/bruno/emg2pose_nemar/bids
+b6200c43-...  <login name>@<login node>:<project path carrying a first name>/bids
 ```
 
 A login name, an HPC login node, and a path carrying a first name.
@@ -76,11 +76,11 @@ This is a live disclosure independent of anything in this document,
 and section 7 treats it as its own work item.
 
 **Commit authorship carries a personal email address.**
-`nm000281`'s public history is authored by `Bru <b.aristimunha@gmail.com>`,
-linked to the GitHub account `bruAristimunha`.
+`nm000281`'s public history is authored by a collaborator (`<contact email>`),
+linked to that collaborator's GitHub account.
 
 **The deposit is attributed on GitHub.**
-`GET /repos/nemarDatasets/nm000281/contributors` answers anonymously with `["bruAristimunha", "nemarAdmin"]`,
+`GET /repos/nemarDatasets/nm000281/contributors` answers anonymously with `["<collaborator handle>", "nemarAdmin"]`,
 the push events appear on that account's public activity,
 and every later change is a pull request authored by it (ADR 0001 makes published datasets pull-request-only,
 and `gh pr create` runs on the depositor's machine with the depositor's token).

@@ -206,6 +206,24 @@ bucket_name = "nemar-news-media"
 binding = "NEUROBAGEL"
 bucket_name = "nemar-neurobagel"
 
+# Compute gateway storage (epic #2005 phase A3, ADR 0118 decision 7): two PRIVATE buckets, outside the
+# AWS account that holds the Open Data buckets, reached only through these bindings (and, for a
+# presigned PUT or GET and a server-side copy, through R2's S3 interface with the secrets named in
+# the comment block below). COMPUTE_RECORDS holds what a job submitted and who submitted it, locked
+# by prefix (`records/` for the records retention, `logs/` for the log retention) with a lifecycle
+# rule deleting `incoming/` after two days; COMPUTE_RESULTS holds the results and expires them.
+# Lock and lifecycle rules are bucket configuration, never code, and the owner set them (see the
+# compute program's owner actions). Never shared with [env.dev]: the dev worker has its own two
+# buckets below, and its own R2 API token. The buckets must exist before the next deploy that
+# carries these bindings, or that deploy fails (they do).
+[[r2_buckets]]
+binding = "COMPUTE_RECORDS"
+bucket_name = "nemar-compute-records"
+
+[[r2_buckets]]
+binding = "COMPUTE_RESULTS"
+bucket_name = "nemar-compute-results"
+
 # Outbound mail (epic #1893, ADR 0110). The Cloudflare Email Service binding.
 # Production sends through it (EMAIL_PROVIDER="cloudflare" below), with Resend as
 # the fallback for quota and account-level refusals only (EMAIL_FALLBACK="resend").
@@ -240,6 +258,12 @@ invocation_logs = true
 # Environment variables
 [vars]
 ENVIRONMENT = "production"
+# The compute buckets' names (epic #2005 phase A3): a binding hides its bucket's name and the S3
+# interface needs it, so each name is a plain variable here and in [env.dev.vars] (variables do not
+# inherit). They are the same names as the bindings' `bucket_name` above, and a test holds the two to
+# each other.
+COMPUTE_RECORDS_BUCKET_NAME = "nemar-compute-records"
+COMPUTE_RESULTS_BUCKET_NAME = "nemar-compute-results"
 # Dataset pull-request review (ADR 0092). On in production from 2026-10-13. It lives in this
 # file because `wrangler deploy` drops dashboard-only variables (see [env.dev.vars]).
 # Not a casual switch: once any repository carries the review ruleset (ADR 0107), an unset or 0
@@ -423,10 +447,51 @@ OPENNEURO_MAINTAINER_EMAIL_ENABLED = "false"
 #                                match the org-level secret on nemarDatasets.
 #                                Required before MANIFEST_VIA_CENTRAL_WORKFLOW
 #                                can be flipped to "true" in any environment.)
+# - OIDC_SECRET           (epic #2014 phase #2016, ADR 0119; encrypts the OpenID Connect provider's private signing keys at rest.
+#                           It MUST differ from ENCRYPTION_KEY and be `nmsso-` followed by the output of `openssl rand -hex 32` (32
+#                           characters or more in all; any other form is treated as unset, ADR 0119 addendum). Without a valid one
+#                           the provider is OFF: discovery, the key set and the owner routes answer 404.
+#                           The authorization routes (/auth/oidc/*) and the /oauth token, userinfo, revocation and introspection
+#                           endpoints also answer 404 until HOST_PREFIXED_SESSION_COOKIE is "1": set both.
+#                           Set it BEFORE the first key rotation (`nemar admin oidc keys rotate`), and do not change it afterwards: every
+#                           stored key becomes unreadable, and no re-encryption path exists yet. Separate values for production and dev.
+#                           The owner sets it; an agent never does. Never a [vars] entry.)
+#   OIDC_LOGOUT_DEV_HOSTS (a VAR, optional, absent here; epic #2014 phase #2019, ADR 0119 rule 15): the hostnames a dev or
+#                           staging Worker may send a back-channel logout to besides a loopback address. Unset, a delivery to any
+#                           other host is recorded `fenced` and never sent, because the dev Worker shares real accounts. The
+#                           production Worker ignores it, and backend/test/oidc-logout-dev-hosts-var.test.ts refuses it in every
+#                           table but [env.dev.vars]. Setting it is the owner's act, for a test against a partner's staging host.
 # - CLOUDFLARE_API_TOKEN   (epic #684; scoped token with Zone.Cache Purge on the SCCN zone, used by
 #                           /webhooks/zarr-ready cache purge. WARNING: same name as wrangler's own
 #                           deploy-auth env var -- unset it from the shell before `secret put`, e.g.
 #                           env -u CLOUDFLARE_API_TOKEN npx cfman wrangler --account sccn secret put CLOUDFLARE_API_TOKEN -c backend/wrangler-sccn.toml)
+# Compute gateway storage (epic #2005 phase A3): one R2 API token per environment, Object Read & Write
+# on that environment's two compute buckets (R2 has no write-only or prefix scoping), and the account's
+# S3 endpoint. The owner keeps them in the Infisical folder /backend/compute (dev and prod) and sets
+# them as Worker secrets; names only here, never a value, and the endpoint is not written in this
+# public repository. Dev and production use different tokens.
+# - COMPUTE_R2_ACCESS_KEY_ID
+# - COMPUTE_R2_SECRET_ACCESS_KEY
+# - COMPUTE_R2_S3_ENDPOINT
+# Compute gateway Tapis connection (epic #2005 phase A4): Worker secrets or owner-set variables, names
+# only here, never a value, and never in a table of this file (a tenant name is not public;
+# compute-switches-flag.test.ts pins that). Dev and production use SEPARATE credentials, because dev D1
+# shares real users and the GitHub org. TAPIS_AUTH_STRATEGY is `password` (TAPIS_USERNAME and
+# TAPIS_PASSWORD) or `service` (TAPIS_SERVICE_TOKEN; TAPIS_USERNAME optional): selecting one is
+# configuration, not code. `nemar admin compute status` says whether they work.
+# - TAPIS_BASE_URL
+# - TAPIS_TENANT_ID
+# - TAPIS_AUTH_STRATEGY
+# - TAPIS_USERNAME
+# - TAPIS_PASSWORD
+# - TAPIS_SERVICE_TOKEN
+# - ACCESS_GATEWAY_ATTRIBUTES_KEY
+# - ACCESS_RESOURCE_NAME
+# - COMPUTE_RUNTIME_IMAGE   (epic #2005 phase A5: NEMAR's runtime image for a `python` job, a digest-pinned
+#                           reference; owner-set, and not a line of this file, like the names above)
+# The compute switches COMPUTE_ENABLED and COMPUTE_PIPELINES_DISPATCH_ENABLED are dark: exactly "1" and
+# absent from every table of this file until the owner adds them in a reviewed change that edits
+# backend/test/compute-switches-flag.test.ts. Compute runs only in `production` and `development`.
 # GitHub App credentials (epic #432, in soak -- GITHUB_ADMIN_PAT is the active fallback while any of these are unset)
 # - GITHUB_APP_ID                              (GitHub App numeric ID; replaces PAT for API auth once Phase 5 lands)
 # - GITHUB_APP_PRIVATE_KEY                     (PKCS#8 PEM private key for JWT signing)
@@ -541,6 +606,17 @@ bucket_name = "nemar-news-media-dev"
 binding = "NEUROBAGEL"
 bucket_name = "nemar-neurobagel-dev"
 
+# Compute gateway storage for dev (not inherited; see the top-level COMPUTE_RECORDS block). Its own two
+# buckets, so the dev worker can never write or read production's, with one-day lock rules on
+# `records/` and `logs/` so a test can clean up. They exist already, and dev has its own R2 API token.
+[[env.dev.r2_buckets]]
+binding = "COMPUTE_RECORDS"
+bucket_name = "nemar-compute-records-dev"
+
+[[env.dev.r2_buckets]]
+binding = "COMPUTE_RESULTS"
+bucket_name = "nemar-compute-results-dev"
+
 # Outbound mail for dev (epic #1893, ADR 0110; not inherited from top-level).
 # The Cloudflare Email Service binding the dev worker sends staging mail through
 # when EMAIL_PROVIDER="cloudflare" (see [env.dev.vars]). It is restricted to the
@@ -593,6 +669,9 @@ invocation_logs = true
 
 [env.dev.vars]
 ENVIRONMENT = "development"
+# The compute buckets' names for dev (variables do not inherit): the same as the bindings' above.
+COMPUTE_RECORDS_BUCKET_NAME = "nemar-compute-records-dev"
+COMPUTE_RESULTS_BUCKET_NAME = "nemar-compute-results-dev"
 # Support-ticket retention (ADR 0112): 30 days on staging, matching its raw-mail bucket's lifecycle.
 MAIL_RETENTION_DAYS = "30"
 # Inbound screening (ADR 0113): the same hourly cap per sender address as production.
@@ -683,6 +762,19 @@ ZARR_CACHE_BASE_URL = "https://zarr-test.nemar.org"
 # cookie code paths. A Domain= value would also be rejected on the workers.dev
 # fallback host used for direct dev testing.
 WEB_SESSION_COOKIE_DOMAIN = ""
+# Issue the app session cookie as `__Host-nemar_session` (host-only, no Domain) and clear the
+# legacy `nemar_session` (ADR 0119 decision 10). Reading accepts both names whatever this says.
+# Set in this table ONLY: production turns it on after the website's reader and the API have both
+# released, which is the owner's act, and backend/test/session-cookie-name.test.ts pins that no
+# other table names it.
+# RELEASE ORDER: this makes the dev Worker issue `__Host-nemar_session` as soon as it deploys, so
+# the website's reader (nemarOrg/website#499) must already be live on the website's `staging`
+# before the OIDC provider epic reaches `dev`, or the staging site signs everyone out.
+# Reversible: turned off again, a request that carries a `__Host-nemar_session` also gets a clear
+# of it (ADR 0119, Consequences), so the flag can be switched back off without stranding anyone.
+# The OpenID Connect authorization routes (/auth/oidc/*) answer 404 until this is "1" and
+# OIDC_SECRET is set: set both. Only a `__Host-` session may approve a grant.
+HOST_PREFIXED_SESSION_COOKIE = "1"
 # Centralized manifest workflow flag (#557, relocated to
 # nemarDatasets/.github in #564). Soak on dev is COMPLETE and the flag is "true"
 # in prod. Dev now runs manifests INLINE (epic #923): the central workflow on

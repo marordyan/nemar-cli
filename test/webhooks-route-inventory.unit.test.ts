@@ -65,6 +65,10 @@ const EXPECTED_ENTRIES: Record<string, number> = {
   "POST /zarr-ready": 1,
   "POST /archive-ready": 1,
   "POST /records-ready": 1,
+
+  // Tapis job status hints for the compute gateway (epic #2005 phase A5, #2010, ADR 0118; a
+  // domain-tagged per-job token in the address, no session; the body is ignored and the job is read back)
+  "POST /tapis/:jobId/:token": 1,
 };
 
 describe("webhooks route inventory", () => {
@@ -78,7 +82,7 @@ describe("webhooks route inventory", () => {
   });
 
   test("entry total is pinned", () => {
-    expect(webhooks.routes.length).toBe(20);
+    expect(webhooks.routes.length).toBe(21);
   });
 
   // The webhooks router has NO router-level middleware: every route does its

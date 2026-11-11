@@ -17,6 +17,8 @@
  * that feed `taken` live at the call sites.
  */
 
+import { OIDC_SUBJECT_PREFIX } from "../../../shared/oidc-subject.js";
+
 /**
  * The username rule, matching `GET /auth/check-username` exactly (and the CLI
  * signup form's schema, which has since been removed, ADR 0097): 3-30
@@ -30,8 +32,26 @@ export const USERNAME_MIN_LENGTH = 3;
 export const USERNAME_MAX_LENGTH = 30;
 export const USERNAME_CHARSET_RE = /^[a-zA-Z0-9_-]+$/;
 
-/** Why a submitted username was refused; `null` when it is well-formed. */
-export type UsernameFormatError = "username_too_short" | "username_too_long" | "username_charset";
+/**
+ * A username may not START with this, in any case (ADR 0119, decision 5): it is the prefix of every
+ * OpenID Connect subject (`shared/oidc-subject.ts`), so no person, service or pipeline name can
+ * collide with the name a partner stores for an account.
+ *
+ * Imported from the shared module's own constant, so the two cannot drift. Compared in lower case
+ * because every comparison around a username is `COLLATE NOCASE`.
+ */
+export function isReservedUsername(username: string): boolean {
+  return username.toLowerCase().startsWith(OIDC_SUBJECT_PREFIX);
+}
+
+/** Why a submitted username was refused; `null` when it is well-formed. Every consumer of this type
+ *  is a place a refusal's code is mapped: `ProfilePatchError` (services/profile.ts), and through it
+ *  `profileEditErrorCodeSchema` (shared/contract/user.ts), which the CLI prints messages from. */
+export type UsernameFormatError =
+  | "username_too_short"
+  | "username_too_long"
+  | "username_charset"
+  | "username_reserved";
 
 export function validateUsernameFormat(username: string): {
   error: UsernameFormatError;
@@ -53,6 +73,14 @@ export function validateUsernameFormat(username: string): {
     return {
       error: "username_charset",
       message: "Username can only contain letters, numbers, underscores, and hyphens",
+    };
+  }
+  // After the format rules, so a name that breaks one of them is told which, and this one only
+  // when the name is otherwise acceptable.
+  if (isReservedUsername(username)) {
+    return {
+      error: "username_reserved",
+      message: `Usernames starting with ${OIDC_SUBJECT_PREFIX} are reserved; choose another`,
     };
   }
   return null;

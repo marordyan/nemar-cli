@@ -102,6 +102,12 @@ only the owner adds one, because every re-pull merge mints a version DOI that ca
 A manual major bump on an `on` dataset is refused: plan an upstream re-pull instead.
 Detail: [`.rules/release-and-repull.md`](.rules/release-and-repull.md).
 
+### The compute switches are the owner's
+
+`COMPUTE_ENABLED` and `COMPUTE_PIPELINES_DISPATCH_ENABLED` are dark switches: they stay out of `backend/wrangler-sccn.toml` (`backend/test/compute-switches-flag.test.ts` fails a change that adds one),
+and only the owner adds one, in a reviewed pull request that edits that test.
+Compute crons are production-only (ADR 0118).
+
 ### Account copy and the profile-gap matrix are declared once
 
 Every sentence about tiers, upload access or a missing field comes from [`shared/contract/account-copy.ts`](shared/contract/account-copy.ts),

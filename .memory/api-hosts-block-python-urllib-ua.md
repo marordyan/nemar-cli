@@ -7,7 +7,7 @@ metadata:
 
 Verified 2026-09-08: `User-Agent: Python-urllib/3.x` gets HTTP 403 from both `api.nemar.org`
 and `zarr.nemar.org`; `python-requests`, `python-httpx`, `curl`, `aiohttp`, `Go-http-client`,
-`node`, and an empty UA all get 200. Almost certainly a Cloudflare managed rule, not Worker code.
+`node`, and an empty UA all get 200. The block is not in Worker code.
 
 **Why:** A urllib-based probe (including my own survey script) reports a false outage,
 and a Python agent using stdlib urllib is silently locked out of the "for agents" surfaces.

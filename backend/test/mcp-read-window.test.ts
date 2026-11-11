@@ -1173,12 +1173,27 @@ describe("read_window (route)", () => {
       },
     ];
 
+    // The server stamps the CLI package version into every reply, and CI bumps
+    // it on each dev release. It says nothing about the read, so the golden
+    // holds a placeholder there; everything else is compared byte for byte.
+    const SERVER_VERSION_PLACEHOLDER = "<server version>";
+    const withServerVersionPlaceholder = (result: unknown): unknown => {
+      const copy = structuredClone(result) as {
+        _meta?: { "io.modelcontextprotocol/serverInfo"?: { version?: unknown } };
+      };
+      const info = copy?._meta?.["io.modelcontextprotocol/serverInfo"];
+      if (info && typeof info.version === "string") {
+        info.version = SERVER_VERSION_PLACEHOLDER;
+      }
+      return copy;
+    };
+
     for (const { name, args } of GOLDEN_CASES) {
       test(`${name}: result and requests match the committed golden`, async () => {
         const { body } = await callTool(app, env(db), 1, "read_window", args);
         const actual = {
           args,
-          result: body.result,
+          result: withServerVersionPlaceholder(body.result),
           requests: fixtureServer.requestLog.map((r) => ({
             method: r.method,
             url: r.url,

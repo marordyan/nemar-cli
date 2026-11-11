@@ -564,7 +564,7 @@ describe("protocol schema: Ajv and zod agree", () => {
     });
   }
 
-  // Every message is open (ADR 0118): an engine ignores an unknown request
+  // Every message is open (ADR 0120): an engine ignores an unknown request
   // field and a client an unknown response field, and both keep it.
   for (const c of CASES) {
     test(`${c.label}: an unknown extra field is accepted by both and kept`, () => {
@@ -1236,7 +1236,7 @@ describe("protocol schema: documented semantics", () => {
     const adr = words(
       readFileSync(
         new URL(
-          "../.context/decisions/0118-the-zarr-read-core-is-shared-and-the-local-engine-speaks-a-versioned-protocol.md",
+          "../.context/decisions/0120-the-zarr-read-core-is-shared-and-the-local-engine-speaks-a-versioned-protocol.md",
           import.meta.url,
         ),
         "utf8",
@@ -1251,7 +1251,7 @@ describe("protocol schema: documented semantics", () => {
     );
     const recipe = words(protocolSchema.$defs.RecipeRequest.description);
     for (const [name, text] of [
-      ["ADR 0118", adr],
+      ["ADR 0120", adr],
       ["zod docblock", zodFile],
       ["RecipeRequest description", recipe],
     ] as const) {

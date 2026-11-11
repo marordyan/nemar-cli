@@ -1,6 +1,6 @@
 /**
- * A re-pull's squash merge made without its trailers, accepted on evidence (ADR 0111, the
- * amendment of 2026-10-29). Pure, and the one definition of each rule below:
+ * A re-pull's squash merge, or plain merge commit of its pull request, made without its trailers,
+ * accepted on evidence (ADR 0111, the amendments of 2026-10-29 and 2026-11-09). Pure, and the one definition of each rule below:
  *  - the ledger's words and fixed values a re-pull writes (`LEDGER_REPO_PATH`,
  *    `SCRUB_LEDGER_ACTIONS`, `MERGE_ACCEPTED_ACTION`, `MERGE_ACCEPTED_VERIFICATION`,
  *    `REPULL_LEDGER_ACTOR`), which the ledger's validator (`scripts/scrub/ledger.ts`), the delta
@@ -38,12 +38,62 @@ import { DIGEST_RE, SHA_RE } from "./repull-state.js";
 /** The ledger's path in a dataset repository (ADR 0085). */
 export const LEDGER_REPO_PATH = ".nemar/corrections.jsonl";
 
+/**
+ * The shape of a merge commit the acceptance takes (ADR 0111, the amendment of 2026-11-09):
+ *  - `squash`: one parent, the base `main` was at, which is what the merge gate writes;
+ *  - `merge-commit`: two parents, the base and the merged pull request's head, which is what
+ *    GitHub's plain merge button writes.
+ * Anything else is refused, and the one rule is here so that the CLI and the Worker cannot differ.
+ */
+export type MergeShape = "squash" | "merge-commit";
+
+export type MergeParents =
+  | { ok: true; shape: MergeShape; first: string }
+  | {
+      ok: false;
+      /** `merge-not-squash`: no parent, or three or more; `merge-second-parent-foreign`: two, the second not the merged head. */
+      code: "merge-not-squash" | "merge-second-parent-foreign";
+      message: string;
+    };
+
+/**
+ * Read a merge commit's parents against the head GitHub says the pull request merged at. The first
+ * parent is what the caller then compares with the record's base; this decides only the shape, and
+ * for two parents that the second is the merged head, so a merge that brought in anything else (a
+ * branch of another history, a commit no gate screened) is not the re-pull's own.
+ */
+export function classifyMergeParents(
+  parents: readonly string[],
+  mergedHead: string,
+  mergeShort: string,
+): MergeParents {
+  if (parents.length === 1) return { ok: true, shape: "squash", first: parents[0] as string };
+  if (parents.length === 2) {
+    if (parents[1] === mergedHead) {
+      return { ok: true, shape: "merge-commit", first: parents[0] as string };
+    }
+    return {
+      ok: false,
+      code: "merge-second-parent-foreign",
+      message: `The merge commit ${mergeShort} has two parents, and its second, ${(parents[1] as string).slice(0, 12)}, is not the head ${mergedHead.slice(0, 12)} the pull request merged at; only GitHub's plain merge of the pull request itself is accepted.`,
+    };
+  }
+  return {
+    ok: false,
+    code: "merge-not-squash",
+    message: `The merge commit ${mergeShort} has ${parents.length} parents; a squash merge has one and GitHub's merge of a pull request has two.`,
+  };
+}
+
 /** The ledger word of an accepted merge: written by NEMAR's Worker only, never typed. */
 export const MERGE_ACCEPTED_ACTION = "repull-merge-accepted";
 
 /**
  * The verification word an acceptance line carries, and no other line may: the Worker read the
- * merge, its pull request, its tree and its parent on GitHub before it wrote the line.
+ * merge, its pull request, its tree and its parent on GitHub before it wrote the line. The word is
+ * kept for a plain GitHub merge commit as well (the amendment of 2026-11-09, {@link MergeShape}),
+ * because a ledger validator already deployed accepts this word and no other, and the line names
+ * the merge commit by its full id, so which shape it has is read from the commit, not from the word.
  */
 export const MERGE_ACCEPTED_VERIFICATION = "squash-merge-verified";
 
@@ -66,7 +116,7 @@ export interface MergeAcceptanceFacts {
   dataset: string;
   /** The version the merge released, bare (`2.0.0`); the line names it as a tag. */
   version: string;
-  /** The accepted squash merge commit, in full. */
+  /** The accepted merge commit (a squash or a plain merge), in full. */
   mergeSha: string;
   /** The record's plan digest (`sha256:<64 hex>`): which reviewed plan the merge carried. */
   planDigest: string;

@@ -290,6 +290,7 @@ describe("__selectBucket by caller source", () => {
       ["/data/nm000108/v1.0.0/x", "data-ip", __limits.DATA_MAX_REQUESTS],
       ["/nm000132/zarr/index.json", "data-ip", __limits.DATA_MAX_REQUESTS],
       ["/neurobagel/index.json", "neurobagel-ip", __limits.NEUROBAGEL_MAX_REQUESTS],
+      ["/oauth/token", "oauth-ip", __limits.OAUTH_MAX_REQUESTS],
     ];
     for (const [path, keyKind, maxRequests] of cases) {
       const site = __selectBucket(path, undefined, "site:203.0.113.7", "site");
@@ -329,6 +330,8 @@ describe("the caps", () => {
       DATA_MISS_MAX_REQUESTS: 10_000,
       NEUROBAGEL_MAX_REQUESTS: 1200,
       PRIVATE_GRANT_MAX_REQUESTS: 10,
+      OIDC_AUTHORIZE_MAX_REQUESTS: 30,
+      OAUTH_MAX_REQUESTS: 2000,
       WINDOW_SIZE: 60,
     });
   });

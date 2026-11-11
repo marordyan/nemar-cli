@@ -633,7 +633,7 @@ export interface DatasetDataSummary {
   /** store_count + failure_count from the zarr index -- every raw recording
    *  discovery found for a dataset converted since ADR 0027's raw-only
    *  cutover; a legacy dataset with unpurged derivative/sourcedata stores
-   *  (AGENTS.md's Zarr section) can still include a non-raw entry (epic
+   *  (ADR 0027, Consequences) can still include a non-raw entry (epic
    *  #1144 Phase 2). */
   recording_count: number | null;
   /** failure_count from the zarr index: recordings that could not be

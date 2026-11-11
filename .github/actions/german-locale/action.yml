@@ -1,0 +1,56 @@
+name: German locale
+description: >
+  Installs the de_DE.UTF-8 locale and git's German catalog (language-pack-de-base), which
+  test/helpers/in-german.ts needs to show an outcome is read from a status and not from git's
+  English message. `phase: start` begins the install in the background, so its 90 seconds overlap
+  the dependency installs; `phase: wait` blocks until it is done and fails the job if it failed.
+  Start it AFTER the git-annex install, since both take the apt lock.
+inputs:
+  phase:
+    description: "start or wait"
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: German locale (${{ inputs.phase }})
+      shell: bash
+      env:
+        PHASE: ${{ inputs.phase }}
+      run: |
+        status="$RUNNER_TEMP/german-locale.status"
+        case "$PHASE" in
+          start)
+            rm -f "$status"
+            # setsid detaches it from this step, so the runner does not stop it when the step ends.
+            # A fresh `apt-get update` first, because a cached git-annex install runs none.
+            setsid bash -c '
+              for attempt in 1 2 3 4 5; do
+                limit=60; [ "$attempt" -eq 5 ] && limit=600
+                if sudo timeout "$limit" apt-get -o DPkg::Lock::Timeout=60 update && sudo timeout "$limit" apt-get -o DPkg::Lock::Timeout=60 install -y language-pack-de-base; then
+                  echo ok > "$0"; exit 0
+                fi
+                echo "apt attempt $attempt failed or timed out" >&2
+                sleep 5
+              done
+              echo failed > "$0"
+            ' "$status" > "$RUNNER_TEMP/german-locale.log" 2>&1 < /dev/null &
+            echo "German locale install started in the background"
+            ;;
+          wait)
+            # Bounded, so a lost background process fails the job instead of hanging it.
+            for _ in $(seq 1 900); do
+              [ -f "$status" ] && break
+              sleep 1
+            done
+            cat "$RUNNER_TEMP/german-locale.log" || true
+            if [ "$(cat "$status" 2>/dev/null)" != "ok" ]; then
+              echo "::error::the German locale did not install; the in-German test cases would assert nothing"
+              exit 1
+            fi
+            echo "German locale installed"
+            ;;
+          *)
+            echo "::error::phase must be start or wait, got '$PHASE'"
+            exit 1
+            ;;
+        esac

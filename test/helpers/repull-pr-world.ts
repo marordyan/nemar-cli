@@ -197,9 +197,16 @@ export interface RepullWorld {
    * Merge one of the world's pull requests the way GitHub's own merge button does, outside
    * NEMAR's gate: a squash with GitHub's message (`title`, and `message` as its body, empty by
    * default), so the squash commit carries none of the re-pull's trailers. N.0.0's pull request
-   * unless `pr` says N.0.1's. Returns the merge commit.
+   * unless `pr` says N.0.1's. With `method: "merge"` it is GitHub's plain merge instead: a commit
+   * of two parents, `main`'s tip and the pull request's head, titled `Merge pull request #N from
+   * <owner>/<branch>`. Returns the merge commit.
    */
-  mergeOnGitHub(opts?: { pr?: "n0" | "n1"; title?: string; message?: string }): Promise<string>;
+  mergeOnGitHub(opts?: {
+    pr?: "n0" | "n1";
+    title?: string;
+    message?: string;
+    method?: "squash" | "merge";
+  }): Promise<string>;
   /** How many writes of the privacy ledger GitHub's Contents API took since the last restore. */
   ledgerWrites(): number;
   /** Answer reads of the ledger on `main` with this instead, until set to null. */
@@ -493,6 +500,36 @@ export async function startRepullWorld(
     const head = await rev(origin, `refs/heads/${p.headRef}`);
     const main = await rev(origin, "refs/heads/main");
     if (!head || !main) return null;
+    // GitHub's plain merge: a merge commit of `main` and the head, and the head's tree under the
+    // same simplification as the squash's.
+    if (body.merge_method === "merge") {
+      const made = await runCommand(
+        [
+          "git",
+          "commit-tree",
+          `${head}^{tree}`,
+          "-p",
+          main,
+          "-p",
+          head,
+          "-m",
+          `Merge pull request #${number} from nemarDatasets/${p.headRef}`,
+        ],
+        {
+          cwd: origin,
+          env: {
+            GIT_AUTHOR_NAME: "GitHub",
+            GIT_AUTHOR_EMAIL: "noreply@github.com",
+            GIT_COMMITTER_NAME: "GitHub",
+            GIT_COMMITTER_EMAIL: "noreply@github.com",
+          },
+        },
+      );
+      if (made.exitCode !== 0) return null;
+      const merged = made.stdout.trim();
+      await gitIn(origin, ["update-ref", "refs/heads/main", merged, main]);
+      return merged;
+    }
     const title =
       typeof body.commit_title === "string" ? body.commit_title : `${p.title} (#${number})`;
     const message =
@@ -801,7 +838,7 @@ export async function startRepullWorld(
           method: "PUT",
           headers: { Authorization: `Bearer ${ADMIN_TOKEN}`, "Content-Type": "application/json" },
           body: JSON.stringify({
-            merge_method: "squash",
+            merge_method: o.method ?? "squash",
             commit_title: o.title ?? `Release v${version} (#${number})`,
             commit_message: o.message ?? "",
           }),
@@ -824,7 +861,20 @@ export async function startRepullWorld(
     },
     async tagMain(version) {
       const repo = fx.originRepo;
-      await gitIn(repo, ["tag", `v${version}`, "refs/heads/main"]);
+      // Annotated, as the dataset workflow's tags are: `git ls-remote` then lists the tag object
+      // and, only when asked for by name, the commit it names (the peeled line).
+      await gitIn(repo, [
+        "-c",
+        "user.name=nemar-bot",
+        "-c",
+        "user.email=nemar-bot@users.noreply.github.com",
+        "tag",
+        "-a",
+        "-m",
+        `Release v${version}`,
+        `v${version}`,
+        "refs/heads/main",
+      ]);
       return (await gitIn(repo, ["rev-parse", `refs/tags/v${version}^{commit}`])).trim();
     },
     insertVersionRow(version) {

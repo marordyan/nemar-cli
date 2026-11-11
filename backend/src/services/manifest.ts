@@ -60,11 +60,92 @@ export function extractSizeFromKey(key: string): number {
 }
 
 /**
+ * Digest length in hex characters of every git-annex hash backend, keyed by the
+ * lowercase backend name without its `E` (extension) suffix. Each length was read
+ * from `git annex calckey` (git-annex 10.20261006) for every backend its
+ * `git annex version` lists, `E` and non-`E` alike; the backends left out
+ * (`WORM`, `URL`, `VURL`, `GITBUNDLE`, `GITMANIFEST`, `X*`) are not content digests.
+ *
+ * Why the length matters: some published datasets carry keys that were written
+ * upstream (OpenNeuro tooling), not by git-annex, with the tail of a dotless file
+ * name straight after the digest: `SHA256E-s65536--<64 hex>COR-001` for `COR-001`,
+ * `SHA256E-s369273--<64 hex>01_brain_surface` for `01_brain_surface`
+ * (nemarOrg/nemar-cli#2118). git-annex itself writes no such tail for those files
+ * (`SHA256E-s65536--<64 hex>`) and refuses the tail form on verification, but the
+ * manifest must still read the key as it is. A tail that starts with hex characters
+ * (`C`, `01`) runs into the digest, and the length is the only thing that tells
+ * them apart.
+ */
+export const ANNEX_DIGEST_HEX_LENGTH: Readonly<Record<string, number>> = {
+  md5: 32,
+  sha1: 40,
+  sha224: 56,
+  sha256: 64,
+  sha384: 96,
+  sha512: 128,
+  sha3_224: 56,
+  sha3_256: 64,
+  sha3_384: 96,
+  sha3_512: 128,
+  skein256: 64,
+  skein512: 128,
+  blake2b160: 40,
+  blake2b224: 56,
+  blake2b256: 64,
+  blake2b384: 96,
+  blake2b512: 128,
+  blake2bp512: 128,
+  blake2s160: 40,
+  blake2s224: 56,
+  blake2s256: 64,
+  blake2sp224: 56,
+  blake2sp256: 64,
+};
+
+/** The table's length for a lowercase backend name, own properties only. */
+function digestLengthOf(name: string): number | undefined {
+  return Object.hasOwn(ANNEX_DIGEST_HEX_LENGTH, name) ? ANNEX_DIGEST_HEX_LENGTH[name] : undefined;
+}
+
+/** A backend positively identified from an annex key. */
+export interface AnnexBackend {
+  /** The backend as written in the key (`SHA256E`, `MD5`). */
+  backend: string;
+  /** Lowercase name without the `E` suffix, the key of {@link ANNEX_DIGEST_HEX_LENGTH}. */
+  name: string;
+  /** Digest length in hex characters. */
+  length: number;
+}
+
+/**
+ * Identify the hash backend of an annex key, or null. The backend is the token
+ * before an optional `-s<size>` (and chunk fields such as `-S10-C3`) and the
+ * `--` that opens the digest, so a size-less `MD5E--<hex>.edf` is identified
+ * too. Only a backend in {@link ANNEX_DIGEST_HEX_LENGTH} counts: `WORM`, `URL`,
+ * an unknown backend and a string that is not a key all return null, and no
+ * length is ever applied to them.
+ */
+export function identifyAnnexBackend(key: string): AnnexBackend | null {
+  const match = key.match(/^([A-Z0-9_]+?)(E?)(?:-s\d+)?(?:-[A-Za-z]\d+)*--/);
+  if (!match) return null;
+  const name = match[1].toLowerCase();
+  // Own properties only: a backend named `constructor` or `__proto__` must not find
+  // something on the object prototype.
+  const length = digestLengthOf(name);
+  if (length === undefined) return null;
+  return { backend: `${match[1]}${match[2]}`, name, length };
+}
+
+/**
  * Extract the hash algorithm prefix from an annex key.
  * Key format: SHA256E-s12345--abc123.ext
- * Returns lowercase algorithm name (e.g., "sha256", "md5").
+ * Returns lowercase algorithm name (e.g., "sha256", "md5", "sha3_512"). A key whose
+ * backend is not identified keeps the historic answer: the `-s`-anchored match
+ * when there is one, else "sha256".
  */
 export function extractHashAlgorithm(key: string): string {
+  const identified = identifyAnnexBackend(key);
+  if (identified) return identified.name;
   const match = key.match(/^([A-Z0-9]+?)E?-s/);
   return match ? match[1].toLowerCase() : "sha256";
 }
@@ -72,11 +153,64 @@ export function extractHashAlgorithm(key: string): string {
 /**
  * Extract the hash/checksum from an annex key.
  * Key format: SHA256E-s12345--abc123def456.ext
- * The hash is between -- and the last .ext
+ * The hash is the hex run after `--`, cut to the backend's digest length ONLY when
+ * the backend was identified from the key, so an extension that starts with hex
+ * characters (`C`, `01`, `abc`) is not read as part of the digest. A run shorter
+ * than the length is returned as found; {@link isWellFormedChecksum} reports it.
+ * Any other key gets the historic greedy match, unchanged.
  */
 export function extractChecksumFromKey(key: string): string {
   const match = key.match(/--([a-fA-F0-9]+)/);
-  return match ? match[1] : "";
+  if (!match) return "";
+  const length = identifyAnnexBackend(key)?.length;
+  return length !== undefined && match[1].length > length ? match[1].slice(0, length) : match[1];
+}
+
+/**
+ * True when `value` is a plausible digest for `algorithm`: lowercase hex of the
+ * backend's length. An algorithm with no known length (`git`, `url`, anything
+ * else) is not judged and counts as well formed.
+ */
+export function isWellFormedChecksum(algorithm: string, value: string): boolean {
+  const length = digestLengthOf(algorithm);
+  if (length === undefined) return true;
+  return value.length === length && /^[0-9a-f]+$/.test(value);
+}
+
+/** What {@link repairStoredChecksum} decided about one stored checksum. */
+export interface CheckedChecksum {
+  value: string;
+  /** `ok`: as stored, or not judged. `repaired`: re-derived from the key. `malformed`: wrong shape, no repair. */
+  status: "ok" | "repaired" | "malformed";
+}
+
+/**
+ * A manifest published before #2118 (and any a generator outside this repo
+ * still writes) can store a digest with the key's extension attached. The key
+ * is stored beside it, so the digest is re-derived from the key when, and only
+ * when, the stored value has the wrong shape for its algorithm: a well-formed
+ * value is returned untouched, so every valid entry is served byte for byte as
+ * before. A value that cannot be repaired is returned as stored and reported
+ * `malformed`; the caller decides how loudly.
+ *
+ * An entry whose key is present but names no known hash backend (`URL`, `WORM`,
+ * an unknown one) is not judged at all: its stored label is a historic guess.
+ */
+export function repairStoredChecksum(
+  algorithm: string,
+  value: string,
+  key: string | undefined,
+): CheckedChecksum {
+  if (isWellFormedChecksum(algorithm, value)) return { value, status: "ok" };
+  if (typeof key === "string") {
+    const identified = identifyAnnexBackend(key);
+    if (identified === null) return { value, status: "ok" };
+    if (identified.name === algorithm) {
+      const derived = extractChecksumFromKey(key);
+      if (isWellFormedChecksum(algorithm, derived)) return { value: derived, status: "repaired" };
+    }
+  }
+  return { value, status: "malformed" };
 }
 
 /**
@@ -136,6 +270,7 @@ export async function generateManifest(
   );
 
   const files: Record<string, ManifestFile> = {};
+  const malformedChecksums: Array<{ path: string; backend: string }> = [];
   // Pointer candidates whose `parseAnnexPointer` returned null — they're
   // small regular git files (README, CHANGES, dataset_description.json on
   // OpenNeuro mirrors are commonly <500 bytes), NOT annex pointers. They
@@ -158,15 +293,36 @@ export async function generateManifest(
     );
     for (const { entry, key } of results) {
       if (key) {
+        const algorithm = extractHashAlgorithm(key);
+        const digest = extractChecksumFromKey(key);
+        // Report (never refuse) a positively identified backend with a wrong-length digest;
+        // a key this parser does not recognize is carried as before and never judged.
+        const backend = identifyAnnexBackend(key);
+        if (backend && !isWellFormedChecksum(algorithm, digest)) {
+          malformedChecksums.push({ path: entry.path, backend: backend.backend });
+        }
         files[entry.path] = {
           key,
           size: extractSizeFromKey(key),
-          checksum: `${extractHashAlgorithm(key)}:${extractChecksumFromKey(key)}`,
+          checksum: `${algorithm}:${digest}`,
         };
       } else {
         nonAnnexCandidates.push(entry);
       }
     }
+  }
+
+  // Every caller runs after the version's DOI is minted, so a manifest is never refused over
+  // a digest: it is carried as found and reported once per build, as the data route does when
+  // it serves a stored one. No checksum value is logged.
+  if (malformedChecksums.length > 0) {
+    const examples = malformedChecksums
+      .slice(0, 3)
+      .map((e) => `${e.path} [${e.backend}]`)
+      .join(", ");
+    console.warn(
+      `[manifest] MALFORMED CHECKSUM dataset=${datasetId} version=${version} count=${malformedChecksums.length} examples=${examples}`,
+    );
   }
 
   // Build the regular-files set: every git-tree entry that isn't internal

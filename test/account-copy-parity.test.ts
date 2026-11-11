@@ -143,7 +143,16 @@ describe("the copy table's own rules", () => {
   });
 
   test("every placeholder comes from the declared vocabulary", () => {
-    const allowed = new Set(["label", "blocks", "web", "cli", "date", "reason"]);
+    const allowed = new Set([
+      "label",
+      "blocks",
+      "web",
+      "cli",
+      "date",
+      "client",
+      "redirect_host",
+      "reason",
+    ]);
     for (const [key, value] of Object.entries(ACCOUNT_COPY)) {
       for (const [, name] of value.matchAll(/\{(\w+)\}/g)) {
         expect({ key, name, allowed: [...allowed] }).toEqual({
@@ -188,10 +197,7 @@ function websiteCopy(): Map<string, string> {
   if (FOUND === null) throw new Error("unreachable: the parity block is skipped without a file");
   if (!existsSync(FOUND)) {
     throw new Error(
-      `${WEBSITE_ENV_VAR}=${declaredRaw} resolves to ${FOUND}, which does not exist. ` +
-        "That variable is the contract: CI points it at the sparse checkout of " +
-        "nemarOrg/website made by the unit-pure job. If that step changed or was removed, " +
-        "fix the workflow -- do not unset the variable to make this pass.",
+      `${WEBSITE_ENV_VAR}=${declaredRaw} resolves to ${FOUND}, which does not exist. That variable is the contract: CI points it at the sparse checkout of nemarOrg/website made by the unit-pure job. If that step changed or was removed, fix the workflow -- do not unset the variable to make this pass.`,
     );
   }
   return extractCopy(readFileSync(FOUND, "utf8"));

@@ -12,8 +12,8 @@ deleted**, while their **D1 records and S3 data fully survive**. The 54th in the
 `nm099999`, is the disposable E2E test dataset (ignore).
 
 ## Forensics (GitHub org Audit Log: action=repo.destroy)
-- actor: **neuromechanist**, user_agent: **NEMAR-API** (the backend's own UA string),
-  `programmatic_access_type`: classic PAT, **token_id `2058954005`** (scopes incl. `delete_repo`).
+- actor: **the owner's GitHub account**, user_agent: **NEMAR-API** (the backend's own UA string),
+  `programmatic_access_type`: classic PAT, **token_id `<token id>`** (scopes incl. `delete_repo`).
 - `request_method: delete`, `request_category: api`, repos public.
 - Timestamps: ~**03:00:1X UTC daily** (e.g. nm000346 @ 2026-06-26 03:00:15Z,
   nm000237 @ 2026-06-24 03:00:16Z), a few per day spread across the week — STILL ongoing.
@@ -23,10 +23,10 @@ deleted**, while their **D1 records and S3 data fully survive**. The 54th in the
   `deleted:0, datasets:[]` every day (incl. every deletion date). hallu + mcm crontabs/
   launchd clean. No org GitHub Actions delete repos.
 - The deleter was **two leftover NEMAR backend Workers on the retired *personal* Cloudflare
-  account** (`Shirazi@ieee.org`, `10f166f3ec8395ff4a219f581c5f359d`): `nemar-api` +
+  account** (`<contact email>`, `<account id>`): `nemar-api` +
   `nemar-api-dev`, serving legacy `api.osc.earth/nemar`. Never torn down after the SCCN
   migration (#314). Each had cron `0 3 * * *` (UTC → the `03:00:1X` fingerprint) and the old
-  admin PAT (`2058954005`) as `GITHUB_ADMIN_PAT` (→ UA `NEMAR-API`; stopped on PAT rotation).
+  admin PAT (`<token id>`) as `GITHUB_ADMIN_PAT` (→ UA `NEMAR-API`; stopped on PAT rotation).
 - Why prod data survived: their delete-cascade destroyed the **shared GitHub** repo (live PAT)
   while the S3 + D1 cascade steps hit the **dead personal account** → prod S3+D1 untouched.
 - Ruled out as the exact selector: neither personal D1 still contains nm000192-346 and both
@@ -48,7 +48,7 @@ All 53 verified RECOVERABLE: each has intact `s3://nemar/<id>/version/*.json` (f
 file→annex-key manifest), `objects/`, `archives/v*.zip` (complete snapshot), and `zarr/`.
 
 ## Recovery (in order)
-1. **STOP it first:** revoke PAT `token_id 2058954005` (GitHub → Developer settings).
+1. **STOP it first:** revoke PAT `token_id <token id>` (GitHub → Developer settings).
    Otherwise restored repos are re-deleted at the next 03:00 UTC.
 2. **Find the cron:** `ssh hallu "crontab -l"`, `ssh mcm "crontab -l"` — look for a daily
    `0 3 * * *` (or `0 20` PT) script doing `gh repo delete` / these MOABB ids.

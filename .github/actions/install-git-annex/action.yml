@@ -1,0 +1,49 @@
+name: Install git-annex
+description: >
+  Installs git-annex from cached .deb packages when the cache has them, and otherwise from the
+  Ubuntu mirror with a bounded retry. Replaces a bare `apt-get update && apt-get install`,
+  which stalled for 9 minutes on one shard (run 42272338582) and for an hour once (#1667).
+runs:
+  using: composite
+  steps:
+    - name: Ubuntu release
+      id: ubuntu
+      shell: bash
+      run: echo "release=$(lsb_release -rs)" >> "$GITHUB_OUTPUT"
+
+    # A cache is readable by the ref that wrote it and the refs it was cut from, so the first run
+    # on a new branch still uses the mirror. Bump the -v suffix to invalidate it.
+    - name: Restore the git-annex packages
+      uses: actions/cache@v4
+      with:
+        path: ~/annex-debs
+        key: git-annex-debs-${{ runner.arch }}-${{ steps.ubuntu.outputs.release }}-v1
+
+    - name: Install git-annex
+      shell: bash
+      run: |
+        if compgen -G "$HOME/annex-debs/git-annex_*.deb" > /dev/null \
+          && sudo dpkg -i "$HOME"/annex-debs/*.deb && git annex version > /dev/null; then
+          echo "installed git-annex from the cached packages"
+          exit 0
+        fi
+        echo "no usable cached packages; installing from the mirror"
+        # The first four attempts are cut off after a minute, because a healthy mirror answers in
+        # seconds and a stalled one does not recover by waiting; the last may take ten minutes, inside the shortest job limit.
+        for attempt in 1 2 3 4 5; do
+          limit=60
+          [ "$attempt" -eq 5 ] && limit=600
+          if sudo timeout "$limit" apt-get -o DPkg::Lock::Timeout=60 update \
+            && sudo timeout "$limit" apt-get -o DPkg::Lock::Timeout=60 install -y --download-only git-annex; then
+            break
+          fi
+          echo "::warning::apt attempt $attempt failed or timed out"
+          sleep 5
+        done
+        sudo apt-get -o DPkg::Lock::Timeout=60 install -y git-annex
+        mkdir -p "$HOME/annex-debs"
+        # The cache is an optimization. A package the runner image already carries is not in
+        # apt's cache, and its missing file must not fail a job whose install just succeeded.
+        cp /var/cache/apt/archives/git-annex_*.deb /var/cache/apt/archives/git-remote-gcrypt_*.deb \
+          /var/cache/apt/archives/nocache_*.deb "$HOME/annex-debs/" \
+          || echo "::warning::not every git-annex package could be cached"

@@ -1845,7 +1845,8 @@ describe("bytesFromRangeHeader (#1181 phase 6 / issue #1061)", () => {
 // installs a real in-memory CacheStorage stand-in for its own duration only
 // -- the same technique rate-limit-buckets.test.ts uses for the same
 // reason, restored in afterAll so no other suite sharing this process (root
-// `bun test` runs test/ and backend/test/ together, see AGENTS.md) sees a
+// `bun test` runs test/ and backend/test/ together, see
+// .memory/bun-test-shared-process-root-and-backend.md) sees a
 // stray global.
 // ---------------------------------------------------------------------------
 

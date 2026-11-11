@@ -151,10 +151,15 @@ async function assertUpstreamTag(work: string, ctx: AdvanceContext): Promise<voi
   const facts = planFacts(ctx.body);
   const url = upstreamUrl(facts.ds, ctx.env);
   const env = fleetCloneEnv(url, null);
-  const r = await git(work, ["ls-remote", url, `refs/tags/${facts.toTag}`], {
-    ...(env ? { env } : {}),
-    ok: true,
-  });
+  // The peeled line is asked for by name: for an exact ref `git ls-remote` shows it only then.
+  const r = await git(
+    work,
+    ["ls-remote", url, `refs/tags/${facts.toTag}`, `refs/tags/${facts.toTag}^{}`],
+    {
+      ...(env ? { env } : {}),
+      ok: true,
+    },
+  );
   const lines = new Map(
     r.stdout
       .split("\n")

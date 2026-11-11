@@ -6,7 +6,7 @@
  * hash the hashing stage promised in the key, and with the bytes the stand-in actually stored.
  */
 
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect } from "bun:test";
 import { rmSync } from "node:fs";
 import path from "node:path";
 import {
@@ -18,6 +18,7 @@ import {
   parseKeymap,
 } from "../../../scripts/scrub/contract";
 import { type S3Standin, startS3Standin } from "../helpers/s3-standin";
+import { makeJobPool, makeLimiter } from "./concurrency";
 import { expectStopped } from "./refusal";
 import {
   BUCKET,
@@ -57,24 +58,51 @@ import {
 
 afterAll(removeTempDirs);
 
-let standin: S3Standin;
-afterEach(() => standin?.stop());
+/**
+ * The test bodies run in the background, at most three at a time and in the order the tests are
+ * written, once `startJobs` opens the queue (`concurrency.ts`). Each test then waits for its own
+ * job, so time spent queued is not counted against its timeout. `run` keeps at most three real
+ * CLI runs going at once; CI runners have four cores and other files run beside this one.
+ */
+const { job, start: startJobs } = makeJobPool(3);
+beforeAll(startJobs);
+const limit = makeLimiter(3);
+const run = (s: S3Standin, args: string[], env: Record<string, string> = {}) =>
+  limit(() => runScrub(s, args, env));
+
+/** A test with a stand-in of its own, stopped when it ends; its body runs as a background job. */
+function lane(name: string, body: (standin: S3Standin) => Promise<void>, timeout: number) {
+  job(
+    name,
+    async () => {
+      const standin = startS3Standin();
+      try {
+        await body(standin);
+      } finally {
+        standin.stop();
+      }
+    },
+    timeout,
+  );
+}
 
 /** Seed, plan and hash through the real CLI; assemble is left for the test to run. */
 async function planned(
+  standin: S3Standin,
   fixtures: Fixture[],
   seed: Record<string, Parameters<typeof seedObject>[2]> = {},
 ) {
   for (const f of fixtures) seedObject(standin, f, seed[f.label] ?? {});
   seedManifest(standin, "v1.0.0", fixtures);
   const dir = tempDir("assemble");
-  const plan = await runScrub(standin, planArgs(dir));
+  const plan = await run(standin, planArgs(dir));
   expect(plan.exitCode, plan.all).toBe(0);
   writeHashes(dir, fixtures);
   return dir;
 }
 
-const newObject = (f: Fixture) => standin.current(BUCKET, objectPath(f.newKey as string));
+const newObject = (standin: S3Standin, f: Fixture) =>
+  standin.current(BUCKET, objectPath(f.newKey as string));
 
 /** Offsets at which two equal-length buffers differ. */
 function differing(a: Uint8Array, b: Uint8Array): number[] {
@@ -84,15 +112,14 @@ function differing(a: Uint8Array, b: Uint8Array): number[] {
 }
 
 describe("assemble", () => {
-  test(
+  lane(
     "a dry run says what it would upload and copy, and touches nothing",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const [a, b, c, e] = [fixtureA(), fixtureB(), fixtureC(), fixtureE()];
-      const dir = await planned([a, b, c, e]);
+      const dir = await planned(standin, [a, b, c, e]);
       const before = standin.log.length;
 
-      const r = await runScrub(standin, ["assemble", "--dir", dir]);
+      const r = await run(standin, ["assemble", "--dir", dir]);
       expect(r.exitCode, r.all).toBe(0);
       expect(standin.log.length).toBe(before);
       expect(has(dir, "assembled.json")).toBe(false);
@@ -111,18 +138,17 @@ describe("assemble", () => {
     SLOW,
   );
 
-  test(
+  lane(
     "builds each new object: bytes equal the old object except the header, and it is locked",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const [a, b, c, d, e] = [fixtureA(), fixtureB(), fixtureC(), fixtureD(), fixtureE()];
-      const dir = await planned([a, b, c, d, e], {
+      const dir = await planned(standin, [a, b, c, d, e], {
         A: { contentType: "application/x-edf", sse: "AES256" },
         C: { contentType: "application/x-edf", sse: "AES256" },
       });
       standin.log.length = 0;
 
-      const r = await runScrub(standin, assembleArgs(dir));
+      const r = await run(standin, assembleArgs(dir));
       expect(r.exitCode, r.all).toBe(0);
       expect(r.stdout).toContain("assemble: objects=4 put=2 multipart=2 skipped=0");
 
@@ -139,7 +165,7 @@ describe("assemble", () => {
       const minRetain = Date.now() + 99 * 365 * 24 * 3600 * 1000;
       const maxRetain = Date.now() + 101 * 365 * 24 * 3600 * 1000;
       for (const f of [a, b, c, e]) {
-        const made = newObject(f);
+        const made = newObject(standin, f);
         expect(made, f.label).toBeDefined();
         const data = (made as { data: Uint8Array }).data;
         // The bytes are exactly what the independent expectation says, and hash to the key.
@@ -170,7 +196,7 @@ describe("assemble", () => {
 
       // Content type and encryption of the source carry over.
       for (const f of [a, c]) {
-        const made = newObject(f);
+        const made = newObject(standin, f);
         expect(made?.contentType, f.label).toBe("application/x-edf");
         expect(made?.sse, f.label).toBe("AES256");
       }
@@ -202,16 +228,15 @@ describe("assemble", () => {
     SLOW,
   );
 
-  test(
+  lane(
     "copy parts tile the rest of the object with no gap and no overlap",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const c = fixtureC();
-      const dir = await planned([c]);
+      const dir = await planned(standin, [c]);
       standin.log.length = 0;
       // 6 MiB parts: the 12 MiB and 123 bytes after the patched first part are three copies,
       // the last one the 123-byte remainder (a final part may be any size).
-      const r = await runScrub(standin, assembleArgs(dir, ["--max-part-bytes", String(6 * MIB)]));
+      const r = await run(standin, assembleArgs(dir, ["--max-part-bytes", String(6 * MIB)]));
       expect(r.exitCode, r.all).toBe(0);
       const copies = standin.calls("UploadPartCopy");
       expect(copies.map((x) => x.range)).toEqual([
@@ -220,20 +245,19 @@ describe("assemble", () => {
         `bytes=${20 * MIB}-${c.bytes.length - 1}`,
       ]);
       expect(copies.map((x) => x.partNumber)).toEqual([2, 3, 4]);
-      const made = newObject(c);
+      const made = newObject(standin, c);
       expect(Buffer.compare((made as { data: Uint8Array }).data, c.expected as Uint8Array)).toBe(0);
       expect(sha256((made as { data: Uint8Array }).data)).toBe(parseKey(c.newKey as string).sha256);
     },
     SLOW,
   );
 
-  test(
+  lane(
     "a second run changes nothing: existing objects are recognized and skipped",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const [a, c] = [fixtureA(), fixtureC()];
-      const dir = await planned([a, c]);
-      const first = await runScrub(standin, assembleArgs(dir));
+      const dir = await planned(standin, [a, c]);
+      const first = await run(standin, assembleArgs(dir));
       expect(first.exitCode, first.all).toBe(0);
       const sha = fileSha256(dir, "assembled.json");
       const versionsBefore = [a, c].map(
@@ -241,7 +265,7 @@ describe("assemble", () => {
       );
 
       standin.log.length = 0;
-      const again = await runScrub(standin, assembleArgs(dir));
+      const again = await run(standin, assembleArgs(dir));
       expect(again.exitCode, again.all).toBe(0);
       expect(again.stdout).toContain("put=0 multipart=0 skipped=2");
       for (const op of [
@@ -263,12 +287,11 @@ describe("assemble", () => {
     SLOW,
   );
 
-  test(
+  lane(
     "a source that changes under a part copy fails the copy, aborts the upload and leaves no object",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const c = fixtureC();
-      const dir = await planned([c]);
+      const dir = await planned(standin, [c]);
       standin.log.length = 0;
       // Just before the first UploadPartCopy, someone replaces the source with new content.
       const swapped = c.bytes.slice();
@@ -278,7 +301,7 @@ describe("assemble", () => {
         swappedId = standin.putObject(BUCKET, objectPath(c.oldKey), swapped);
       });
 
-      const r = await runScrub(standin, assembleArgs(dir));
+      const r = await run(standin, assembleArgs(dir));
       expect(r.exitCode, r.all).toBe(1);
       expect(r.stdout).toContain("UploadPartCopy:precondition-failed");
       expect(standin.calls("UploadPartCopy")[0]?.status).toBe(412);
@@ -291,25 +314,27 @@ describe("assemble", () => {
 
       // Put the source back as it was; a re-run resumes and finishes.
       standin.dropVersion(BUCKET, objectPath(c.oldKey), swappedId);
-      const again = await runScrub(standin, assembleArgs(dir));
+      const again = await run(standin, assembleArgs(dir));
       expect(again.exitCode, again.all).toBe(0);
       expect(
-        Buffer.compare((newObject(c) as { data: Uint8Array }).data, c.expected as Uint8Array),
+        Buffer.compare(
+          (newObject(standin, c) as { data: Uint8Array }).data,
+          c.expected as Uint8Array,
+        ),
       ).toBe(0);
     },
     SLOW,
   );
 
-  test(
+  lane(
     "a failure at completion aborts the upload, writes nothing, and a re-run finishes",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const e = fixtureE();
-      const dir = await planned([e]);
+      const dir = await planned(standin, [e]);
       standin.log.length = 0;
       standin.inject("CompleteMultipartUpload", { code: "InternalError", status: 500, times: 1 });
 
-      const r = await runScrub(standin, assembleArgs(dir));
+      const r = await run(standin, assembleArgs(dir));
       expect(r.exitCode, r.all).toBe(1);
       expect(r.stdout).toContain("CompleteMultipartUpload:failed");
       expect(standin.calls("AbortMultipartUpload").length).toBe(1);
@@ -318,21 +343,23 @@ describe("assemble", () => {
       expect(has(dir, "assembled.json")).toBe(false);
 
       standin.clearFaults();
-      const again = await runScrub(standin, assembleArgs(dir));
+      const again = await run(standin, assembleArgs(dir));
       expect(again.exitCode, again.all).toBe(0);
       expect(
-        Buffer.compare((newObject(e) as { data: Uint8Array }).data, e.expected as Uint8Array),
+        Buffer.compare(
+          (newObject(standin, e) as { data: Uint8Array }).data,
+          e.expected as Uint8Array,
+        ),
       ).toBe(0);
     },
     SLOW,
   );
 
-  test(
+  lane(
     "an object already at the new key is kept unless it is exactly what assembly makes",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const a = fixtureA();
-      const dir = await planned([a]);
+      const dir = await planned(standin, [a]);
       const at = objectPath(a.newKey as string);
       const decade = new Date(Date.now() + 10 * 365 * 24 * 3600 * 1000);
       const squatters: Array<[string, Uint8Array, Date | undefined]> = [
@@ -344,7 +371,7 @@ describe("assemble", () => {
       ];
       for (const [label, bytes, lockUntil] of squatters) {
         const id = standin.putObject(BUCKET, at, bytes, { lockUntil });
-        const r = await runScrub(standin, assembleArgs(dir));
+        const r = await run(standin, assembleArgs(dir));
         expect(r.exitCode, `${label}: ${r.all}`).toBe(1);
         expect(r.stdout, label).toContain("new-key-conflict");
         const vs = standin.versions(BUCKET, at);
@@ -358,10 +385,9 @@ describe("assemble", () => {
     SLOW,
   );
 
-  test(
+  lane(
     "refuses unless hashes and patches cover every key that needs a scrub",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const a = fixtureA();
       // Same size and extension as A, different content: a legal target for a bad mapping.
       const a2 = makeFixture(
@@ -378,7 +404,7 @@ describe("assemble", () => {
         ),
         { patient: "X X X X" },
       );
-      const dir = await planned([a, a2]);
+      const dir = await planned(standin, [a, a2]);
       type Hashes = {
         version: 1;
         dataset: string;
@@ -389,7 +415,7 @@ describe("assemble", () => {
       const refuse = async (word: string, hashes?: unknown) => {
         if (hashes === undefined) rmSync(path.join(dir, "hashes.json"), { force: true });
         else writeJson(dir, "hashes.json", hashes);
-        const r = await runScrub(standin, assembleArgs(dir));
+        const r = await run(standin, assembleArgs(dir));
         expectStopped(r, 3, word);
         expect(has(dir, "assembled.json"), word).toBe(false);
       };
@@ -429,10 +455,10 @@ describe("assemble", () => {
       const { [a.oldKey]: _dropped, ...rest } = patches;
       writeJson(dir, "patches.json", rest);
       // A patches.json the plan does not name is refused before anything is read from it.
-      expectStopped(await runScrub(standin, assembleArgs(dir)), 3, "patches-stale");
+      expectStopped(await run(standin, assembleArgs(dir)), 3, "patches-stale");
       // Named by the plan, and still short of a key that needs a scrub.
       rebindPatches(dir);
-      const noPatch = await runScrub(standin, assembleArgs(dir));
+      const noPatch = await run(standin, assembleArgs(dir));
       expectStopped(noPatch, 3, "patches-incomplete");
 
       // Every refusal happened before a single S3 call.
@@ -441,15 +467,14 @@ describe("assemble", () => {
     SLOW,
   );
 
-  test(
+  lane(
     "a source that has gone missing since the plan fails by name",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const a = fixtureA();
-      const dir = await planned([a]);
+      const dir = await planned(standin, [a]);
       const [only] = standin.versions(BUCKET, objectPath(a.oldKey));
       standin.dropVersion(BUCKET, objectPath(a.oldKey), (only as { versionId: string }).versionId);
-      const r = await runScrub(standin, assembleArgs(dir));
+      const r = await run(standin, assembleArgs(dir));
       expect(r.exitCode, r.all).toBe(1);
       expect(r.stdout).toContain("source-missing");
       expect(standin.calls("PutObject").length).toBe(0);
@@ -459,12 +484,11 @@ describe("assemble", () => {
 });
 
 describe("assemble: a hash is good only for the patch it was computed for", () => {
-  test(
+  lane(
     "refuses hashes bound to another patch, in the dry run too, and a file with no binding",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const [a, b] = [fixtureA(), fixtureB()];
-      const dir = await planned([a, b]);
+      const dir = await planned(standin, [a, b]);
       const patches = readJson<Record<string, string>>(dir, "patches.json");
       const hashes = readJson<HashesFile>(dir, "hashes.json");
 
@@ -478,7 +502,7 @@ describe("assemble: a hash is good only for the patch it was computed for", () =
       writeJson(dir, "patches.json", { ...patches, [a.oldKey]: other.toString("hex") });
       rebindPatches(dir); // as the re-plan that wrote it would have
       for (const flag of [[], ["--execute"]]) {
-        const r = await runScrub(standin, ["assemble", "--dir", dir, ...flag]);
+        const r = await run(standin, ["assemble", "--dir", dir, ...flag]);
         expectStopped(r, 3, "hashes-stale", flag.length ? "execute" : "dry run");
       }
 
@@ -488,7 +512,7 @@ describe("assemble: a hash is good only for the patch it was computed for", () =
       const altered = structuredClone(hashes);
       (altered.entries[b.oldKey] as { patchSha256: string }).patchSha256 = "0".repeat(64);
       writeJson(dir, "hashes.json", altered);
-      expectStopped(await runScrub(standin, assembleArgs(dir)), 3, "hashes-stale");
+      expectStopped(await run(standin, assembleArgs(dir)), 3, "hashes-stale");
 
       // No binding at all is not a hashes.json this contract accepts.
       const unbound = structuredClone(hashes);
@@ -496,7 +520,7 @@ describe("assemble: a hash is good only for the patch it was computed for", () =
         (e as { patchSha256?: string }).patchSha256 = undefined;
       }
       writeJson(dir, "hashes.json", unbound);
-      expectStopped(await runScrub(standin, assembleArgs(dir)), 3, "hashes.json-invalid");
+      expectStopped(await run(standin, assembleArgs(dir)), 3, "hashes.json-invalid");
 
       expect(standin.calls("PutObject").length).toBe(0);
       expect(standin.calls("CreateMultipartUpload").length).toBe(0);
@@ -504,7 +528,7 @@ describe("assemble: a hash is good only for the patch it was computed for", () =
 
       // The matching pair assembles.
       writeJson(dir, "hashes.json", hashes);
-      const ok = await runScrub(standin, assembleArgs(dir));
+      const ok = await run(standin, assembleArgs(dir));
       expect(ok.exitCode, ok.all).toBe(0);
     },
     SLOW,
@@ -512,14 +536,13 @@ describe("assemble: a hash is good only for the patch it was computed for", () =
 });
 
 describe("assemble: the checksum a locked write needs", () => {
-  test(
+  lane(
     "put-object and every part carry one whatever the operator's environment asks for",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const [a, c] = [fixtureA(), fixtureC()];
-      const dir = await planned([a, c]);
+      const dir = await planned(standin, [a, c]);
       standin.log.length = 0;
-      const r = await runScrub(standin, assembleArgs(dir), {
+      const r = await run(standin, assembleArgs(dir), {
         AWS_REQUEST_CHECKSUM_CALCULATION: "when_required",
       });
       expect(r.exitCode, r.all).toBe(0);
@@ -535,15 +558,14 @@ describe("assemble: the checksum a locked write needs", () => {
 });
 
 describe("assemble: what a failure leaves behind is said by key and upload id (S1, T6)", () => {
-  test(
+  lane(
     "an abort that fails after a part failed names the key and the upload id",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const e = fixtureE();
-      const dir = await planned([e]);
+      const dir = await planned(standin, [e]);
       standin.inject("UploadPart", { code: "InternalError", status: 500 });
       standin.inject("AbortMultipartUpload", { code: "InternalError", status: 500 });
-      const r = await runScrub(standin, assembleArgs(dir));
+      const r = await run(standin, assembleArgs(dir));
       expect(r.exitCode, r.all).toBe(1);
       expect(r.stdout).toContain("UploadPart:failed+abort-failed=1");
       expect(r.stdout).toMatch(
@@ -556,12 +578,11 @@ describe("assemble: what a failure leaves behind is said by key and upload id (S
     SLOW,
   );
 
-  test(
+  lane(
     "a create whose answer was lost leaves an upload that is found and reported",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const e = fixtureE();
-      const dir = await planned([e]);
+      const dir = await planned(standin, [e]);
       // S3 created the upload; the answer never arrived.
       standin.inject("CreateMultipartUpload", {
         code: "InternalError",
@@ -569,7 +590,7 @@ describe("assemble: what a failure leaves behind is said by key and upload id (S
         applied: true,
         times: 1,
       });
-      const r = await runScrub(standin, assembleArgs(dir));
+      const r = await run(standin, assembleArgs(dir));
       expect(r.exitCode, r.all).toBe(1);
       expect(standin.openUploads()).toBe(1);
       expect(r.stdout).toContain("CreateMultipartUpload:failed+upload-may-be-open=1");
@@ -582,12 +603,11 @@ describe("assemble: what a failure leaves behind is said by key and upload id (S
     SLOW,
   );
 
-  test(
+  lane(
     "a single put reads its source pinned to the ETag it saw: a change in between fails it",
-    async () => {
-      standin = startS3Standin();
+    async (standin) => {
       const a = fixtureA();
-      const dir = await planned([a]);
+      const dir = await planned(standin, [a]);
       // Between the HEAD of the source and the read of its bytes, the source changes.
       standin.beforeOp(
         "GetObject",
@@ -598,7 +618,7 @@ describe("assemble: what a failure leaves behind is said by key and upload id (S
         },
         standin.opCount("GetObject") + 1,
       );
-      const r = await runScrub(standin, assembleArgs(dir));
+      const r = await run(standin, assembleArgs(dir));
       expect(r.exitCode, r.all).toBe(1);
       expect(r.stdout).toContain("GetObject:precondition-failed=1");
       expect(standin.calls("PutObject").length).toBe(0);

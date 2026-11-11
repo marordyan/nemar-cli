@@ -7,7 +7,7 @@
 Run: ``uv run scripts/zarr/engine_frame_fixtures.py``
 
 This is an INDEPENDENT second implementation of the framing in
-``shared/zarr/protocol-frame.ts``, written from the frame table in ADR 0118 and
+``shared/zarr/protocol-frame.ts``, written from the frame table in ADR 0120 and
 not ported from the TypeScript. ``test/zarr-engine-frame.test.ts`` decodes every
 file written here with the TypeScript codec and re-encodes the same header and
 payload, requiring the bytes to be identical. Two languages agreeing on bytes is

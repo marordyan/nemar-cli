@@ -64,8 +64,9 @@ export interface ProfilePatchInput {
 
 /** The closed error vocabulary of normalizeProfilePatch; the website's error
  *  mapping switches on these strings (nemarOrg/website PR #144, #301). The
- *  three `username_*` values are re-exported from services/username.ts so the
- *  rule and its error codes have one definition shared with CLI signup. */
+ *  four `username_*` values (`username_reserved` was added by ADR 0119) are
+ *  re-exported from services/username.ts so the rule and its error codes have
+ *  one definition. */
 export type ProfilePatchError =
   | "invalid_github_username"
   | "city_required"

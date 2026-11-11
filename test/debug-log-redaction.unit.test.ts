@@ -91,6 +91,22 @@ describe("redactBody", () => {
     expect(parsed.nested.password).toBe("[REDACTED]");
   });
 
+  test("redacts a client secret, which an OIDC client registration and rotation answer once", () => {
+    // The owner routes of the OpenID Connect provider return the secret under `client_secret`
+    // (epic #2014 phase #2016); `--debug` writes the response body to a log people attach to issues.
+    for (const key of ["client_secret", "client-secret", "clientSecret", "Client_Secret"]) {
+      const raw = JSON.stringify({
+        client: { client_id: "oc_0123456789abcdef01234567", name: "keep-me" },
+        [key]: "SECRET-VALUE-0123456789abcdefghijklmnopqrstu",
+      });
+      const out = redactBody(raw) as string;
+      expect(out, key).not.toContain("SECRET-VALUE");
+      expect(out, key).toContain("oc_0123456789abcdef01234567");
+      expect(out, key).toContain("keep-me");
+      expect(JSON.parse(out)[key]).toBe("[REDACTED]");
+    }
+  });
+
   test("masks an email value under an unrelated key", () => {
     const raw = JSON.stringify({ contact: "Reach me at alice@example.com please" });
     const out = redactBody(raw) as string;

@@ -527,7 +527,7 @@ describe("POST /auth/orcid/finalize", () => {
       ENCRYPTION_KEY,
     );
     return app.request(
-      "/auth/orcid/finalize",
+      "https://app.nemar.org/auth/orcid/finalize",
       {
         method: "POST",
         headers: {
@@ -569,7 +569,7 @@ describe("GET /auth/orcid/callback (sign-in)", () => {
     return new Request(`${APP}/auth/orcid/callback?state=${CSRF}&code=fake-code`, {
       method: "GET",
       headers: {
-        Cookie: `nemar_oauth_state=${encodeState({ csrf: CSRF, mode: "login", next: "/dashboard" })}`,
+        Cookie: `__Host-nemar_oauth_state=${encodeState({ csrf: CSRF, mode: "login", next: "/dashboard" })}`,
       },
     });
   }

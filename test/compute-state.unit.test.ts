@@ -407,11 +407,13 @@ describe("refusal codes", () => {
     ["results_incomplete", 409],
     // Review fixes of 2026-11-06: a transient fault reading the owner's policy; not `compute_disabled`.
     ["policy_unavailable", 503],
+    // Issue #2121, phase P2: NEMAR's tenant-wide ceiling on live jobs is full for the job's class.
+    ["platform_busy", 409],
   ];
 
-  test("the list is the seven of section 6 plus the seventeen the phase names, the ledger's one and the outputs route's", () => {
+  test("the list is the seven of section 6 plus the seventeen the phase names, the ledger's one and the outputs route's, and the tenant ceiling's", () => {
     expect([...COMPUTE_REFUSAL_CODES] as string[]).toEqual(EXPECTED.map(([c]) => c));
-    expect(COMPUTE_REFUSAL_CODES).toHaveLength(27);
+    expect(COMPUTE_REFUSAL_CODES).toHaveLength(28);
     // The per-job limit refusal is `over_job_limit`; there is no second word for it.
     expect(COMPUTE_REFUSAL_CODES).not.toContain("over_ceiling");
   });

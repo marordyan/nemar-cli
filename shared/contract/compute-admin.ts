@@ -326,9 +326,35 @@ export const ComputeStatusResponseSchema = z
      * like every response here) does not break a released CLI, which prints only the positive counts.
      * Today: `access_reports_failed` (ACCESS reports that ended failed), `cancel_pending_failed` (a
      * recorded cancel still not carried out an hour after it was asked for) and `copy_abandoned` (a
-     * terminal job whose launcher files were never copied and no longer will be).
+     * terminal job whose launcher files were never copied and no longer will be), and
+     * `tenant_over_ceiling` (slots occupied above the tenant ceiling: only a job NEMAR did not admit can
+     * cause it).
      */
     attention: z.record(z.unknown()).optional(),
+    /**
+     * NEMAR's tenant-wide ceiling on live jobs (issue #2121, phase P2): the owner's `ceiling`, the slots
+     * `occupied` by NEMAR's own count (live jobs and the orphans not yet cancelled), the count `by_class`
+     * and the floors `reserved` per class. Optional so a CLI that reads an older Worker still parses its
+     * answer, and open like every response here. Absent when the policy cannot be read just now.
+     */
+    tenant: z
+      .object({
+        ceiling: z.number(),
+        occupied: z.number(),
+        by_class: z
+          .object({
+            people: z.number(),
+            pipelines: z.number(),
+            partner: z.number(),
+            other: z.number(),
+          })
+          .passthrough(),
+        reserved: z
+          .object({ people: z.number(), pipelines: z.number(), partner: z.number() })
+          .passthrough(),
+      })
+      .passthrough()
+      .optional(),
   })
   .passthrough();
 

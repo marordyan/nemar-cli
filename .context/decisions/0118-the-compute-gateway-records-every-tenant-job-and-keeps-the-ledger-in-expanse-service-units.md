@@ -718,7 +718,8 @@ It adds no queue and no migration.
    - adds `platform_busy` to that branch's closed partner table and sentences (`COMPUTE_PARTNER_ERROR_STATUS`, `COMPUTE_PARTNER_SENTENCES`), to `COMPUTE_SUBMIT_SENTENCES` for people, and as a step of the reserve order after the client caps.
 3. **What occupies a slot.**
    Every row in a live state, `created` included (the states are written literally in the statement so the existing partial indexes of the live rows serve the count), and one slot more for EVERY row that records an orphaned platform job (`orphan_tapis_uuid IS NOT NULL`), live or not: that job runs on until the sweep cancels it.
-   A live row can carry one, a duplicate of the job the row owns found when a second submit is bound, and then holds two slots.
+   A live row can carry one in two ways, and then holds two slots: a duplicate of the job the row owns, found when a second submit is bound; and a row that is still live with a cancel pending (`created` or `uploading` with `cancel_requested_at` set) whose Tapis job turned up after the cancel was asked for, which `bindTapisJob` records as the row's `tapis_uuid` AND as its orphan, so that one job counts twice.
+   The second case lasts only while the cancel of that job keeps failing, until `cancelOrphan` succeeds or the row ends; it costs one slot, errs high as documented, and the row also shows in `cancel_pending_failed` after an hour.
    The count errs toward too many for what NEMAR has recorded; it is not an upper bound on the cluster (see the limits).
 4. **The defaults and why.**
    The policy key is `tenant { maxLiveJobs, reserved { people, pipelines, partner } }`; the schema refuses floors that add up to more than the ceiling, and `PUT /admin/compute/policy` therefore refuses them.
@@ -727,6 +728,7 @@ It adds no queue and no migration.
    With the defaults the pipelines can burst to 12 and people to 18.
    NEMAR's own pipelines keep the room they had (8 CPU and 4 GPU, 12 in all) only while nothing else occupies a slot: an orphan or a swept row, and people holding more than their floor, each reduce it, and a stored policy that raises `pipelines.maxLiveJobs` to 100 for both pools and has no tenant key stops at 12 under the default ceiling.
    The pipelines' caps are in effect bounded by the ceiling less the people and partner floors.
+   Each live orphan cuts the pipelines' 12 by one (20 less the people floor of 8), and the four slots between the ceiling and the cluster's limit do not help them, because the guard checks the ceiling of 20 and never the cluster's limit of 24: a stray orphan or two leaves the normal daily run (at most 10 a tick) unchanged unless more than about 2 pipeline jobs from earlier days are still live.
    A stored policy that lacks the key uses `TENANT_POLICY_DEFAULT`, the very object the shipped default carries, never "no limit".
    A ceiling of 0 admits nothing new (running jobs finish).
 5. **A refusal is `platform_busy` (409), and it is not a queue.**

@@ -29,8 +29,12 @@
  * WHAT OCCUPIES A SLOT. Every row in a live state (`created` included: it is about to hold one), and
  * one slot more for EVERY row that records an orphaned platform job (`orphan_tapis_uuid`), live or not: a
  * Tapis job NEMAR made that no row owns is still running until the cancel is known to have worked. A live
- * row can carry one (a duplicate of the job the row owns, found when a second submit is bound), and it then
- * holds two slots, its own and the orphan's. The count errs toward too many, not too few, for what NEMAR has
+ * row can carry one in two ways, and holds two slots then, its own and the orphan's: a duplicate of the job
+ * the row owns (found when a second submit is bound), and a row that is still live with a cancel pending
+ * (`created` or `uploading`, `cancel_requested_at` set) whose Tapis job turned up after the cancel was asked
+ * for: `bindTapisJob` then records the SAME job as the row's `tapis_uuid` and as its orphan, so that one
+ * job counts twice until `cancelOrphan` succeeds or the row ends (it lasts only while the cancel keeps
+ * failing, costs one slot, and the row also shows in `cancel_pending_failed` after an hour). The count errs toward too many, not too few, for what NEMAR has
  * recorded; a platform job nothing has recorded is not in it, and neither is a second orphan of one row (the
  * row has one orphan slot): that is what the ceiling's headroom is for. It is NEMAR's view.
  *

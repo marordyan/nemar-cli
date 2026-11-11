@@ -238,6 +238,25 @@ describe("status", () => {
     expect(r.stdout).toContain("Attention: tenant_over_ceiling 1");
   });
 
+  test("an unreadable owner policy is said, with what it means, and the Tenant line is absent", async () => {
+    const owner = (
+      db.query("SELECT id FROM users WHERE username = 'cmp-owner'").get() as { id: number }
+    ).id;
+    db.run("INSERT INTO compute_policy (policy_json, set_by) VALUES (?, ?)", [
+      JSON.stringify({
+        ...DEFAULT_COMPUTE_POLICY,
+        tenant: { maxLiveJobs: 1, reserved: { people: 1, pipelines: 1, partner: 1 } },
+      }),
+      owner,
+    ]);
+    const r = await runCli("admin", ["status"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain(
+      "Attention: policy_unreadable 1 (the stored owner policy cannot be read",
+    );
+    expect(r.stdout).not.toContain("Tenant:");
+  });
+
   test("a Worker from before the tenant block prints no Tenant line", async () => {
     olderWorker = true;
     const r = await runCli("admin", ["status"]);

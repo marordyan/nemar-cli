@@ -634,7 +634,8 @@ describe("the tenant ceiling in the live pass (issue #2121, phase P2)", () => {
   test("a live pass reports the live jobs of its listing and NEMAR's own count against the ceiling", async () => {
     await foreign({ startedMsAgo: 30 * MINUTE });
     const result = await sweepTenantJobs(env(), "live");
-    // One live job in the listing; the sweep indexed it and cancelled it, so NEMAR's count is read after.
+    // One live job in the listing; the sweep indexed and canceled it, but both numbers are read BEFORE it did
+    // (`readTenantSlots` runs ahead of the loop), so `occupied` is what NEMAR held when the sweep looked.
     expect(result).toMatchObject({ mode: "live", indexed: 1, tenantLive: 1, ceiling: 20 });
     const log = result ? tenantLogLine(result) : null;
     expect(log?.level).toBe("info");
@@ -646,7 +647,8 @@ describe("the tenant ceiling in the live pass (issue #2121, phase P2)", () => {
   });
 
   test("more live jobs in the tenant than the ceiling is a warning, even when the sweep did nothing else", async () => {
-    // A ceiling of 1 and two live jobs NEMAR did not admit: bound to rows, so the sweep leaves them alone.
+    // Two live jobs made through `createJob`, then the owner lowers the ceiling to 1: the tenant holds more
+    // than the ceiling, and they are bound to rows, so the sweep leaves them alone.
     const first = await makeJob(fx);
     const second = await makeJob(fx, { env: first.env });
     await submitComputeJob(first.env, first.job.id);

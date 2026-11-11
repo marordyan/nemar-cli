@@ -29,7 +29,7 @@ import type { ComputeStatusResponse } from "../../../shared/contract/compute-adm
 import type { Bindings } from "../types/bindings";
 import { CANCEL_PENDING_FAILED_SQL, COPY_ABANDONED_COUNT_SQL } from "./compute-lifecycle";
 import { pipelinesAccountId } from "./compute-pipeline";
-import { getPolicy } from "./compute-policy";
+import { ComputePolicyUnreadable, getPolicy } from "./compute-policy";
 import { readRuntimeImage } from "./compute-runtime-image";
 import { computeS3 } from "./compute-s3";
 import { computeEnabled, computePipelinesDispatchEnabled } from "./compute-switches";
@@ -84,7 +84,8 @@ function runtimeImageStatus(env: Bindings): ComputeStatusResponse["runtime_image
 /**
  * Counts that need a person to look. ONE ROW A COUNT: `[key, statement]`, the statement a single
  * `SELECT COUNT(*) AS n`; add a line and the Worker, the contract (a record of counts) and the CLI
- * (which prints every key) carry it. Fixed words as keys, never a value.
+ * (which prints every key) carry it. Fixed words as keys, never a value. Two more are derived from the owner's
+ * policy and are added by `attentionCounts`: `tenant_over_ceiling` and `policy_unreadable`.
  */
 const ATTENTION_COUNTS: ReadonlyArray<readonly [key: string, sql: string]> = [
   [
@@ -99,7 +100,7 @@ const ATTENTION_COUNTS: ReadonlyArray<readonly [key: string, sql: string]> = [
 
 async function attentionCounts(
   db: D1Database,
-  tenant: TenantFacts | null,
+  tenant: TenantRead,
 ): Promise<Record<string, number>> {
   const counts = await Promise.all(
     ATTENTION_COUNTS.map(async ([key, sql]) => {
@@ -107,23 +108,32 @@ async function attentionCounts(
       return [key, row?.n ?? 0] as const;
     }),
   );
-  // The ceiling is the owner's policy and not a column, so this one is read from the tenant facts: NEMAR's
-  // own admission cannot put the count above the ceiling, so a positive number is a job NEMAR did not admit
-  // (a job that skipped the reservation, or an orphan). Absent while the policy cannot be read.
-  if (tenant !== null) counts.push(["tenant_over_ceiling", tenantOverCeiling(tenant)] as const);
+  // The ceiling is the owner's policy and not a column, so this one is read from the tenant facts. A positive
+  // count is a job NEMAR did not admit (one that skipped the reservation, an orphan) or a ceiling the owner
+  // lowered below what is already live. Absent while the policy cannot be read.
+  if (tenant.facts !== null) {
+    counts.push(["tenant_over_ceiling", tenantOverCeiling(tenant.facts)] as const);
+  }
+  // A stored policy the strict reader cannot parse is a compute outage: every hold, run and limit reads it and
+  // fails closed. Said here, because the tenant block is absent for the same reason.
+  counts.push(["policy_unreadable", tenant.unreadable ? 1 : 0] as const);
   return Object.fromEntries(counts);
 }
 
-/** The tenant ceiling and its counts, or null when the owner's policy cannot be read just now (logged, not hidden). */
-async function readTenant(db: D1Database): Promise<TenantFacts | null> {
+/** The tenant ceiling and its counts, and whether the owner's policy could not be read (then no facts). */
+interface TenantRead {
+  facts: TenantFacts | null;
+  unreadable: boolean;
+}
+
+async function readTenant(db: D1Database): Promise<TenantRead> {
   try {
-    return await tenantFacts(db, (await getPolicy(db)).policy);
+    return { facts: await tenantFacts(db, (await getPolicy(db)).policy), unreadable: false };
   } catch (err) {
-    console.error(
-      "[compute-status] tenant unreadable:",
-      err instanceof Error ? err.name : typeof err,
-    );
-    return null;
+    // Only an unreadable policy is a finding; a database fault is the route's own failure.
+    if (!(err instanceof ComputePolicyUnreadable)) throw err;
+    console.error("[compute-status] policy unreadable: version", err.version);
+    return { facts: null, unreadable: true };
   }
 }
 
@@ -223,6 +233,6 @@ export async function computeStatus(
     // The tenant sweep returns null while compute is off, which pauses what only it does.
     reconciliation: { paused: !computeOn },
     attention,
-    ...(tenant === null ? {} : { tenant }),
+    ...(tenant.facts === null ? {} : { tenant: tenant.facts }),
   };
 }

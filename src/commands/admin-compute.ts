@@ -186,7 +186,9 @@ The "tenant" key is NEMAR's ceiling on live jobs: { maxLiveJobs, reserved: { peo
 partner } }. maxLiveJobs is the most jobs NEMAR holds at once (0 admits nothing new: a paused
 platform, and running jobs finish); each reserved number is a floor kept for that class that no
 other class may use, and the three floors must not add up to more than maxLiveJobs. A policy
-without the key uses the default (20, with floors 8, 2 and 0), never "no limit".
+without the key uses the default (20, with floors 8, 2 and 0), never "no limit". The pipelines'
+own caps (pipelines.maxLiveJobs) are in effect bounded by the ceiling less the people and partner
+floors, and by what else occupies slots.
 
 Owner only. --json prints the Worker's answer as it is.
 
@@ -578,9 +580,12 @@ a tenant name or a username.
              people and pipelines platform pools have a grant; each is yes or no, never a value
   reconciliation whether the tenant sweep is paused, which it is while compute is off
   tenant     the ceiling on live jobs and how many slots are occupied, by class (people, pipelines,
-             partner, other); other is jobs NEMAR did not admit, and a count above the ceiling
-             appears as the attention count tenant_over_ceiling
-  attention  counts of things that need a person to look (for example ACCESS reports that failed)
+             partner, other); other is jobs NEMAR did not admit, and a count above the ceiling (a job
+             NEMAR did not admit, or a ceiling lowered below what is live) appears as the
+             attention count tenant_over_ceiling
+  attention  counts of things that need a person to look (for example ACCESS reports that failed,
+             or policy_unreadable when the stored owner policy cannot be read, which stops every
+             hold, run and limit until a valid version is written)
   runtime image whether the runtime image variable is set, whether it is a digest-pinned reference,
              and its digest (never the reference); a python job is not submitted until it is valid
 
@@ -646,7 +651,15 @@ function printStatus(res: ComputeStatusResponse): void {
     );
   }
   for (const [word, n] of Object.entries(res.attention ?? {})) {
-    if (typeof n === "number" && n > 0) say(`Attention: ${plain(word)} ${n}`);
+    if (typeof n === "number" && n > 0) {
+      say(
+        `Attention: ${plain(word)} ${n}${
+          word === "policy_unreadable"
+            ? " (the stored owner policy cannot be read: every hold, run and limit fails closed until a valid version is written)"
+            : ""
+        }`,
+      );
+    }
   }
   say("Runtime image");
   const image = res.runtime_image;

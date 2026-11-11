@@ -145,7 +145,8 @@ export interface TenantSweepResult {
    * A `live` run only: the jobs of the listing that have not ended, which is what the tenant's slots hold
    * as Tapis sees it (null in a `week` run, and when the run did not get as far as the listing). With
    * `occupied` and `ceiling` (NEMAR's own count and the owner's ceiling, null if the policy could not be
-   * read) it is how a job NEMAR did not admit shows: more live jobs in the tenant than the ceiling.
+   * read) it is how a job NEMAR did not admit shows: more live jobs in the tenant than the ceiling. Both are
+   * read BEFORE the run indexes or cancels anything, so the line says what the tenant held when it looked.
    */
   tenantLive: number | null;
   occupied: number | null;
@@ -740,7 +741,8 @@ export function tenantLogLine(
   const acted =
     r.indexed + r.raced + r.duplicates + r.cancelled + r.finished + r.gaveUp + r.settledFinal;
   // More live jobs in the tenant than the owner's ceiling: something NEMAR did not admit holds slots (a job
-  // that skipped the reservation, a duplicate, a hand-run job). Said at warning level, whatever else the run did.
+  // that skipped the reservation, a duplicate, a hand-run job), or the owner lowered the ceiling below what
+  // is already live. Said at warning level, whatever else the run did.
   const overCeiling = r.tenantLive !== null && r.ceiling !== null && r.tenantLive > r.ceiling;
   if (!needsPerson && acted === 0 && !overCeiling) return null;
   const parts = [

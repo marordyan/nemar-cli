@@ -18,6 +18,7 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { DEFAULT_COMPUTE_POLICY } from "../../shared/contract/compute";
 import { ComputeStatusResponseSchema } from "../../shared/contract/compute-admin";
 import { STATUS_TIMEOUT_MS, computeStatus } from "../src/services/compute-status";
 import { __resetTapisTokenCacheForTests } from "../src/services/tapis/auth";
@@ -167,6 +168,7 @@ describe("an unconfigured Worker", () => {
         cancel_pending_failed: 0,
         copy_abandoned: 0,
         tenant_over_ceiling: 0,
+        policy_unreadable: 0,
       },
       tenant: NO_TENANT,
     });
@@ -212,6 +214,7 @@ describe("an unconfigured Worker", () => {
           cancel_pending_failed: 0,
           copy_abandoned: 0,
           tenant_over_ceiling: 0,
+          policy_unreadable: 0,
         },
         tenant: NO_TENANT,
       });
@@ -300,6 +303,7 @@ describe("what every launch needs besides the credential", () => {
       cancel_pending_failed: 0,
       copy_abandoned: 0,
       tenant_over_ceiling: 0,
+      policy_unreadable: 0,
     });
     harness.db.run(
       `INSERT INTO compute_access_reports (job_id, state, attempts, last_error_code)
@@ -311,8 +315,39 @@ describe("what every launch needs besides the credential", () => {
       cancel_pending_failed: 0,
       copy_abandoned: 0,
       tenant_over_ceiling: 0,
+      policy_unreadable: 0,
     });
     expect(ComputeStatusResponseSchema.safeParse(failed.body).success).toBe(true);
+  });
+});
+
+describe("an unreadable owner policy is an attention word, not a silent gap", () => {
+  const on = () => harness.env({ ENVIRONMENT: "production", COMPUTE_ENABLED: "1" } as never);
+
+  test("floors written by hand above the ceiling: policy_unreadable 1, no tenant block, the rest still answered", async () => {
+    // The route refuses this on the way in; a hand-written row is what the strict reader fails closed on.
+    const owner = (
+      harness.db.query("SELECT id FROM users WHERE username = 'cmp-owner'").get() as { id: number }
+    ).id;
+    harness.db.run("INSERT INTO compute_policy (policy_json, set_by) VALUES (?, ?)", [
+      JSON.stringify({
+        ...DEFAULT_COMPUTE_POLICY,
+        tenant: { maxLiveJobs: 2, reserved: { people: 2, pipelines: 2, partner: 2 } },
+      }),
+      owner,
+    ]);
+    const res = await status("admin", on());
+    expect(res.status).toBe(200);
+    expect(res.body.attention).toMatchObject({ policy_unreadable: 1 });
+    expect(res.body.attention.tenant_over_ceiling).toBeUndefined();
+    expect(res.body.tenant).toBeUndefined();
+    expect(res.body.prerequisites.policy_set).toBe(true);
+    expect(ComputeStatusResponseSchema.safeParse(res.body).success).toBe(true);
+    // A valid version makes it readable again.
+    await setPolicy(harness.env().DB, owner, {});
+    const fixed = await status("admin", on());
+    expect(fixed.body.attention).toMatchObject({ policy_unreadable: 0, tenant_over_ceiling: 0 });
+    expect(fixed.body.tenant).toMatchObject({ ceiling: 20 });
   });
 });
 
@@ -358,6 +393,7 @@ describe("attention: what waits on a person", () => {
       cancel_pending_failed: 1,
       copy_abandoned: 1,
       tenant_over_ceiling: 0,
+      policy_unreadable: 0,
     });
     expect(ComputeStatusResponseSchema.safeParse(res.body).success).toBe(true);
   });

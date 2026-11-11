@@ -13,6 +13,28 @@ what merged, and this file says what it meant.
 Newest first. Dates are the tag's publication date, UTC. Backfilled from 0.9.16 onward;
 earlier releases are described only by their generated notes.
 
+## Unreleased
+
+A tenant-wide ceiling on live compute jobs (#2126, phase P2 of issue #2121).
+It carries no migration and sets no Worker variable or secret, and it changes nothing in production while the compute switches are absent, because no job can exist then.
+
+### Added
+
+- **A ceiling on the live jobs of the whole tenant, checked in the statement that takes each job's hold, whoever submits it.**
+  The owner's `tenant` policy key sets the ceiling and a floor of slots kept for people, for the pipelines and for partners; the schema refuses floors that add up to more than the ceiling, and a stored policy without the key falls back to the defaults, never to unlimited.
+  A job that would take a slot owed to another class, or pass the ceiling, is refused with the new word `platform_busy` (409).
+  It is not queued; a queue is a later phase.
+  The defaults are a ceiling of 20 with floors of 8 for people, 2 for the pipelines and 0 for partners, which leaves NEMAR's own pipelines their current room of 12 only while nothing else occupies a slot (an orphaned job, a job that skipped the reservation, or people holding more than their floor take it from them).
+  `platform_busy` stops a pipeline run and ends the daily dispatcher's run; `pipeline run` and its dry run are clamped to the tenant room.
+  `nemar admin compute status` prints the occupied slots by class and the attention count `tenant_over_ceiling`, and the live tenant sweep logs `tenant_live` and `occupied` and warns when the live count passes the ceiling.
+  The ceiling is checked on both database engines in tests (bun:sqlite and Miniflare D1), with racing requests for the last slots.
+
+### Known limits
+
+- Rolling a Worker back to a build from before this change makes a stored policy that has the `tenant` key unreadable (the reader is strict and fails closed); write a policy without the key first.
+- Counting the orphaned platform jobs scans `compute_jobs` once per hold, because an index for it would need a migration.
+- The pipelines' daily cap is still read before a run and not checked in the hold's statement (see 0.10.33).
+
 ## 0.10.33 - 2026-11-11
 
 NEMAR can now act as an OpenID Connect provider (epic #2014), and the first-party half of the compute gateway is in the code (epic #2005).
@@ -87,8 +109,6 @@ Third-party compute (`nemar compute`) and the partner contract are not in this r
   The daily dispatcher's counts and words are unchanged unless it races an administrator's run.
   When the daily cap ended a `pipeline run --eligible`, the run reports the new word `daily_cap_reached` as its `stopped_by`; the word is declared with status 409, and no path returns it as an error status.
   In read-only maintenance mode the launcher's three job callbacks stay open, so a job already running can still deliver its results; `full` refuses them.
-  A tenant-wide ceiling on live jobs is checked in the same statement for every job, whoever submits it (#2121): the owner's `tenant` policy sets the ceiling and a floor of slots kept for people, for the pipelines and for partners, and a job that would take a slot owed to another class, or pass the ceiling, is refused with the new word `platform_busy` (it is not queued).
-  The defaults are a ceiling of 20 with floors of 8 for people and 2 for the pipelines, which leaves NEMAR's own pipelines their current room of 12 only while nothing else occupies a slot (an orphaned job, a job that skipped the reservation, or people holding more than their floor take it from them); `nemar admin compute status` prints the occupied slots by class.
 - **A development target for the OpenID Connect conformance workflow (#2075).**
   The suite can run against the deployed development system; the default is unchanged.
 

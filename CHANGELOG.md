@@ -13,7 +13,7 @@ what merged, and this file says what it meant.
 Newest first. Dates are the tag's publication date, UTC. Backfilled from 0.9.16 onward;
 earlier releases are described only by their generated notes.
 
-## Unreleased
+## 0.10.33 - 2026-11-11
 
 NEMAR can now act as an OpenID Connect provider (epic #2014), and the first-party half of the compute gateway is in the code (epic #2005).
 The sign-in flow and compute stay dark in production until the owner switches them on.

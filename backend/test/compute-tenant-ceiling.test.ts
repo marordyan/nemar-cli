@@ -50,8 +50,16 @@ import {
   ComputeStatusResponseSchema,
 } from "../../shared/contract/compute-admin";
 import { createJob } from "../src/services/compute-jobs";
-import { runComputePipelineDispatchCron } from "../src/services/compute-pipeline-dispatch";
-import { getPolicy } from "../src/services/compute-policy";
+import {
+  dispatchEligible,
+  dispatchPipelineJob,
+  pipelineDryRun,
+} from "../src/services/compute-pipeline";
+import {
+  ENDS_THE_RUN,
+  runComputePipelineDispatchCron,
+} from "../src/services/compute-pipeline-dispatch";
+import { ComputePolicyUnreadable, getPolicy } from "../src/services/compute-policy";
 import {
   TENANT_CLASSES,
   TENANT_COUNTS_SQL,
@@ -59,6 +67,7 @@ import {
   tenantClassOf,
   tenantFacts,
   tenantGuard,
+  tenantRoom,
 } from "../src/services/compute-tenant";
 import type { Bindings } from "../src/types/bindings";
 import {
@@ -182,10 +191,16 @@ async function person(w: World): Promise<number> {
   return accountId;
 }
 
-const personJob = (env: Bindings, accountId: number, source: "cli" | "web" = "cli") =>
+const personJob = (
+  env: Bindings,
+  accountId: number,
+  source: "cli" | "web" = "cli",
+  idempotencyKey?: string,
+) =>
   createJob(env, {
     source,
     accountId,
+    ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
     appId: "nemar-launch",
     appVersion: "1.0.0",
     spec: jobSpec(),
@@ -258,6 +273,76 @@ describe("(c) requests racing for the last slots", () => {
       );
     },
   );
+});
+
+// --- A retry racing its own original --------------------------------------------------------------
+
+describe("a retry that races its own original request", () => {
+  onBoth("at the last slot gets the same job back, replayed, and not platform_busy", async (w) => {
+    await tenant(w, ceilingOf(1));
+    const a = await person(w);
+    const key = `race-key-${Math.random().toString(36).slice(2, 10)}`;
+    const env = racing(w);
+    const before = await trace(w.d1);
+    const results = await Promise.all([
+      personJob(env, a, "cli", key),
+      personJob(env, a, "cli", key),
+      personJob(env, a, "cli", key),
+    ]);
+    const ok = results.filter((r) => r.ok);
+    expect(ok).toHaveLength(3);
+    expect(ok.filter((r) => r.ok && !r.replayed)).toHaveLength(1);
+    expect(new Set(ok.map((r) => (r.ok ? r.job.id : ""))).size).toBe(1);
+    const after = await trace(w.d1);
+    expect([after.jobs - before.jobs, after.holds - before.holds]).toEqual([1, 1]);
+    // Another request, another key, is what the full ceiling refuses.
+    expect(word(await personJob(w.env(), a, "cli", `${key}-other`))).toBe("platform_busy");
+  });
+});
+
+// --- The room is the guard's own arithmetic, and a run that ends the daily dispatcher --------------------
+
+describe("the room agrees with the guard", () => {
+  onBoth("a class has room exactly when its next job is admitted", async (w) => {
+    await tenant(w, ceilingOf(5, { people: 2, pipelines: 1, partner: 0 }));
+    const env = w.env();
+    const a = await person(w);
+    for (const [cls, make] of [
+      ["pipelines", () => pipelineJob(env)],
+      ["people", () => personJob(env, a)],
+      ["pipelines", () => pipelineJob(env)],
+      ["people", () => personJob(env, a)],
+      ["pipelines", () => pipelineJob(env)],
+      ["people", () => personJob(env, a)],
+      ["people", () => personJob(env, a)],
+      ["pipelines", () => pipelineJob(env)],
+    ] as const) {
+      const facts = await tenantFacts(w.d1, (await getPolicy(w.d1)).policy);
+      const room = tenantRoom(facts, cls);
+      const result = await make();
+      expect([cls, facts.occupied, room > 0]).toEqual([cls, facts.occupied, result.ok]);
+    }
+    expect((await counts(w)).occupied).toBe(5);
+  });
+});
+
+describe("the daily dispatcher ends its whole run on platform_busy", () => {
+  test("it is in ENDS_THE_RUN, with the other words that would repeat for every recipe", () => {
+    // Only one recipe is automatic today, so a cron test cannot show a second recipe being skipped; the
+    // membership is what decides it (`runComputePipelineDispatchCron`), and this pins it.
+    for (const word of [
+      "platform_busy",
+      "compute_disabled",
+      "runtime_unavailable",
+      "pipelines_account_missing",
+    ]) {
+      expect(ENDS_THE_RUN.has(word as never), word).toBe(true);
+    }
+    // The pool-scoped words stop one pool only.
+    for (const word of ["over_concurrency", "daily_cap_reached"]) {
+      expect(ENDS_THE_RUN.has(word as never), word).toBe(false);
+    }
+  });
 });
 
 // --- (b) and (d) the floors, the edges ---------------------------------------------------------------
@@ -387,7 +472,7 @@ describe("(e) an orphaned platform job holds a slot", () => {
     const env = w.env();
     const first = await pipelineJob(env);
     if (!first.ok) throw new Error(`refused: ${first.code}`);
-    // The job ended while its platform job could not be cancelled: the row is terminal and records the orphan.
+    // The job ended while its platform job could not be canceled: the row is terminal and records the orphan.
     await w.d1
       .prepare(
         "UPDATE compute_jobs SET state = 'cancelled', ended_at = datetime('now'), orphan_tapis_uuid = 'orphan-1' WHERE id = ?",
@@ -397,7 +482,7 @@ describe("(e) an orphaned platform job holds a slot", () => {
     // Terminal, so not a pipeline's live job any more; but the platform job still holds a cluster slot.
     expect(await counts(w)).toMatchObject({ pipelines: 0, other: 1, occupied: 1 });
     expect(word(await pipelineJob(env))).toBe("platform_busy");
-    // The sweep cancelled it: the slot is free.
+    // The sweep canceled it: the slot is free.
     await w.d1
       .prepare("UPDATE compute_jobs SET orphan_tapis_uuid = NULL WHERE id = ?")
       .bind(first.job.id)
@@ -406,25 +491,43 @@ describe("(e) an orphaned platform job holds a slot", () => {
     expect(word(await pipelineJob(env))).toBe("ok");
   });
 
+  onBoth("a terminal row without one holds nothing", async (w) => {
+    await tenant(w, ceilingOf(5));
+    const env = w.env();
+    const done = await pipelineJob(env);
+    const live = await pipelineJob(env);
+    if (!done.ok || !live.ok) throw new Error("refused");
+    await w.d1
+      .prepare(
+        "UPDATE compute_jobs SET state = 'cancelled', ended_at = datetime('now') WHERE id = ?",
+      )
+      .bind(done.job.id)
+      .run();
+    expect(await counts(w)).toMatchObject({ pipelines: 1, other: 0, occupied: 1 });
+  });
+
   onBoth(
-    "a terminal row without one holds nothing, and a live row with one is counted once",
+    "a LIVE row with a duplicate platform job holds two slots, its own and the orphan's",
     async (w) => {
-      await tenant(w, ceilingOf(5));
+      // `bindTapisJob` records a second running Tapis job of a row that is still live as the row's orphan.
+      await tenant(w, ceilingOf(2));
       const env = w.env();
-      const done = await pipelineJob(env);
-      const live = await pipelineJob(env);
-      if (!done.ok || !live.ok) throw new Error("refused");
-      await w.d1
-        .prepare(
-          "UPDATE compute_jobs SET state = 'cancelled', ended_at = datetime('now') WHERE id = ?",
-        )
-        .bind(done.job.id)
-        .run();
+      const first = await pipelineJob(env);
+      if (!first.ok) throw new Error(`refused: ${first.code}`);
       await w.d1
         .prepare("UPDATE compute_jobs SET orphan_tapis_uuid = 'orphan-2' WHERE id = ?")
-        .bind(live.job.id)
+        .bind(first.job.id)
         .run();
-      expect(await counts(w)).toMatchObject({ pipelines: 1, other: 0, occupied: 1 });
+      expect(first.job.state).toBe("created");
+      expect(await counts(w)).toMatchObject({ pipelines: 1, other: 1, occupied: 2 });
+      // Both slots are taken: nothing else is admitted, and a cleared orphan gives one back.
+      expect(word(await pipelineJob(env))).toBe("platform_busy");
+      await w.d1
+        .prepare("UPDATE compute_jobs SET orphan_tapis_uuid = NULL WHERE id = ?")
+        .bind(first.job.id)
+        .run();
+      expect((await counts(w)).occupied).toBe(1);
+      expect(word(await pipelineJob(env))).toBe("ok");
     },
   );
 });
@@ -518,6 +621,29 @@ describe("(g) the policy", () => {
   }
 });
 
+describe("a stored policy with floors above its ceiling fails closed", () => {
+  for (const which of [0, 1]) {
+    test(`createJob throws ComputePolicyUnreadable and writes nothing [${which === 0 ? "bun:sqlite" : "Miniflare D1"}]`, async () => {
+      const w = worlds()[which] as World;
+      await tenant(w, ceilingOf(5));
+      const owner = await seedUser(w.d1, { role: "owner" });
+      await w.d1
+        .prepare("INSERT INTO compute_policy (policy_json, set_by) VALUES (?, ?)")
+        .bind(
+          JSON.stringify({
+            ...DEFAULT_COMPUTE_POLICY,
+            tenant: { maxLiveJobs: 2, reserved: { people: 2, pipelines: 2, partner: 2 } },
+          }),
+          owner,
+        )
+        .run();
+      const before = await trace(w.d1);
+      await expect(pipelineJob(w.env())).rejects.toBeInstanceOf(ComputePolicyUnreadable);
+      expect(await trace(w.d1)).toEqual(before);
+    });
+  }
+});
+
 // --- Routes: the policy route, the pipeline run, the status ---------------------------------------------
 
 let fx: LifecycleFixture;
@@ -525,7 +651,7 @@ const handle = makeComputeApp();
 
 describe("the routes", () => {
   beforeAll(async () => {
-    fx = await startLifecycleFixture();
+    fx = await startLifecycleFixture({ withD1: true });
   }, 120_000);
 
   beforeEach(async () => {
@@ -602,7 +728,7 @@ describe("the routes", () => {
   const tenantPolicy = (policy: ComputeTenantPolicy) =>
     setPolicy(fx.env().DB, fx.ownerId, { tenant: policy });
 
-  test("(a) a CPU run over a full ceiling makes nothing, takes no hold, and the stamp is refused", async () => {
+  test("(a) a CPU run over a full ceiling makes nothing, takes no hold and claims no stamp: the run is clamped before it tries", async () => {
     await tenantPolicy(ceilingOf(3));
     const env = await world(ids(5));
     await fillWithOthers(env);
@@ -616,16 +742,12 @@ describe("the routes", () => {
     });
     expect(ComputePipelineRunResponseSchema.safeParse(res.body).success).toBe(true);
     expect(res.body).toMatchObject({ dispatched: 0, stopped_by: "platform_busy" });
-    expect(res.body.results).toHaveLength(1);
-    expect(res.body.results[0]).toMatchObject({ ok: false, code: "platform_busy" });
+    // The room says why: nothing is left under the ceiling, and that bound the run.
+    expect(res.body.room).toMatchObject({ tenant_left: 0, limited_by: "tenant" });
+    expect(res.body.results).toEqual([]);
     expect(await count(env, HOLDS)).toBe(holds);
     expect(await count(env, LIVE_JOBS)).toBe(jobs);
-    const stamp = await env.DB.prepare(
-      "SELECT state, refusal_code, job_id FROM compute_pipeline_stamps",
-    ).all<{ state: string; refusal_code: string; job_id: string | null }>();
-    expect(stamp.results).toEqual([
-      { state: "refused", refusal_code: "platform_busy", job_id: null },
-    ]);
+    expect(await count(env, "SELECT COUNT(*) AS n FROM compute_pipeline_stamps")).toBe(0);
     // The control: one slot more and the same run dispatches (a refusal by anything else would not move).
     await tenantPolicy(ceilingOf(4));
     const again = await call("admin", "POST", "pipeline/run", env, {
@@ -648,12 +770,102 @@ describe("the routes", () => {
     expect(named.body.error).toBe(
       "NEMAR's share of the cluster is full right now; try again shortly.",
     );
+    // A named dataset is not clamped: it meets the hold's own guard, which refuses it and ends its stamp.
+    const stamp = await env.DB.prepare(
+      "SELECT state, refusal_code, job_id FROM compute_pipeline_stamps",
+    ).all<{ state: string; refusal_code: string; job_id: string | null }>();
+    expect(stamp.results).toEqual([
+      { state: "refused", refusal_code: "platform_busy", job_id: null },
+    ]);
     // The daily cron: the ceiling does not depend on the pool, so it ends the whole run at the first refusal.
     const cron = await runComputePipelineDispatchCron(env);
     expect(cron).toMatchObject({ outcome: "ran", dispatched: 0 });
+    // Only `nemar-floor` is automatic today, so the list is one recipe long; that platform_busy ENDS the run
+    // for a second recipe is pinned by the membership test of `ENDS_THE_RUN` below.
+    expect(cron?.recipes).toHaveLength(1);
     expect(cron?.recipes[0]?.stopped_by).toBe("platform_busy");
-    expect(cron?.recipes.slice(1).every((r) => r.skipped === "run_ended")).toBe(true);
   });
+
+  // --- A dry run and a live run agree under the ceiling, on both engines -------------------------------
+
+  let nextDataset = 1_000;
+  for (const which of [0, 1]) {
+    test(`a dry run reports the ceiling as a live run meets it: the room, the named dataset and what is dispatched [${which === 0 ? "bun:sqlite" : "Miniflare D1"}]`, async () => {
+      const d1 = which === 0 ? fx.harness.env().DB : (fx.harness.d1 as D1Database);
+      const env = fx.env({ DB: d1, COMPUTE_PIPELINES_DISPATCH_ENABLED: "1" });
+      if (which === 1) {
+        await d1.prepare("DELETE FROM compute_pipeline_stamps").run();
+        await d1.prepare("DELETE FROM compute_jobs").run();
+      }
+      const owner = await seedUser(d1, { role: "owner" });
+      await seedPipelinesAccount(env, { reuse: true });
+      await fundPipelines(env, 1_000_000_000, true);
+      await fundPlatform(d1, "people", 1_000_000_000);
+      const datasets = Array.from(
+        { length: 6 },
+        () => `nm${String(nextDataset++).padStart(6, "0")}`,
+      );
+      for (const id of datasets) await seedEegDataset(env, id, { owner });
+      const policy = (maxLiveJobs: number) =>
+        setPolicy(d1, owner, { tenant: ceilingOf(maxLiveJobs) });
+      const actor = { kind: "admin", userId: owner } as const;
+      const dry = async (over: object = {}) => {
+        const r = await pipelineDryRun(env, { recipe: "nemar-floor", limit: 10, ...over });
+        if (!r.ok) throw new Error(`dry run refused: ${r.code}`);
+        return r;
+      };
+
+      // Three GPU pipeline jobs fill a ceiling of 3.
+      await policy(3);
+      for (let i = 0; i < 3; i++) {
+        const gpu = await createJob(env, {
+          source: "pipeline",
+          accountId: null,
+          appId: "nemar-launch",
+          appVersion: "1.0.0",
+          spec: jobSpec({ partition: "gpu-shared", gpus: 1 }),
+        });
+        if (!gpu.ok) throw new Error(`could not make a GPU job: ${gpu.code}`);
+      }
+      const full = await dry();
+      expect(full.room).toMatchObject({ tenant_left: 0, limited_by: "tenant" });
+      expect(full.would_dispatch).toEqual([]);
+      const fullNamed = await dry({ datasetId: datasets[0] });
+      expect(fullNamed.blocked).toMatchObject({ code: "platform_busy" });
+      expect(fullNamed.would_dispatch).toEqual([]);
+      expect(fullNamed.room).toMatchObject({ tenant_left: 0, limited_by: "tenant" });
+      // ... and the live run does exactly that.
+      const liveFull = await dispatchEligible(env, { recipe: "nemar-floor", limit: 10, actor });
+      expect([liveFull.dispatched, liveFull.stoppedBy, liveFull.results]).toEqual([
+        0,
+        "platform_busy",
+        [],
+      ]);
+      const liveNamed = await dispatchPipelineJob(env, {
+        recipe: "nemar-floor",
+        datasetId: datasets[0] as string,
+        actor,
+      });
+      expect(liveNamed).toMatchObject({ ok: false, code: "platform_busy" });
+
+      // Two slots more: the preview lists two, bounded by the tenant, and the run dispatches two.
+      await policy(5);
+      const two = await dry();
+      expect(two.room).toMatchObject({ tenant_left: 2, limited_by: "tenant" });
+      expect(two.would_dispatch).toHaveLength(2);
+      expect((await dry({ datasetId: datasets[1] })).blocked).toBeUndefined();
+      const liveTwo = await dispatchEligible(env, { recipe: "nemar-floor", limit: 10, actor });
+      expect([liveTwo.dispatched, liveTwo.stoppedBy]).toEqual([2, "platform_busy"]);
+      expect(liveTwo.room).toMatchObject({ tenant_left: 2, limited_by: "tenant" });
+
+      // A tie goes to the earlier word: two asked for, two left, so the limit bound the run and nothing stopped it.
+      await policy(7);
+      const tie = await dry({ limit: 2 });
+      expect(tie.room).toMatchObject({ tenant_left: 2, limited_by: "limit" });
+      const liveTie = await dispatchEligible(env, { recipe: "nemar-floor", limit: 2, actor });
+      expect([liveTie.dispatched, liveTie.stoppedBy]).toEqual([2, null]);
+    });
+  }
 
   test("(g) PUT /admin/compute/policy refuses floors above the ceiling, names the field, and writes nothing", async () => {
     const env = fx.env();
@@ -704,7 +916,8 @@ describe("the routes", () => {
       reserved: { people: 2, pipelines: 1, partner: 0 },
     });
     expect(res.body.attention.tenant_over_ceiling).toBe(0);
-    // Occupancy NEMAR did not admit can pass the ceiling; the count says by how much.
+    // A ceiling lowered below what is live (or a job NEMAR did not admit) puts the count above it, and the
+    // count says by how much.
     await tenantPolicy(ceilingOf(2));
     const over = await call("admin", "GET", "status", env);
     expect(over.body.attention.tenant_over_ceiling).toBe(1);

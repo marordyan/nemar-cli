@@ -326,14 +326,15 @@ export const ComputeStatusResponseSchema = z
      * like every response here) does not break a released CLI, which prints only the positive counts.
      * Today: `access_reports_failed` (ACCESS reports that ended failed), `cancel_pending_failed` (a
      * recorded cancel still not carried out an hour after it was asked for) and `copy_abandoned` (a
-     * terminal job whose launcher files were never copied and no longer will be), and
-     * `tenant_over_ceiling` (slots occupied above the tenant ceiling: only a job NEMAR did not admit can
-     * cause it).
+     * terminal job whose launcher files were never copied and no longer will be),
+     * `tenant_over_ceiling` (slots occupied above the tenant ceiling: a job NEMAR did not admit, or a
+     * ceiling lowered below what is already live) and `policy_unreadable` (1 when the stored owner policy
+     * cannot be read, which fails every hold, run and limit closed; then `tenant` is absent).
      */
     attention: z.record(z.unknown()).optional(),
     /**
      * NEMAR's tenant-wide ceiling on live jobs (issue #2121, phase P2): the owner's `ceiling`, the slots
-     * `occupied` by NEMAR's own count (live jobs and the orphans not yet cancelled), the count `by_class`
+     * `occupied` by NEMAR's own count (live jobs and the orphans not yet canceled), the count `by_class`
      * and the floors `reserved` per class. Optional so a CLI that reads an older Worker still parses its
      * answer, and open like every response here. Absent when the policy cannot be read just now.
      */
@@ -438,14 +439,17 @@ export const COMPUTE_PIPELINE_RUN_PER_INVOCATION = 10;
 
 /**
  * What bounded a run over the eligible datasets, the smallest of: the number asked for (`limit`), the
- * per-invocation bound, what is left of the daily cap (`daily_cap`) and what is left of the live cap of
- * the recipe's pool (`live_cap`). On a tie the first of these in this order is named.
+ * per-invocation bound, what is left of the daily cap (`daily_cap`), what is left of the live cap of
+ * the recipe's pool (`live_cap`) and what is left of NEMAR's tenant ceiling for the pipelines' class
+ * (`tenant`, issue #2121). On a tie the first of these in this order is named, so a run that ends at exactly
+ * the number it was asked for was not "limited", and the tenant is named only when it alone is the smallest.
  */
 export const COMPUTE_PIPELINE_LIMITED_BY = [
   "limit",
   "per_invocation",
   "daily_cap",
   "live_cap",
+  "tenant",
 ] as const;
 
 export type ComputePipelineLimitedBy = (typeof COMPUTE_PIPELINE_LIMITED_BY)[number];
@@ -533,11 +537,14 @@ export type ComputePipelineResult = z.infer<typeof ComputePipelineResultSchema>;
  * The room a run over the eligible datasets had: what is left of the daily cap, what is left of the live
  * cap of the recipe's pool, both read before the run, and what bounded the run (see
  * {@link COMPUTE_PIPELINE_LIMITED_BY}). A dry run reports the same, so its preview matches a live run.
+ * `tenant_left` is the slots the pipelines' class could take under the tenant ceiling (optional, so a CLI
+ * that reads an older Worker still parses its answer).
  */
 export const ComputePipelineRoomSchema = z
   .object({
     daily_left: z.number().int(),
     live_left: z.number().int(),
+    tenant_left: z.number().int().optional(),
     limited_by: z.string(),
   })
   .passthrough();

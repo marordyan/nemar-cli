@@ -344,6 +344,7 @@ export function registerComputePipelineAdminRoutes(admin: AdminRouter): void {
                 room: {
                   daily_left: run.room.daily_left,
                   live_left: run.room.live_left,
+                  tenant_left: run.room.tenant_left,
                   limited_by: run.room.limited_by,
                 },
               }),

@@ -92,6 +92,7 @@ import { getPolicy } from "./compute-policy.js";
 import { sha256Hex } from "./compute-records.js";
 import { readRuntimeImage } from "./compute-runtime-image.js";
 import { computeEnabled } from "./compute-switches.js";
+import { tenantFacts, tenantRoom } from "./compute-tenant.js";
 
 // --- Words ------------------------------------------------------------------------------------------
 
@@ -1006,7 +1007,12 @@ export type DryRunResult =
        * (`clampRun`); `would_dispatch` of the queue is trimmed to it. Absent only when the recipe's tuple
        * is held (`registry_drift`), which stops a run before the caps are read.
        */
-      room?: { daily_left: number; live_left: number; limited_by: ComputePipelineLimitedBy };
+      room?: {
+        daily_left: number;
+        live_left: number;
+        tenant_left: number;
+        limited_by: ComputePipelineLimitedBy;
+      };
       /**
        * Why a named dataset would be refused, or the count of the catalog's datasets that fail each term
        * of the predicate, over every dataset the queue read. A dataset fails every term it fails, so the
@@ -1056,7 +1062,12 @@ export async function pipelineDryRun(env: Bindings, input: DryRunInput): Promise
     // A named dataset is bounded by the live cap and only counted by the daily one (see `dispatchEligible`).
     const named = {
       ...caps,
-      limited_by: caps.live_left <= 0 ? ("live_cap" as const) : ("limit" as const),
+      limited_by:
+        caps.live_left <= 0
+          ? ("live_cap" as const)
+          : caps.tenant_left <= 0
+            ? ("tenant" as const)
+            : ("limit" as const),
     };
     const resolved = await resolveRun(db, input.datasetId, input.version);
     if (!resolved.ok) {
@@ -1098,6 +1109,16 @@ export async function pipelineDryRun(env: Bindings, input: DryRunInput): Promise
         blocked: { code: "over_concurrency", blocked_by: [], version: resolved.tag },
       };
     }
+    // The tenant ceiling, worded after the class cap as a refused hold is.
+    if (caps.tenant_left <= 0) {
+      return {
+        ...base,
+        room: named,
+        estimate_milli_total: 0,
+        would_dispatch: [],
+        blocked: { code: "platform_busy", blocked_by: [], version: resolved.tag },
+      };
+    }
     return {
       ...base,
       room: named,
@@ -1124,7 +1145,12 @@ export async function pipelineDryRun(env: Bindings, input: DryRunInput): Promise
   }
   return {
     ...base,
-    room: { daily_left: room.daily_left, live_left: room.live_left, limited_by: room.limited_by },
+    room: {
+      daily_left: room.daily_left,
+      live_left: room.live_left,
+      tenant_left: room.tenant_left,
+      limited_by: room.limited_by,
+    },
     estimate_milli_total: perJob * candidates.length,
     would_dispatch: candidates.map((c) => ({ dataset_id: c.dataset_id, version: c.tag })),
     blocked_by_term: blockedByTerm,
@@ -1159,13 +1185,20 @@ export interface PipelineRoom {
   daily_left: number;
   /** `pipelines.maxLiveJobs` of the pool minus the pipeline jobs live in it, never below 0. */
   live_left: number;
+  /**
+   * The slots the pipelines' class could take under the tenant ceiling (`tenantRoom`), never below 0: the
+   * ceiling less everything occupied less the slots the other classes' floors are still owed.
+   */
+  tenant_left: number;
 }
 
 /**
  * The room the pipelines have in a pool right now: the one reading of both caps, used by the daily
  * dispatcher, an administrator's run and the dry run. The live count is the statement the hold guards on
  * (`PIPELINE_LIVE_JOBS_SQL`), so the room that is read is the room that is enforced; the daily count
- * is a read and nothing more (a clamp, never a guard: see {@link dispatchEligible}).
+ * is a read and nothing more (a clamp, never a guard: see {@link dispatchEligible}). The tenant room is
+ * the guard's own arithmetic over one read of the tenant counts (`TENANT_COUNTS_SQL`, which scans the table
+ * for orphans), read once per call.
  *
  * `PIPELINE_JOBS_TODAY_SQL` is a full scan of `compute_jobs` (no index serves a count by `created_at`
  * over every account), so a caller that has the day's count already passes it as `today` and the scan is
@@ -1183,12 +1216,13 @@ export async function pipelineRoom(
   return {
     daily_left: Math.max(0, policy.pipelines.dailyJobCap - madeToday),
     live_left: Math.max(0, policy.pipelines.maxLiveJobs[pool] - live),
+    tenant_left: tenantRoom(await tenantFacts(db, policy), "pipelines"),
   };
 }
 
 /** How many datasets one run may try, and what bounded it. */
 export interface RunRoom extends PipelineRoom {
-  /** `min(limit, per-invocation bound, daily_left, live_left)`. */
+  /** `min(limit, per-invocation bound, daily_left, live_left, tenant_left)`. */
   attempts: number;
   limited_by: ComputePipelineLimitedBy;
 }
@@ -1197,9 +1231,11 @@ export interface RunRoom extends PipelineRoom {
  * The number of datasets a run over the eligible ones may try: the smallest of what was asked for, the
  * per-invocation bound (`COMPUTE_PIPELINE_RUN_PER_INVOCATION`: a Worker request cannot carry 100
  * dispatches, about 25 subrequests each against an allowance of about 1,000), what is left of the daily
- * cap and what is left of the pool's live cap. The same clamp serves the live run and the dry run, so a
- * preview is what a run would do. On a tie the first of `COMPUTE_PIPELINE_LIMITED_BY` is named, so a
- * run that ends at exactly the number it was asked for was not "limited".
+ * cap, what is left of the pool's live cap and what is left of the tenant ceiling for the pipelines' class.
+ * The same clamp serves the live run and the dry run, so a preview is what a run would do (the hold's own
+ * guard still decides what is made, so a run that races another is refused there). On a tie the first of
+ * `COMPUTE_PIPELINE_LIMITED_BY` is named (limit, per_invocation, daily_cap, live_cap, tenant), so a run that
+ * ends at exactly the number it was asked for was not "limited".
  */
 export function clampRun(limit: number, room: PipelineRoom): RunRoom {
   const candidates: Array<[ComputePipelineLimitedBy, number]> = [
@@ -1207,6 +1243,7 @@ export function clampRun(limit: number, room: PipelineRoom): RunRoom {
     ["per_invocation", COMPUTE_PIPELINE_RUN_PER_INVOCATION],
     ["daily_cap", room.daily_left],
     ["live_cap", room.live_left],
+    ["tenant", room.tenant_left],
   ];
   let [limited_by, attempts] = candidates[0] as [ComputePipelineLimitedBy, number];
   for (const [by, n] of candidates) {
@@ -1220,7 +1257,13 @@ export function clampRun(limit: number, room: PipelineRoom): RunRoom {
 
 /** The word a run stops with when a cap, and not its own limit, ended it; null for the bound or the limit. */
 export const stopWordOf = (by: ComputePipelineLimitedBy): PipelineRefusal | null =>
-  by === "live_cap" ? "over_concurrency" : by === "daily_cap" ? "daily_cap_reached" : null;
+  by === "live_cap"
+    ? "over_concurrency"
+    : by === "daily_cap"
+      ? "daily_cap_reached"
+      : by === "tenant"
+        ? "platform_busy"
+        : null;
 
 // --- A run over the queue ---------------------------------------------------------------------------------------
 

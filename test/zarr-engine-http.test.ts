@@ -83,7 +83,7 @@ describe("host policy", () => {
     ["https://zarr.nemar.org", true],
     ["https://example.com:8443/x", true],
     ["http://127.0.0.1:1234", true],
-    ["http://localhost:1234/x", true],
+    ["http://localhost:1234/x", false],
     ["http://[::1]:1234", true],
     ["http://zarr.nemar.org", false],
     ["http://example.com", false],
@@ -103,11 +103,11 @@ describe("host policy", () => {
     expect(
       resolveBases({
         NEMAR_ZARR_BASE: "http://127.0.0.1:9/",
-        NEMAR_ZARR_DATA_PLANE: "http://localhost:9/data/",
+        NEMAR_ZARR_DATA_PLANE: "http://[::1]:9/data/",
       }),
     ).toEqual({
       zarrBase: "http://127.0.0.1:9",
-      dataPlaneBase: "http://localhost:9/data",
+      dataPlaneBase: "http://[::1]:9/data",
     });
     expect(() => resolveBases({ NEMAR_ZARR_BASE: "http://zarr.nemar.org" })).toThrow(
       EngineConfigError,

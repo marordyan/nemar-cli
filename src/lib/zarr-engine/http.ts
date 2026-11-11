@@ -11,6 +11,8 @@
  * **Host policy.** Every URL the engine requests, redirect targets included, must be
  * `https`, or `http` to a loopback address only (the exception ADR 0114 makes for
  * `NEMAR_DATA_HOSTS`, so a test can stand a plain-HTTP origin up on its own machine).
+ * Loopback means the literal addresses `127.0.0.1` and `[::1]`: unlike ADR 0114's list, the
+ * name `localhost` is refused, because the hosts file decides where a name resolves.
  * The bases come from `NEMAR_ZARR_BASE` and `NEMAR_ZARR_DATA_PLANE`. **Those settings are
  * not ADR 0114's list**: they are never added to `NEMAR_DATA_HOSTS` and never decide where
  * a credential may go. `src/lib/data-hosts.ts` stays the only list a credential follows.
@@ -25,7 +27,6 @@
 
 import type { CacheKey, Fetcher, JsonCache } from "../../../shared/zarr/interfaces.js";
 import { getApiUrl } from "../api/client.js";
-import { isLoopbackHostname } from "../data-hosts.js";
 
 /** Which kind of source an entry or fetcher belongs to. Phase 4 has only `public`. */
 export type SourceKind = "public";
@@ -42,6 +43,9 @@ const MAX_REDIRECTS = 3;
 // Host policy
 // ---------------------------------------------------------------------------
 
+/** The loopback addresses plain `http` may reach. Addresses, never names: see the header. */
+const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "[::1]"]);
+
 export type HostCheck = { ok: true; url: URL } | { ok: false; reason: string };
 
 /** Does `value` name an origin the engine may request: `https`, or `http` to loopback, with
@@ -57,10 +61,10 @@ export function checkHost(value: string): HostCheck {
     return { ok: false, reason: `${url.origin} carries credentials in the URL` };
   }
   if (url.protocol === "https:") return { ok: true, url };
-  if (url.protocol === "http:" && isLoopbackHostname(url.hostname)) return { ok: true, url };
+  if (url.protocol === "http:" && LOOPBACK_ADDRESSES.has(url.hostname)) return { ok: true, url };
   return {
     ok: false,
-    reason: `${url.origin} is not https, and plain http is allowed to a loopback address only`,
+    reason: `${url.origin} is not https, and plain http is allowed only to 127.0.0.1 or [::1]`,
   };
 }
 

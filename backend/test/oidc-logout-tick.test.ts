@@ -297,7 +297,7 @@ describe("with no usable OIDC_SECRET the tick claims nothing", () => {
   );
 
   test.each(bad.map(([what, value]) => [what, value] as const))(
-    "%s: attempts stay 0 across ticks, nothing is sent, nothing is pruned, one fixed-word warning each",
+    "%s: attempts stay 0 across ticks, nothing is sent, nothing is pruned, a fixed-word warning each tick only when the secret is malformed",
     async (_what, value) => {
       queue(3);
       // A finished delivery past its retention window: the prune would delete it.
@@ -320,7 +320,10 @@ describe("with no usable OIDC_SECRET the tick claims nothing", () => {
           expect(logoutTickLogLine(tally as never)).toBeNull();
         }
         const lines = warn.mock.calls.map((c) => String(c[0]));
-        expect(lines).toHaveLength(7);
+        // An absent secret is the provider dark by design and logs nothing; a secret in the wrong
+        // form warns once per tick.
+        const absent = value === undefined || value === null || value === "";
+        expect(lines).toHaveLength(absent ? 0 : 7);
         for (const line of lines) {
           expect(line).toMatch(/^\[oidc-logout\] skipped reason=oidc_secret_(unset|malformed)$/);
           if (typeof value === "string" && value !== "") expect(line).not.toContain(value);
@@ -349,6 +352,10 @@ describe("with no usable OIDC_SECRET the tick claims nothing", () => {
       );
       expect(unset.skipped).toBe("oidc_secret_unset");
       expect(malformed.skipped).toBe("oidc_secret_malformed");
+      // Only the malformed one is heard: the unset one is silent.
+      expect(warn.mock.calls.map((c) => String(c[0]))).toEqual([
+        "[oidc-logout] skipped reason=oidc_secret_malformed",
+      ]);
     } finally {
       warn.mockRestore();
     }

@@ -401,7 +401,12 @@ export async function attemptDueLogouts(
   if (oidcSecret(env) === null) {
     const state = oidcSecretStatus(env);
     tally.skipped = state === "unset" ? "oidc_secret_unset" : "oidc_secret_malformed";
-    console.warn(`[oidc-logout] skipped reason=${tally.skipped}`);
+    // An absent secret is the provider dark by design (ADR 0119): silent, or the production tick
+    // would log about 48 lines a day for nothing. A secret set in the wrong form is a mistake the
+    // owner has to hear about, so that one warns on every tick.
+    if (tally.skipped === "oidc_secret_malformed") {
+      console.warn(`[oidc-logout] skipped reason=${tally.skipped}`);
+    }
     return tally;
   }
   let rows: DueDelivery[];
@@ -495,7 +500,7 @@ export async function runOidcLogoutRetryTick(
 ): Promise<LogoutTally | null> {
   if (!isExactProduction(env)) return null;
   const tally = await attemptDueLogouts(env, options);
-  // Skipped for want of a secret: not even the prune writes (the warning was logged once already).
+  // Skipped for want of a secret: not even the prune writes (a malformed secret was warned about already).
   if (tally.skipped) return tally;
   try {
     tally.pruned = await pruneDeliveries(env.DB);

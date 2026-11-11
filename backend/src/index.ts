@@ -1297,8 +1297,10 @@ export default {
         // PRODUCTION-ONLY, and deliberately NOT in DEV_CRON_ALLOWLIST: it makes OUTBOUND requests to
         // addresses partners registered, and the dev Worker shares real accounts. It also refuses outside
         // exact production on its own, and a delivery is sent only to an https host the registry
-        // validated. It mails nobody, calls no GitHub and touches no DOI or bucket. One log line, only
-        // when it found a delivery or failed, with counts and a fixed word and nothing else.
+        // validated. It mails nobody, calls no GitHub and touches no DOI or bucket. It reads no switch.
+        // One count line only when it found a delivery, pruned one or failed, with counts and a fixed
+        // word and nothing else; while OIDC_SECRET is set in the wrong form it also warns on every tick
+        // (`skipped reason=oidc_secret_malformed`), and an absent secret is silent.
         ctx.waitUntil(
           runOidcLogoutRetryTick(env)
             .then((r) => {

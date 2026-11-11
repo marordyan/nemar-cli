@@ -10,9 +10,10 @@
  * (`too_large`): the payload (`channels x samples x bytes per sample`) and the DECODE work
  * (every store channel x samples x 2 bytes, because a stored chunk holds every channel, so
  * naming one channel of a wide store does not make the read small) must each stay within
- * `maxPayloadBytes`. It reads with `readLevel0Window`, assembles with `assembleWindow`, and
- * lays the result out channel-major, little-endian. `digital` is the raw int16: assembling
- * with scale 1 and offset 0 is exact for int16 values, so no new core code is needed.
+ * `maxPayloadBytes`. It reads with `readLevel0Window` and assembles with
+ * `assembleChannelMajor`, which writes the window straight into one channel-major array of
+ * the wire dtype: `digital` is the stored int16 with no scale or offset and never passes
+ * through float64, and on a little-endian host the payload is that array's bytes, uncopied.
  *
  * A failed read maps by the core's `cause` (ADR 0120): `fetch` and `plan` are `upstream_error`,
  * `decode` is `decode_error`. Nothing that failed ever becomes a window.
@@ -24,7 +25,7 @@ import {
   type ReadWindowRequest,
   type RecipeRequest,
 } from "../../../shared/contract/zarr-engine-protocol.js";
-import { assembleWindow } from "../../../shared/zarr/assemble.js";
+import { assembleChannelMajor } from "../../../shared/zarr/assemble.js";
 import { readLevel0Window } from "../../../shared/zarr/read.js";
 import { secondsToSampleWindow } from "../../../shared/zarr/window-samples.js";
 import type { Binding, DataSource, SourceFailure, SourceResult } from "./source.js";
@@ -87,26 +88,17 @@ export interface WindowReply {
 
 const littleEndianHost = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
-/** Channel-major little-endian bytes of `rows`, `dtype` wide. */
-function pack(rows: Float64Array[] | Int16Array[], dtype: "float64" | "int16"): Uint8Array {
-  const size = ENGINE_DTYPE_BYTES[dtype];
-  const nSamples = rows[0]?.length ?? 0;
-  const out = new Uint8Array(rows.length * nSamples * size);
-  if (littleEndianHost) {
-    // Typed arrays share the host's byte order, which is the wire's.
-    rows.forEach((row, i) => {
-      out.set(new Uint8Array(row.buffer, row.byteOffset, row.byteLength), i * nSamples * size);
-    });
-    return out;
-  }
+/** The little-endian wire bytes of a channel-major array: its own bytes on a little-endian
+ *  host (no copy), a byte-swapped copy otherwise. */
+function wireBytes(values: Float64Array | Int16Array): Uint8Array {
+  if (littleEndianHost) return new Uint8Array(values.buffer, values.byteOffset, values.byteLength);
+  const out = new Uint8Array(values.byteLength);
   const view = new DataView(out.buffer);
-  rows.forEach((row, i) => {
-    for (let j = 0; j < nSamples; j++) {
-      const at = (i * nSamples + j) * size;
-      if (dtype === "float64") view.setFloat64(at, row[j], true);
-      else view.setInt16(at, row[j], true);
-    }
-  });
+  if (values instanceof Float64Array) {
+    values.forEach((v, j) => view.setFloat64(j * 8, v, true));
+  } else {
+    values.forEach((v, j) => view.setInt16(j * 2, v, true));
+  }
   return out;
 }
 
@@ -160,18 +152,17 @@ export async function readWindow(
     );
   }
 
-  const physical = dtype === "float64";
-  const assembled = assembleWindow({
+  const assembled = assembleChannelMajor({
     channels,
     startSample,
     nSamples,
     segments: read.segments,
-    scale: physical ? binding.bound.scale : new Array<number>(storeChannels).fill(1),
-    offset: physical ? binding.bound.offset : new Array<number>(storeChannels).fill(0),
+    scale: binding.bound.scale,
+    offset: binding.bound.offset,
     fillValue: 0,
+    units: dtype === "float64" ? "physical" : "digital",
   });
-  const rows = physical ? assembled.values : assembled.values.map((r) => Int16Array.from(r));
-  const payload = pack(rows, dtype);
+  const payload = wireBytes(assembled.values);
 
   return {
     ok: true,

@@ -29,9 +29,11 @@ import type { ComputeStatusResponse } from "../../../shared/contract/compute-adm
 import type { Bindings } from "../types/bindings";
 import { CANCEL_PENDING_FAILED_SQL, COPY_ABANDONED_COUNT_SQL } from "./compute-lifecycle";
 import { pipelinesAccountId } from "./compute-pipeline";
+import { getPolicy } from "./compute-policy";
 import { readRuntimeImage } from "./compute-runtime-image";
 import { computeS3 } from "./compute-s3";
 import { computeEnabled, computePipelinesDispatchEnabled } from "./compute-switches";
+import { type TenantFacts, tenantFacts, tenantOverCeiling } from "./compute-tenant";
 import { mintTapisToken } from "./tapis/auth";
 import { tapisHealth } from "./tapis/client";
 import { tapisConfig } from "./tapis/config";
@@ -95,14 +97,34 @@ const ATTENTION_COUNTS: ReadonlyArray<readonly [key: string, sql: string]> = [
   ["copy_abandoned", COPY_ABANDONED_COUNT_SQL],
 ];
 
-async function attentionCounts(db: D1Database): Promise<Record<string, number>> {
+async function attentionCounts(
+  db: D1Database,
+  tenant: TenantFacts | null,
+): Promise<Record<string, number>> {
   const counts = await Promise.all(
     ATTENTION_COUNTS.map(async ([key, sql]) => {
       const row = await db.prepare(sql).first<{ n: number }>();
       return [key, row?.n ?? 0] as const;
     }),
   );
+  // The ceiling is the owner's policy and not a column, so this one is read from the tenant facts: NEMAR's
+  // own admission cannot put the count above the ceiling, so a positive number is a job NEMAR did not admit
+  // (a job that skipped the reservation, or an orphan). Absent while the policy cannot be read.
+  if (tenant !== null) counts.push(["tenant_over_ceiling", tenantOverCeiling(tenant)] as const);
   return Object.fromEntries(counts);
+}
+
+/** The tenant ceiling and its counts, or null when the owner's policy cannot be read just now (logged, not hidden). */
+async function readTenant(db: D1Database): Promise<TenantFacts | null> {
+  try {
+    return await tenantFacts(db, (await getPolicy(db)).policy);
+  } catch (err) {
+    console.error(
+      "[compute-status] tenant unreadable:",
+      err instanceof Error ? err.name : typeof err,
+    );
+    return null;
+  }
 }
 
 /** Whether any pool of the platform's budget `key` has a grant: a hold on a person's job needs `people`. */
@@ -154,13 +176,14 @@ export async function computeStatus(
     outcome(() => tapisHealth(env, { timeoutMs, maxAttempts: 1 })),
   ]);
 
-  const [pipelinesAccount, policy, peopleGranted, pipelinesGranted, attention] = await Promise.all([
+  const [pipelinesAccount, policy, peopleGranted, pipelinesGranted, tenant] = await Promise.all([
     pipelinesAccountId(env.DB),
     env.DB.prepare("SELECT 1 AS present FROM compute_policy LIMIT 1").first(),
     platformGranted(env.DB, "people"),
     platformGranted(env.DB, "pipelines"),
-    attentionCounts(env.DB),
+    readTenant(env.DB),
   ]);
+  const attention = await attentionCounts(env.DB, tenant);
 
   return {
     switches: {
@@ -200,5 +223,6 @@ export async function computeStatus(
     // The tenant sweep returns null while compute is off, which pauses what only it does.
     reconciliation: { paused: !computeOn },
     attention,
+    ...(tenant === null ? {} : { tenant }),
   };
 }

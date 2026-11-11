@@ -22,6 +22,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "bun";
+import { putPolicy } from "../backend/src/services/compute-policy";
 import { __resetTapisTokenCacheForTests } from "../backend/src/services/tapis/auth";
 import {
   COMPUTE_KEYS,
@@ -30,8 +31,9 @@ import {
   makeComputeApp,
   seedComputeUsers,
 } from "../backend/test/helpers/compute-app";
-import { freshDb } from "../backend/test/helpers/d1";
+import { freshDb, realD1 } from "../backend/test/helpers/d1";
 import { type TapisStandin, startTapisStandin } from "../backend/test/helpers/tapis-standin";
+import { DEFAULT_COMPUTE_POLICY } from "../shared/contract/compute";
 import { ComputeStatusResponseSchema } from "../shared/contract/compute-admin";
 
 const CLI_ENTRY = join(import.meta.dir, "..", "src", "index.ts");
@@ -76,6 +78,7 @@ const server = Bun.serve({
       body.prerequisites = undefined;
       body.reconciliation = undefined;
       body.attention = undefined;
+      body.tenant = undefined;
       return Response.json(body, { status: res.status });
     }
     return res;
@@ -182,6 +185,66 @@ function expectNoSecrets(r: Ran) {
 }
 
 describe("status", () => {
+  /** A live job of `source` straight into the Worker's database (the columns a row needs). */
+  const liveJob = (n: number, source: string, extra = "") => {
+    const owner = (
+      db.query("SELECT id FROM users WHERE username = 'cmp-owner'").get() as { id: number }
+    ).id;
+    db.run(
+      `INSERT INTO compute_jobs (id, account_id, source, kind, app_id, app_version, spec_digest,
+                                 partition, pool, nodes, cores_per_node, minutes, state ${extra.split("=>")[0]})
+       VALUES (?, ?, ?, 'batch', 'a', '1', ?, 'shared', 'cpu', 1, 1, 1, 'running' ${extra.split("=>")[1] ?? ""})`,
+      [`job_${String(n).padStart(24, "0")}`, owner, source, "a".repeat(64)],
+    );
+  };
+
+  test("prints the tenant ceiling: occupied of the ceiling, by class", async () => {
+    liveJob(1, "pipeline");
+    liveJob(2, "pipeline");
+    liveJob(3, "cli");
+    liveJob(4, "web");
+    liveJob(5, "partner", ", flag_unreserved=>, 1");
+    const r = await runCli("admin", ["status"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("Tenant: 5/20 (people 2, pipelines 2, partner 0, other 1)");
+    expect(r.stdout).not.toContain("tenant_over_ceiling");
+    const j = await runCli("admin", ["status", "--json"]);
+    expect(JSON.parse(j.stdout).tenant).toEqual({
+      ceiling: 20,
+      occupied: 5,
+      by_class: { people: 2, pipelines: 2, partner: 0, other: 1 },
+      reserved: { people: 8, pipelines: 2, partner: 0 },
+    });
+  });
+
+  test("a count above the owner's ceiling is an attention line", async () => {
+    const owner = (
+      db.query("SELECT id FROM users WHERE username = 'cmp-owner'").get() as { id: number }
+    ).id;
+    const put = await putPolicy(
+      realD1(db),
+      owner,
+      {
+        ...DEFAULT_COMPUTE_POLICY,
+        tenant: { maxLiveJobs: 1, reserved: { people: 0, pipelines: 0, partner: 0 } },
+      },
+      null,
+    );
+    expect(put.ok).toBe(true);
+    liveJob(1, "pipeline");
+    liveJob(2, "partner", ", flag_unreserved=>, 1");
+    const r = await runCli("admin", ["status"]);
+    expect(r.stdout).toContain("Tenant: 2/1 (people 0, pipelines 1, partner 0, other 1)");
+    expect(r.stdout).toContain("Attention: tenant_over_ceiling 1");
+  });
+
+  test("a Worker from before the tenant block prints no Tenant line", async () => {
+    olderWorker = true;
+    const r = await runCli("admin", ["status"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).not.toContain("Tenant:");
+  });
+
   test("an unconfigured Worker prints `unconfigured` and exits 0", async () => {
     const r = await runCli("admin", ["status"]);
     expect(r.exitCode).toBe(0);

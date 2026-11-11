@@ -34,6 +34,14 @@ import { type TapisStandin, startTapisStandin } from "./helpers/tapis-standin";
 
 const handle = makeComputeApp();
 
+/** The tenant ceiling of a database with no policy and no job: the default, and nothing occupied. */
+const NO_TENANT = {
+  ceiling: 20,
+  occupied: 0,
+  by_class: { people: 0, pipelines: 0, partner: 0, other: 0 },
+  reserved: { people: 8, pipelines: 2, partner: 0 },
+};
+
 /** A database with nothing set up: no account, no policy, no grant, and no secret in the environment. */
 const NO_PREREQUISITES = {
   callback_secret: false,
@@ -154,7 +162,13 @@ describe("an unconfigured Worker", () => {
       runtime_image: { set: false, valid: false, digest: null },
       prerequisites: NO_PREREQUISITES,
       reconciliation: { paused: true },
-      attention: { access_reports_failed: 0, cancel_pending_failed: 0, copy_abandoned: 0 },
+      attention: {
+        access_reports_failed: 0,
+        cancel_pending_failed: 0,
+        copy_abandoned: 0,
+        tenant_over_ceiling: 0,
+      },
+      tenant: NO_TENANT,
     });
     // The health call is the one request an address alone allows.
     expect(standin.log.map((r) => r.path)).toEqual(["/v3/jobs/healthcheck"]);
@@ -193,7 +207,13 @@ describe("an unconfigured Worker", () => {
         runtime_image: { set: false, valid: false, digest: null },
         prerequisites: NO_PREREQUISITES,
         reconciliation: { paused: true },
-        attention: { access_reports_failed: 0, cancel_pending_failed: 0, copy_abandoned: 0 },
+        attention: {
+          access_reports_failed: 0,
+          cancel_pending_failed: 0,
+          copy_abandoned: 0,
+          tenant_over_ceiling: 0,
+        },
+        tenant: NO_TENANT,
       });
       expect(standin.log).toHaveLength(0);
     } finally {
@@ -279,6 +299,7 @@ describe("what every launch needs besides the credential", () => {
       access_reports_failed: 0,
       cancel_pending_failed: 0,
       copy_abandoned: 0,
+      tenant_over_ceiling: 0,
     });
     harness.db.run(
       `INSERT INTO compute_access_reports (job_id, state, attempts, last_error_code)
@@ -289,6 +310,7 @@ describe("what every launch needs besides the credential", () => {
       access_reports_failed: 1,
       cancel_pending_failed: 0,
       copy_abandoned: 0,
+      tenant_over_ceiling: 0,
     });
     expect(ComputeStatusResponseSchema.safeParse(failed.body).success).toBe(true);
   });
@@ -335,6 +357,7 @@ describe("attention: what waits on a person", () => {
       access_reports_failed: 0,
       cancel_pending_failed: 1,
       copy_abandoned: 1,
+      tenant_over_ceiling: 0,
     });
     expect(ComputeStatusResponseSchema.safeParse(res.body).success).toBe(true);
   });

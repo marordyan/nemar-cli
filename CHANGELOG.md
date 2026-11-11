@@ -13,11 +13,11 @@ what merged, and this file says what it meant.
 Newest first. Dates are the tag's publication date, UTC. Backfilled from 0.9.16 onward;
 earlier releases are described only by their generated notes.
 
-## Unreleased
+## 0.10.33 - 2026-11-11
 
 NEMAR can now act as an OpenID Connect provider (epic #2014), and the first-party half of the compute gateway is in the code (epic #2005).
-Both stay inert in production until the owner switches them on.
-The OpenID Connect discovery document, key set and owner routes answer 404 until `OIDC_SECRET` is set, and the whole sign-in flow (authorize, consent, token, userinfo, revocation and introspection) stays dark until `HOST_PREFIXED_SESSION_COOKIE` is also `"1"`.
+The sign-in flow and compute stay dark in production until the owner switches them on.
+The OpenID Connect discovery document, key set and owner routes answer 404 until `OIDC_SECRET` is set (the owner sets it before the release, so they answer at deploy, with an empty key set), and the whole sign-in flow (authorize, consent, token, userinfo, revocation and introspection) stays dark until `HOST_PREFIXED_SESSION_COOKIE` is also `"1"`.
 No job can be submitted and no pipeline is dispatched while the two compute switches are absent.
 Nothing contacts the job scheduler's tenant except an administrator's `nemar admin compute status`, which mints one token and makes one health call when the tenant's credentials are set.
 The release has twelve migrations, 0114 to 0119 (compute), 0120 to 0124 (OpenID Connect) and 0130 (compute anonymization).
@@ -39,7 +39,7 @@ Third-party compute (`nemar compute`) and the partner contract are not in this r
 - **A plain ORCID sign-in no longer links the iD to the account already signed in (ADR 0119 rule 10).**
   `GET /auth/orcid/start` starts a sign-in whatever its `mode` says; only the form POST from Settings, which checks the Origin and needs a session, starts a link or a relink.
   A sign-in signs in the account the iD names, or starts a sign-up for an iD no account holds, and always issues a fresh session.
-  The released website's "Connect your ORCID" is a link, so until the website's form POST is released (website #501) it starts a sign-up instead of a link (see Deploy coupling).
+  Website 0.2.37 carries the form POST; a website older than that starts a sign-up instead of a link (see Deploy coupling).
 - **Email-code sign-in is closed outside development and test (#2112).**
   `/auth/code/request` answers the same masked success without issuing a code, and `/auth/code/verify` answers 401, so nothing can obtain or redeem a sign-in code in production.
   The codes that confirm or change an email address for a signed-in account are separate and unchanged.
@@ -53,7 +53,7 @@ Third-party compute (`nemar compute`) and the partner contract are not in this r
   The API sends it no CORS headers and refuses a cookie-authenticated write from it, although it ends in `.nemar.org`, because a partner runs it.
 - **The OpenID Connect back-channel logout retry runs on the 30-minute production tick from deploy.**
   It reads no switch, and with no client registered it has nothing to send.
-  While `OIDC_SECRET` is set in the wrong form it writes nothing and logs `[oidc-logout] skipped reason=oidc_secret_malformed` at warning level on every tick, and once after each admin revocation, soft delete, kind change and ORCID unlink or relink; an absent secret is silent.
+  While `OIDC_SECRET` is set in the wrong form it writes nothing and logs `[oidc-logout] skipped reason=oidc_secret_malformed` at warning level on every tick, and once after each admin revocation, soft delete, kind change, manual account merge, `nemar admin oidc` grant ending, ORCID unlink or relink and test-account sweep; an absent secret is silent.
 - **Every cached `manifest.json` is rebuilt on its first request after deploy,** because the cache key moves to `v3` (see Fixed).
 - **The session cookie is unchanged.**
   `__Host-nemar_session` is written only when the owner sets `HOST_PREFIXED_SESSION_COOKIE` to `"1"`, after both releases are out; the legacy `nemar_session` name keeps being read for at least 31 days after that.
@@ -79,9 +79,10 @@ Third-party compute (`nemar compute`) and the partner contract are not in this r
   `nemar admin compute` covers the policy, pools, status, jobs (including legal holds and the ACCESS reports), the observer token and `pipeline run|status`.
   Nothing runs until the owner sets `COMPUTE_ENABLED` and `COMPUTE_PIPELINES_DISPATCH_ENABLED`, which are absent from the production configuration and pinned absent by a test; every compute cron is production-only.
   The tenant sweep waits for `COMPUTE_ENABLED`, and the pipeline dispatcher waits for both switches.
-  Five never read a switch: job advance, cancellation retry, the ACCESS gateway-attribute reporter, retention and the OpenID Connect logout retry.
+  Five run without a switch: job advance, cancellation retry, the ACCESS gateway-attribute reporter, retention and the OpenID Connect logout retry.
+  Job advance checks `COMPUTE_ENABLED` at one step only, just before it would create a job at the scheduler, so a live job is always read back and a job that has not been submitted waits.
   The four compute ones act only on jobs and pools that exist, so they have nothing to do until the first job, and turning compute off never strands a live job.
-  NEMAR's own pipelines obey their caps on every path, fixed before this release (#2121): the live cap per pool is checked inside the statement that takes each pipeline job's hold, and an administrator's `pipeline run --eligible` also stops at what is left of the daily cap and dispatches at most 10 per invocation, reporting the room it had.
+  NEMAR's own pipelines obey their caps on every path, fixed before this release (#2122, from issue #2121): the live cap per pool is checked inside the statement that takes each pipeline job's hold, and an administrator's `pipeline run --eligible` also stops at what is left of the daily cap and dispatches at most 10 per invocation, reporting the room it had.
   One named dataset is refused when its pool is full and counts toward the daily cap without being refused by it.
   The daily dispatcher's counts and words are unchanged unless it races an administrator's run.
   When the daily cap ended a `pipeline run --eligible`, the run reports the new word `daily_cap_reached` as its `stopped_by`; the word is declared with status 409, and no path returns it as an error status.
@@ -97,6 +98,10 @@ Third-party compute (`nemar compute`) and the partner contract are not in this r
   The client secret that `nemar admin oidc clients add` and `rotate-secret` print once is written as `[REDACTED]` in a `--debug` log, like an API key.
 - **The Worker's request log writes the token of a Tapis webhook address as `[redacted]`.**
   Its lines are otherwise unchanged: method, path with its query string, status and time, at the same volume.
+- **CI: the test workflow checks out `nemarOrg/nemar-process` at its epic branch, and the OpenID Connect conformance workflow is new on `main`.**
+  The checkout (`feature/issue-1-epic-process`) supplies the observation schema, its fixtures and the queue-memory template to the drift tests, with `NEMAR_REQUIRE_PROCESS_OBSERVATION_DRIFT` and `NEMAR_REQUIRE_PROCESS_QUEUES` set to `1`, so the tests fail, not skip, if that branch or its files are gone.
+  Move the checkout to that repository's `main` when its epic merges; until then, deleting the branch breaks CI on `main`.
+  `oidc-conformance.yml` runs by manual dispatch only.
 
 ### Fixed
 
@@ -130,8 +135,10 @@ Third-party compute (`nemar compute`) and the partner contract are not in this r
 - **Then check ORCID sign-in end to end, turn `HOST_PREFIXED_SESSION_COOKIE` on, and check sign-in again.**
   The flag is a Worker secret, or a `[vars]` entry added by a reviewed change that edits `backend/test/session-cookie-name.test.ts`; a dashboard variable is dropped by the next deploy.
   Turning the cookie flag on before the website reads the new name logs everyone out of the website.
+  Before turning it on, count the active accounts that have no verified ORCID iD (a read-only query on `users`, `orcid_verified = 0`).
+  With the flag on, a session read under the legacy `nemar_session` name is no longer slid and cannot start an ORCID link, and email-code sign-in is closed, so such an account can connect an iD only with `nemar auth profile orcid link` or through an owner's edit; ask those people to connect while the flag is off, or tell them how.
 - **Rolling back.**
-  The migrations only add tables, one column, triggers and four empty pools, and the 0.10.32 Worker reads none of them, so a rollback to 0.10.32 is safe while the cookie flag is off; ORCID sign-ins in flight fail once, as at deploy.
+  The migrations add tables and indexes, one column on an existing table (`users.oidc_subject`, filled for every user), triggers (0130 replaces two) and four empty pools, and the 0.10.32 Worker reads none of them, so a rollback to 0.10.32 is safe while the cookie flag is off; ORCID sign-ins in flight fail once, as at deploy.
   Once the flag is on, a rollback below 0.10.33 signs out everyone who signed in since, because 0.10.32 does not read `__Host-nemar_session`.
 - **Run `bun run migrations:d1-check` before the release pull request.**
   The twelve migrations replay on real D1; one of them (0130) replaces two append-only triggers, one on the pools and one on the ledger.
@@ -149,7 +156,7 @@ None of these is done by the release.
 
 ### Known limits
 
-- The pipelines' daily cap is read before a run and not checked in the hold's statement, so two runs at the same moment can together pass it; an atomic daily guard is planned beside the tenant ceiling (#2121, phase P2).
+- The pipelines' daily cap is read before a run and not checked in the hold's statement, so two runs at the same moment can together pass it; an atomic daily guard is planned beside the tenant ceiling (#2126, phase P2, from issue #2121).
 - The `manifest.json` reader repairs a wrong stored digest at read time, and the central generator now writes the right digest for new manifests.
   The one stored manifest known to carry wrong digests (`on003104` at `v1.0.0`) has been regenerated, and the per-file `ETag` of those files changed once.
   If the audit finds another stored manifest written before the generator fix, it is served repaired and stays wrong in storage until it is regenerated.

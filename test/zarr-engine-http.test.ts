@@ -17,6 +17,7 @@ import {
   isHttpsDowngrade,
   readBodyCapped,
   resolveBases,
+  storeIdentity,
   withBodyCaps,
   withRangeCache,
 } from "../src/lib/zarr-engine/http.js";
@@ -276,6 +277,19 @@ describe("range cache", () => {
     expect(seen.length).toBe(3);
   });
 
+  test("the same URL and Range under two store identities are two entries", async () => {
+    const cache = new RangeCache("public");
+    const oldStore = withRangeCache(createPublicFetcher(), cache, "store-a");
+    const newStore = withRangeCache(createPublicFetcher(), cache, "store-b");
+    await oldStore(`${base()}/object`, rangeInit("bytes=0-9"));
+    await oldStore(`${base()}/object`, rangeInit("bytes=0-9"));
+    expect(seen.length).toBe(1);
+    // A re-converted store keeps its chunk URLs: only the identity tells the bytes apart.
+    await newStore(`${base()}/object`, rangeInit("bytes=0-9"));
+    expect(seen.length).toBe(2);
+    expect(cache.stats().entries).toBe(2);
+  });
+
   test("the least recently used entry is evicted when the byte bound is passed", async () => {
     const cache = new RangeCache("public", 25);
     const f = withRangeCache(createPublicFetcher(), cache);
@@ -342,6 +356,28 @@ describe("range cache", () => {
 });
 
 describe("the source kind is in every cache key", () => {
+  test("storeIdentity changes with each of kind-origin, dataset, commit and timestamp", () => {
+    const store = {
+      dataBase: "https://data.example/nm000001/zarr/",
+      datasetId: "nm000001",
+      sourceCommit: "a".repeat(40),
+      convertedAt: "2026-01-01T00:00:00Z",
+    };
+    const id = storeIdentity("public", store);
+    expect(storeIdentity("public", { ...store })).toBe(id);
+    // The path under the origin is not identity, the origin is.
+    expect(storeIdentity("public", { ...store, dataBase: "https://data.example/other/" })).toBe(id);
+    for (const changed of [
+      { dataBase: "https://other.example/nm000001/zarr/" },
+      { datasetId: "nm000002" },
+      { sourceCommit: "b".repeat(40) },
+      { convertedAt: "2026-01-02T00:00:00Z" },
+      { convertedAt: null },
+    ]) {
+      expect(storeIdentity("public", { ...store, ...changed })).not.toBe(id);
+    }
+  });
+
   test("range cache keys start with the kind", () => {
     const cache = new RangeCache("public");
     expect(cache.key("u", "bytes=0-1").startsWith("public\n")).toBe(true);

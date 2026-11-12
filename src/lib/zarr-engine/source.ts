@@ -54,6 +54,7 @@ import {
   fetchJsonDocument,
   isPlainHttpBase,
   resolveBases,
+  storeIdentity,
   withBodyCaps,
   withRangeCache,
 } from "./http.js";
@@ -130,11 +131,21 @@ export type RecordsOutcome =
   | { status: "ok"; records: unknown[] }
   | { status: "unavailable"; detail: string };
 
+/** What identifies one converted store for caching: the fields of `Binding.cacheKey` and the
+ *  data base. */
+export interface StoreRef {
+  dataBase: string;
+  datasetId: string;
+  sourceCommit: string;
+  convertedAt: string | null;
+}
+
 /** Everything the engine needs from a place that holds datasets. */
 export interface DataSource {
   readonly kind: SourceKind;
-  /** Fetches the data bytes and `zarr.json` for the read core. */
-  readonly fetcher: Fetcher;
+  /** Fetches the data bytes and `zarr.json` for one store. Range caching is keyed by the
+   *  store's identity (see `storeIdentity`), so a re-converted store never reads old bytes. */
+  fetcherFor(store: StoreRef): Fetcher;
   /** Caches the read core's footers and array metadata. */
   readonly jsonCache: JsonCache;
   /** The dataset's Zarr index, parsed; the {@link MAX_CACHED_DATASETS} most recent are kept. */
@@ -206,14 +217,14 @@ export function publicSource(options: PublicSourceOptions = {}): DataSource {
   // gets every body bounded here, under the range cache.
   const publicFetcher = createPublicFetcher(options.baseFetch);
   const allowLoopbackHttp = isPlainHttpBase(bases.zarrBase);
-  const fetcher = withRangeCache(withBodyCaps(publicFetcher), rangeCache);
+  const capped = withBodyCaps(publicFetcher);
   const jsonCache = new MemoryJsonCache("public");
   const indexes = new LruCache<EngineIndex>(MAX_CACHED_DATASETS);
   const records = new LruCache<unknown[]>(MAX_CACHED_DATASETS);
 
   return {
     kind: "public",
-    fetcher,
+    fetcherFor: (store) => withRangeCache(capped, rangeCache, storeIdentity("public", store)),
     jsonCache,
 
     async readIndex(datasetId) {
@@ -291,6 +302,8 @@ export interface Binding {
   dataBase: string;
   /** Dataset identity for the read core's cache entries. */
   cacheKey: Omit<CacheKey, "projection">;
+  /** Fetches this store's bytes; its range cache is keyed by the store's identity. */
+  fetcher: Fetcher;
 }
 
 const positive = (n: number | null | undefined): number | null =>
@@ -432,8 +445,9 @@ export async function openRecording(
     // `zarr_converted_at`, which keeps cached byte offsets from outliving the object they index.
     convertedAt: index.updated_utc,
   };
+  const fetcher = source.fetcherFor({ ...cacheKey, dataBase });
   const meta = await loadLevel0ArrayMetadata({
-    fetcher: source.fetcher,
+    fetcher,
     cache: source.jsonCache,
     ...cacheKey,
     dataBase,
@@ -508,6 +522,7 @@ export async function openRecording(
       arrayMetadata: { data_type: dataType, codecs: meta.metadata.codecs },
       dataBase,
       cacheKey,
+      fetcher,
     },
   };
 }

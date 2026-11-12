@@ -354,13 +354,17 @@ export class RangeCache {
     private readonly maxBytes: number = DEFAULT_RANGE_CACHE_BYTES,
   ) {}
 
-  /** The key an entry is stored under: the source kind first. */
-  key(url: string, range: string): string {
-    return `${this.kind}\n${url}\n${range}`;
+  /** The key an entry is stored under: the source kind first, then the store identity
+   *  (`scope`, see {@link storeIdentity}), then the URL and Range. An empty scope leaves the
+   *  key as kind, URL, Range. */
+  key(url: string, range: string, scope = ""): string {
+    return scope === ""
+      ? `${this.kind}\n${url}\n${range}`
+      : `${this.kind}\n${scope}\n${url}\n${range}`;
   }
 
-  get(url: string, range: string): Uint8Array | undefined {
-    const k = this.key(url, range);
+  get(url: string, range: string, scope = ""): Uint8Array | undefined {
+    const k = this.key(url, range, scope);
     const hit = this.entries.get(k);
     if (hit === undefined) {
       this.misses++;
@@ -373,9 +377,9 @@ export class RangeCache {
     return hit;
   }
 
-  put(url: string, range: string, body: Uint8Array): void {
+  put(url: string, range: string, body: Uint8Array, scope = ""): void {
     if (body.length > this.maxBytes) return;
-    const k = this.key(url, range);
+    const k = this.key(url, range, scope);
     const old = this.entries.get(k);
     if (old) {
       this.bytes -= old.length;
@@ -397,19 +401,37 @@ export class RangeCache {
   }
 }
 
+/** The identity of one converted store, as a string for a cache key. Chunk URLs do not change
+ *  when a store is re-converted (`data_base` is `<id>/zarr/`), so a key of kind, URL and Range
+ *  alone would serve the old bytes for the new store. The identity adds what does change: the
+ *  data origin, the dataset, `source_commit` and `updated_utc` (the same `convertedAt` the JSON
+ *  cache uses). */
+export function storeIdentity(
+  kind: SourceKind,
+  store: { dataBase: string; datasetId: string; sourceCommit: string; convertedAt: string | null },
+): string {
+  let origin: string;
+  try {
+    origin = new URL(store.dataBase).origin;
+  } catch {
+    origin = store.dataBase;
+  }
+  return JSON.stringify([kind, origin, store.datasetId, store.sourceCommit, store.convertedAt]);
+}
+
 /** Wrap `fetcher` so a `Range` request answered with a complete `206` is served from
- *  `cache` next time. Requests without a Range, and any response that is not a `206` of
- *  exactly the asked length, pass through and are never stored. */
-export function withRangeCache(fetcher: Fetcher, cache: RangeCache): Fetcher {
+ *  `cache` next time, under `scope` (the store identity). Requests without a Range, and any
+ *  response that is not a `206` of exactly the asked length, pass through and are never stored. */
+export function withRangeCache(fetcher: Fetcher, cache: RangeCache, scope = ""): Fetcher {
   return async (url, init) => {
     const range = init?.headers?.Range;
     if (range === undefined) return fetcher(url, init);
-    const cached = cache.get(url, range);
+    const cached = cache.get(url, range, scope);
     if (cached) return new Response(cached, { status: 206 });
     const response = await fetcher(url, init);
     if (response.status !== 206) return response;
     const body = new Uint8Array(await response.arrayBuffer());
-    if (body.length === expectedRangeLength(range)) cache.put(url, range, body);
+    if (body.length === expectedRangeLength(range)) cache.put(url, range, body, scope);
     return new Response(body, { status: 206, headers: response.headers });
   };
 }

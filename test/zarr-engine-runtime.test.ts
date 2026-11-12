@@ -1033,6 +1033,25 @@ describe("oversized replies", () => {
   });
 });
 
+describe("handle cap", () => {
+  test("the 1025th open is too_large, and opens work again after a release", async () => {
+    const e = new Engine();
+    await e.hello();
+    let first = "";
+    for (let i = 0; i < 1024; i++) {
+      const r = await e.open();
+      expect(r.header.type, `open ${i + 1}`).toBe("opened");
+      if (i === 0) first = r.header.handle as string;
+    }
+    const refused = await e.open();
+    expect(refused.header).toMatchObject({ type: "error", code: "too_large" });
+    expect(String(refused.header.message)).toContain("release");
+    expect((await e.call({ type: "release", handle: first })).header.type).toBe("released");
+    expect((await e.open()).header.type).toBe("opened");
+    expect((await e.finish()).code).toBe(0);
+  });
+});
+
 describe("the response self-check", () => {
   test("a response that fails its own schema goes out as internal, never malformed", async () => {
     const e = new Engine();

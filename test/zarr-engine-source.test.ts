@@ -105,6 +105,52 @@ async function opened(s: DataSource, recording = BIDS, representation?: string) 
   return r.value;
 }
 
+describe("the per-process caches are bounded", () => {
+  const ids = ["nm099510", "nm099511", "nm099512", "nm099513", "nm099514"];
+  const count = (path: string) => seen.filter((s) => s.path === path).length;
+  const indexPath = (id: string) => `/${id}/zarr/index.json`;
+  const recordsPath = (id: string) => `/data/${id}/1.0.0/records.json`;
+
+  function addDatasets() {
+    for (const id of ids) {
+      files.set(indexPath(id), {
+        body: JSON.stringify(indexWithBase({ ...nm099500Index, dataset_id: id })),
+      });
+      files.set(`/data/${id}`, {
+        body: JSON.stringify({ dataset_id: id, latest: "1.0.0", versions: [{ version: "1.0.0" }] }),
+      });
+      files.set(recordsPath(id), { body: JSON.stringify([RECORD]) });
+    }
+  }
+
+  test("a 5th dataset evicts the least recently used index, which is then fetched again", async () => {
+    addDatasets();
+    const s = source();
+    for (const id of ids.slice(0, 4)) expect((await s.readIndex(id)).status).toBe("ok");
+    await s.readIndex(ids[0]); // refresh: ids[1] is now the oldest
+    expect(count(indexPath(ids[0]))).toBe(1);
+    await s.readIndex(ids[4]); // evicts ids[1]
+    await s.readIndex(ids[0]);
+    await s.readIndex(ids[2]);
+    expect(count(indexPath(ids[0]))).toBe(1);
+    expect(count(indexPath(ids[2]))).toBe(1);
+    await s.readIndex(ids[1]);
+    expect(count(indexPath(ids[1]))).toBe(2);
+  });
+
+  test("a 5th dataset evicts the least recently used records, which are then fetched again", async () => {
+    addDatasets();
+    const s = source();
+    for (const id of ids.slice(0, 4)) expect((await s.readRecords(id)).status).toBe("ok");
+    await s.readRecords(ids[0]);
+    await s.readRecords(ids[4]); // evicts ids[1]
+    await s.readRecords(ids[0]);
+    expect(count(recordsPath(ids[0]))).toBe(1);
+    await s.readRecords(ids[1]);
+    expect(count(recordsPath(ids[1]))).toBe(2);
+  });
+});
+
 describe("nm099500: representations and the bound recording", () => {
   test("opens by BIDS path and by zarr path, and recording is the BIDS path both times", async () => {
     const s = source();

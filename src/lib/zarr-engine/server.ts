@@ -46,6 +46,11 @@ export interface ServerOptions {
   log?: (line: string) => void;
 }
 
+/** The most handles open at once. Each holds a parsed index and its geometry, and nothing but
+ *  `release` frees one, so a client that never releases is told to rather than allowed to
+ *  grow the engine without bound. */
+export const MAX_OPEN_HANDLES = 1024;
+
 const MAX_ID = Number.MAX_SAFE_INTEGER;
 const VERSION_RE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
@@ -142,6 +147,13 @@ export class EngineServer {
 
     switch (request.type) {
       case "open": {
+        if (this.handles.size >= MAX_OPEN_HANDLES) {
+          return errorReply(
+            rid,
+            "too_large",
+            `${MAX_OPEN_HANDLES} handles are open; release handles you no longer need before opening another`,
+          );
+        }
         const opened = await openRecording(
           this.options.source,
           {

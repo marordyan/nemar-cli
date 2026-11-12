@@ -66,6 +66,35 @@ const MAX_RECORDS_BYTES = 64 * 1024 * 1024;
  *  `records.json` cannot make the reply too big to frame. */
 export const RECORD_MAX_BYTES = 256 * 1024;
 
+/** How many datasets' parsed indexes, and how many datasets' records, the process keeps: the
+ *  most recently used ones. An index can be megabytes and a long-lived engine may visit any
+ *  number of datasets, so the maps are bounded; an evicted dataset is fetched again. */
+export const MAX_CACHED_DATASETS = 4;
+
+/** A small least-recently-used map: a `get` refreshes, a `set` past `max` drops the oldest. */
+class LruCache<V> {
+  private readonly entries = new Map<string, V>();
+  constructor(private readonly max: number) {}
+
+  get(key: string): V | undefined {
+    const hit = this.entries.get(key);
+    if (hit === undefined) return undefined;
+    this.entries.delete(key);
+    this.entries.set(key, hit);
+    return hit;
+  }
+
+  set(key: string, value: V): void {
+    this.entries.delete(key);
+    this.entries.set(key, value);
+    while (this.entries.size > this.max) {
+      const oldest = this.entries.keys().next();
+      if (oldest.done) break;
+      this.entries.delete(oldest.value);
+    }
+  }
+}
+
 /**
  * The v3 index schema with the two base URLs relaxed from "https" to "any string". The shared
  * schema is the producer's contract and stays untouched; the engine applies its own host rule
@@ -106,7 +135,7 @@ export interface DataSource {
   readonly fetcher: Fetcher;
   /** Caches the read core's footers and array metadata. */
   readonly jsonCache: JsonCache;
-  /** The dataset's Zarr index, parsed; kept for the life of the process once read. */
+  /** The dataset's Zarr index, parsed; the {@link MAX_CACHED_DATASETS} most recent are kept. */
   readIndex(datasetId: string): Promise<IndexOutcome>;
   /** The dataset's latest published `records.json`. */
   readRecords(datasetId: string): Promise<RecordsOutcome>;
@@ -161,8 +190,8 @@ export function publicSource(options: PublicSourceOptions = {}): DataSource {
   const publicFetcher = createPublicFetcher();
   const fetcher = withRangeCache(withBodyCaps(publicFetcher), rangeCache);
   const jsonCache = new MemoryJsonCache("public");
-  const indexes = new Map<string, EngineIndex>();
-  const records = new Map<string, unknown[]>();
+  const indexes = new LruCache<EngineIndex>(MAX_CACHED_DATASETS);
+  const records = new LruCache<unknown[]>(MAX_CACHED_DATASETS);
 
   return {
     kind: "public",

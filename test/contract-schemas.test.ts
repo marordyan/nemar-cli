@@ -678,6 +678,10 @@ describe("old-CLI compatibility: no schema in the contract is strict", () => {
       side: "strict",
       valid: () => ({ maxOpenReservations: 1, maxReservedMilliPerDay: 1 }),
     },
+    ComputeTenantPolicySchema: {
+      side: "strict",
+      valid: () => ({ maxLiveJobs: 20, reserved: { people: 8, pipelines: 2, partner: 0 } }),
+    },
     ResultManifestSchema: { side: "strict", valid: () => ({ job_id: JOB, files: [] }) },
     LauncherResultSchema: {
       side: "strict",
@@ -1388,7 +1392,7 @@ describe("old-CLI compatibility: no schema in the contract is strict", () => {
   ];
 
   test("the import guard flags every shape of taking a strict compute schema, and only those", () => {
-    expect(STRICT_NAMES).toHaveLength(9);
+    expect(STRICT_NAMES).toHaveLength(10);
     expect(IMPORT_PROBES.length).toBeGreaterThan(55);
     for (const [label, file, text, offends] of IMPORT_PROBES) {
       const found = strictComputeTakes(CONTRACT_DIR, file, text, STRICT_NAMES);

@@ -3,12 +3,15 @@
  *
  * Reports which external tools NEMAR needs (git, git-annex, gh, aws, deno) are
  * installed, their versions, and platform-specific install commands for the
- * missing ones. Diagnostic only: always exits 0.
+ * missing ones, and whether the local Zarr engine starts and its cache directory is writable.
+ * Diagnostic only: always exits 0.
  */
 import chalk from "chalk";
 import { Command } from "commander";
 import { getEnvironmentReport } from "../lib/debug-log.js";
 import { checkAllTools } from "../lib/prerequisites.js";
+import { plain } from "../lib/terminal-text.js";
+import { checkZarrEngine } from "../lib/zarr-engine/doctor.js";
 
 export interface DoctorOptions {
   report?: boolean;
@@ -45,6 +48,16 @@ export async function doctorAction(options: DoctorOptions = {}): Promise<void> {
     }
   }
 
+  // The local Zarr engine (`nemar zarr read`). Diagnostic like the rest: it never changes the
+  // exit code.
+  console.log(chalk.bold("\n  Zarr engine\n"));
+  for (const c of await checkZarrEngine()) {
+    const mark = c.ok ? chalk.green("✓") : chalk.red("✗");
+    console.log(
+      `  ${mark} ${c.name.padEnd(16)} ${c.ok ? chalk.dim(plain(c.detail)) : chalk.red(plain(c.detail))}`,
+    );
+  }
+
   const missingRequired = tools.filter((t) => !t.available && t.required);
   console.log("");
   if (missingRequired.length === 0) {
@@ -63,6 +76,6 @@ export async function doctorAction(options: DoctorOptions = {}): Promise<void> {
 }
 
 export const doctorCommand = new Command("doctor")
-  .description("Check that required tools (git, git-annex, gh, aws, deno) are installed")
+  .description("Check that required tools (git, git-annex, gh, aws, deno) and the Zarr engine work")
   .option("--report", "Print a shareable environment report (no HTTP data) for bug reports")
   .action(doctorAction);

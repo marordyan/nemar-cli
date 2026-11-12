@@ -3,10 +3,12 @@
  * caches the read core is wired to.
  *
  * **Public data only, and no credentials, by construction.** Phase 4 serves public Zarr.
- * The fetcher built here never sends an `Authorization` or `Cookie` header, sends no
- * `fetch` credentials, and refuses a request whose headers carry either (or whose URL
- * carries a user name or password), so a later change that hands it a key fails loudly
- * instead of leaking one.
+ * The fetcher built here never sends an `Authorization`, `Cookie` or `Proxy-Authorization`
+ * header, sends no `fetch` credentials, and refuses a request whose headers carry any of them
+ * (or whose URL carries a user name or password), so a later change that hands it a key fails
+ * loudly instead of leaking one. Bun honours `HTTP_PROXY` and `HTTPS_PROXY`; the
+ * no-credentials guarantee does not cover the userinfo of a proxy URL the environment names,
+ * which is the user's own configuration.
  *
  * **Host policy.** Every URL the engine requests, redirect targets included, must be
  * `https`, or `http` to a loopback address only (the exception ADR 0114 makes for
@@ -129,13 +131,17 @@ export type BaseFetch = (url: string, init: RequestInit) => Promise<Response>;
  */
 export function createPublicFetcher(baseFetch: BaseFetch = (u, i) => fetch(u, i)): Fetcher {
   return async (url, init) => {
+    // Normalised through `Headers`, so a plain record, a `Headers` instance and an array of
+    // pairs are all inspected, never skipped (`Object.entries` of a `Headers` is empty).
     const headers: Record<string, string> = {};
-    for (const [name, value] of Object.entries(init?.headers ?? {})) {
-      if (FORBIDDEN_HEADERS.includes(name.toLowerCase())) {
-        throw new Error(`the public fetcher refuses a request carrying ${name}`);
-      }
-      headers[name] = value;
-    }
+    new Headers(init?.headers as ConstructorParameters<typeof Headers>[0]).forEach(
+      (value, name) => {
+        if (FORBIDDEN_HEADERS.includes(name.toLowerCase())) {
+          throw new Error(`the public fetcher refuses a request carrying ${name}`);
+        }
+        headers[name] = value;
+      },
+    );
     let target = url;
     for (let hop = 0; ; hop++) {
       const check = checkHost(target);

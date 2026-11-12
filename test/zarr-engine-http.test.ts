@@ -203,6 +203,19 @@ describe("no https to http redirect", () => {
 });
 
 describe("no credentials, by construction", () => {
+  test("Proxy-Authorization is refused, and so is a credential header in a Headers instance", async () => {
+    const f = createPublicFetcher();
+    await expect(
+      f(`${base()}/object`, { headers: { "Proxy-Authorization": "Basic x" } }),
+    ).rejects.toThrow(/proxy-authorization/i);
+    const h = new Headers({ Authorization: "Bearer k" });
+    // The Fetcher type wants a record; a caller that passes a Headers instance anyway is inspected.
+    await expect(
+      f(`${base()}/object`, { headers: h as unknown as Record<string, string> }),
+    ).rejects.toThrow("refuses");
+    expect(seen).toEqual([]);
+  });
+
   test("the stand-in never receives Authorization or Cookie, on any request", async () => {
     const f = createPublicFetcher();
     await f(`${base()}/object`, rangeInit("bytes=0-9"));

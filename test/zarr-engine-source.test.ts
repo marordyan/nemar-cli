@@ -151,6 +151,60 @@ describe("the per-process caches are bounded", () => {
   });
 });
 
+describe("index paths and logged strings", () => {
+  const withStore = (
+    patch: (store: Record<string, unknown>, group: Record<string, unknown>) => void,
+  ) => {
+    const store = structuredClone(nm099500Index.stores[0]) as Record<string, unknown>;
+    const group = (store.groups as Record<string, unknown>[])[0];
+    patch(store, group);
+    files.set(`/${ID}/zarr/index.json`, {
+      body: JSON.stringify(indexWithBase({ ...nm099500Index, stores: [store] })),
+    });
+  };
+
+  for (const bad of [
+    "../x.zarr",
+    "a/../x.zarr",
+    "/abs.zarr",
+    "a?b.zarr",
+    "a#b.zarr",
+    "a\\b.zarr",
+    "a\u0001b.zarr",
+  ]) {
+    test(`a zarr path of ${JSON.stringify(bad)} is upstream_error`, async () => {
+      withStore((store) => {
+        store.zarr = bad;
+      });
+      const r = await open(source());
+      expect(r).toMatchObject({ ok: false, code: "upstream_error" });
+      expect(r.ok ? "" : r.message).toContain("zarr path");
+    });
+  }
+
+  test("a group name with a .. segment is upstream_error", async () => {
+    withStore((_store, group) => {
+      group.name = "../eeg_250hz";
+    });
+    const r = await open(source());
+    expect(r).toMatchObject({ ok: false, code: "upstream_error" });
+    expect(r.ok ? "" : r.message).toContain("group name");
+  });
+
+  test("the store.path in the no-record warning is JSON-quoted, so a newline cannot forge a line", async () => {
+    const path = "sub-synth/eeg/x\nFORGED: line.edf";
+    withStore((store) => {
+      store.path = path;
+    });
+    const r = await open(source(), path);
+    expect(r.ok).toBe(true);
+    const line = warnings.find((w) => w.includes("no record for"));
+    expect(line).toBeDefined();
+    expect(line).not.toContain("\n");
+    expect(line).toContain(JSON.stringify(path));
+  });
+});
+
 describe("nm099500: representations and the bound recording", () => {
   test("opens by BIDS path and by zarr path, and recording is the BIDS path both times", async () => {
     const s = source();

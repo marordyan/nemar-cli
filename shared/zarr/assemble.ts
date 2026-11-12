@@ -62,7 +62,9 @@ export interface AssembleWindowInput {
 
 export interface AssembleWindowResult {
   /** One `Float64Array` per requested channel, `nSamples` long, physical
-   *  units at FULL float64 precision (rounding is the caller's choice). */
+   *  units at FULL float64 precision (rounding is the caller's choice). The rows are views
+   *  (`subarray`) into ONE shared buffer, not separate allocations: writing to a row writes
+   *  to its neighbours' buffer, and keeping one row alive keeps all of them. */
   values: Float64Array[];
   /** GLOBAL sample ranges (clipped to the requested window) that were
    *  fill-substituted, ascending, adjacent ranges merged into one. */

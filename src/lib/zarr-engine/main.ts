@@ -23,6 +23,8 @@ import { DEFAULT_RANGE_CACHE_BYTES, EngineConfigError, resolveBases } from "./ht
 import { EngineServer, serve } from "./server.js";
 import { publicSource } from "./source.js";
 
+/** 256 MiB, the default for `max_payload_bytes` (its own constant, not the range cache's). */
+export const DEFAULT_MAX_PAYLOAD_BYTES = 256 * 1024 * 1024;
 export const MAX_PAYLOAD_ENV = "NEMAR_ZARR_MAX_PAYLOAD_BYTES";
 export const RANGE_CACHE_ENV = "NEMAR_ZARR_RANGE_CACHE_BYTES";
 
@@ -45,7 +47,7 @@ export async function main(env: Record<string, string | undefined> = process.env
     });
     server = new EngineServer({
       source,
-      maxPayloadBytes: envBytes(env, MAX_PAYLOAD_ENV, DEFAULT_RANGE_CACHE_BYTES),
+      maxPayloadBytes: envBytes(env, MAX_PAYLOAD_ENV, DEFAULT_MAX_PAYLOAD_BYTES),
       engineName: `nemar-zarr-engine/${pkg.version}`,
     });
   } catch (err) {

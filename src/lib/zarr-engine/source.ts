@@ -331,6 +331,17 @@ function pickRecord(records: unknown[], bidsPath: string): Record<string, unknow
   return null;
 }
 
+/** Why `value` may not be joined onto the data base as path segments, or null: a `..` segment,
+ *  a leading `/`, a `?`, `#` or `\`, or a control character. */
+export function unsafePathReason(value: string): string | null {
+  if (value.startsWith("/")) return "it starts with /";
+  if (value.split("/").includes("..")) return "it has a .. segment";
+  if (/[?#\\]/.test(value)) return "it contains ?, # or a backslash";
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: that is the check
+  if (/[\u0000-\u001f\u007f]/.test(value)) return "it contains a control character";
+  return null;
+}
+
 export async function openRecording(
   source: DataSource,
   request: { datasetId: string; recording: string; representation?: string },
@@ -374,6 +385,19 @@ export async function openRecording(
   }
   const group = (store.groups ?? []).find((g) => g.name === chosen.id);
   if (!group) return fail("not_found", `recording ${store.path} has no group ${chosen.id}`);
+  // The two names become URL path segments; the index is a published document.
+  for (const [what, value] of [
+    ["zarr path", store.zarr],
+    ["group name", group.name],
+  ] as const) {
+    const bad = unsafePathReason(value);
+    if (bad) {
+      return fail(
+        "upstream_error",
+        `the index's ${what} ${JSON.stringify(value)} for ${datasetId} is refused: ${bad}`,
+      );
+    }
+  }
 
   // A group the index does not describe well enough to read is a host problem (decision 5).
   const { sampling_frequency: rate, nchans, ntimes } = chosen;
@@ -444,15 +468,20 @@ export async function openRecording(
   let record: Record<string, unknown> | null = null;
   if (recordsOutcome.status === "ok") {
     record = pickRecord(recordsOutcome.records, store.path);
-    if (!record) warn(`[zarr-engine] no record for ${store.path} in ${datasetId} records.json`);
+    if (!record)
+      warn(
+        `[zarr-engine] no record for ${JSON.stringify(store.path)} in ${datasetId} records.json`,
+      );
     else if (new TextEncoder().encode(JSON.stringify(record)).length > RECORD_MAX_BYTES) {
       warn(
-        `[zarr-engine] the record for ${store.path} in ${datasetId} is over ${RECORD_MAX_BYTES} bytes; sending null`,
+        `[zarr-engine] the record for ${JSON.stringify(store.path)} in ${datasetId} is over ${RECORD_MAX_BYTES} bytes; sending null`,
       );
       record = null;
     }
   } else {
-    warn(`[zarr-engine] records for ${datasetId} unavailable: ${recordsOutcome.detail}`);
+    warn(
+      `[zarr-engine] records for ${datasetId} unavailable: ${JSON.stringify(recordsOutcome.detail)}`,
+    );
   }
 
   return {

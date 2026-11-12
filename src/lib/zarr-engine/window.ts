@@ -10,7 +10,9 @@
  * (`too_large`): the payload (`channels x samples x bytes per sample`) and the DECODE work
  * (every store channel x samples x 2 bytes, because a stored chunk holds every channel, so
  * naming one channel of a wide store does not make the read small) must each stay within
- * `maxPayloadBytes`. It reads with `readLevel0Window` and assembles with
+ * `maxPayloadBytes`. Each `Range` read is also capped by {@link rangeCeiling}, computed from the
+ * store's geometry, so a hostile shard footer cannot make the engine fetch more than the window
+ * can need. It reads with `readLevel0Window` and assembles with
  * `assembleChannelMajor`, which writes the window straight into one channel-major array of
  * the wire dtype: `digital` is the stored int16 with no scale or offset and never passes
  * through float64, and on a little-endian host the payload is that array's bytes, uncopied.
@@ -27,11 +29,33 @@ import {
 } from "../../../shared/contract/zarr-engine-protocol.js";
 import { assembleChannelMajor } from "../../../shared/zarr/assemble.js";
 import { readLevel0Window } from "../../../shared/zarr/read.js";
+import { footerByteLength } from "../../../shared/zarr/sharding.js";
 import { secondsToSampleWindow } from "../../../shared/zarr/window-samples.js";
+import { withRangeCeiling } from "./http.js";
 import type { Binding, DataSource, SourceFailure, SourceResult } from "./source.js";
 
 /** Bytes per digital (int16) sample in a store, for the decode-work check. */
 const STORE_SAMPLE_BYTES = 2;
+
+/** What compression may add to one stored chunk: a blosc2 chunk that does not compress is
+ *  stored with at most 32 bytes of header (BLOSC2_MAX_OVERHEAD); doubled for margin. */
+const CHUNK_OVERHEAD_BYTES = 64;
+
+/** The most bytes one `Range` read of a window can legitimately need: a coalesced read covers
+ *  consecutive chunks of one shard, a window of `nSamples` touches at most
+ *  `ceil(nSamples / chunkSamples) + 1` chunks, and each holds every store channel. The shard
+ *  footer read is included. */
+export function rangeCeiling(geometry: {
+  nChannels: number;
+  chunkSamples: number;
+  nInner: number;
+  nSamples: number;
+}): number {
+  const { nChannels, chunkSamples, nInner, nSamples } = geometry;
+  const chunkBytes = nChannels * chunkSamples * STORE_SAMPLE_BYTES + CHUNK_OVERHEAD_BYTES;
+  const chunks = Math.ceil(nSamples / chunkSamples) + 1;
+  return Math.max(chunks * chunkBytes, footerByteLength(nInner));
+}
 
 export interface WindowPlan {
   startSample: number;
@@ -130,8 +154,9 @@ export async function readWindow(
     );
   }
 
+  const ceiling = rangeCeiling({ nChannels: storeChannels, chunkSamples, nInner, nSamples });
   const read = await readLevel0Window({
-    fetcher: source.fetcher,
+    fetcher: withRangeCeiling(source.fetcher, ceiling),
     cache: source.jsonCache,
     key: binding.cacheKey,
     dataBase: binding.dataBase,

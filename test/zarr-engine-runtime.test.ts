@@ -79,7 +79,8 @@ type Mode =
   | "short206"
   | "long206"
   | "streamed-long206"
-  | "corrupt-chunk";
+  | "corrupt-chunk"
+  | "huge-footer";
 let mode: Mode = "good";
 let rangeRequests: { path: string; range: string }[] = [];
 /** The path of EVERY request the stand-in received, Range or not. */
@@ -125,6 +126,12 @@ function serveShard(req: Request, body: Uint8Array, misbehave: boolean): Respons
         }),
         { status: 206 },
       );
+    }
+    if (mode === "huge-footer" && isFooter) {
+      // The footer claims inner chunk 0 is 1 GiB long (offset stays real).
+      const footer = body.slice(start, end + 1);
+      new DataView(footer.buffer).setBigUint64(8, 1n << 30n, true);
+      return new Response(footer, { status: 206 });
     }
     if (mode === "corrupt-chunk" && !isFooter) {
       const slice = body.slice(start, end + 1);
@@ -788,6 +795,24 @@ describe("host failures never produce a window", () => {
       });
     });
   }
+});
+
+describe("a hostile shard footer", () => {
+  test("a footer claiming a 1 GiB chunk is upstream_error, and the range is never requested", async () => {
+    await withEngine(async (e) => {
+      const h = await e.ready();
+      mode = "huge-footer";
+      const r = await e.read(h, { start_s: 0, duration_s: 1 });
+      expect(code(r), JSON.stringify(r.header)).toBe("upstream_error");
+      expect(String(r.header.message)).toContain("one read of this window can need");
+      expect(r.payload.length).toBe(0);
+      // Only the footer (a suffix range) reached shard 0: no chunk range was sent at all.
+      const shard0 = shardPath("nm099500", "eeg_250hz", 0);
+      const sent = rangeRequests.filter((q) => q.path === shard0).map((q) => q.range);
+      expect(sent.length).toBeGreaterThan(0);
+      for (const range of sent) expect(range).toMatch(/^bytes=-\d+$/);
+    });
+  });
 });
 
 describe("a store that disagrees with its index", () => {

@@ -297,6 +297,30 @@ export function withBodyCaps(fetcher: Fetcher, plainCap: number = MAX_PLAIN_BODY
   };
 }
 
+/**
+ * Wrap `fetcher` so a `Range` request asking for more than `ceiling` bytes is refused before
+ * anything is sent (the fetcher throws, which the core reports as a fetch failure).
+ *
+ * {@link withBodyCaps} bounds a body by the length its `Range` asks for, but that length comes
+ * from the shard footer, which the data host serves: a hostile footer could claim a chunk of
+ * any size. The caller sets `ceiling` from the store's own geometry (the most bytes one read
+ * of the window can legitimately need), so the footer cannot raise it.
+ */
+export function withRangeCeiling(fetcher: Fetcher, ceiling: number): Fetcher {
+  return async (url, init) => {
+    const range = init?.headers?.Range;
+    if (range !== undefined) {
+      const length = expectedRangeLength(range);
+      if (length !== null && length > ceiling) {
+        throw new Error(
+          `refused Range ${range} for ${url}: ${length} bytes is over the ${ceiling} one read of this window can need`,
+        );
+      }
+    }
+    return fetcher(url, init);
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The range cache
 // ---------------------------------------------------------------------------

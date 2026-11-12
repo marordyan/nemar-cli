@@ -68,11 +68,14 @@ const LIMITED_BY_TEXT: Record<string, string> = {
   per_invocation: `the bound of ${COMPUTE_PIPELINE_RUN_PER_INVOCATION} per invocation, run it again for more`,
   daily_cap: "the daily cap",
   live_cap: "the live cap of the pool",
+  tenant: "the tenant ceiling (NEMAR's share of the cluster)",
 };
 
 function roomLine(room: ComputePipelineRoom, when: string): string {
   const by = LIMITED_BY_TEXT[room.limited_by] ?? word(room.limited_by);
-  return `  room ${when}: ${room.daily_left} left of the daily cap, ${room.live_left} left of the live cap; bounded by ${by}`;
+  return `  room ${when}: ${room.daily_left} left of the daily cap, ${room.live_left} left of the live cap${
+    room.tenant_left === undefined ? "" : `, ${room.tenant_left} left under the tenant ceiling`
+  }; bounded by ${by}`;
 }
 
 function printRun(res: ComputePipelineRunResponse): void {
@@ -177,6 +180,10 @@ Runs a processing recipe on NEMAR's own datasets through the compute gateway, or
 The caps are the owner's, for every path: a run that finds the pool full or the day's cap used stops
 with over_concurrency or daily_cap_reached and dispatches nothing. One named dataset is refused as
 over_concurrency when the pool is full; it counts toward the daily cap and is not refused by it.
+NEMAR's share of the cluster has a ceiling too: a job that would pass it, or take slots kept for
+people or partners, is refused as platform_busy, which stops a run (try again shortly). A run is
+clamped to the room under it (the room line says how many are left and, when it is the smallest,
+that the tenant ceiling bounded the run), and a dry run of one named dataset reports it as blocked.
 
 Only a public, non-anonymous, first-published, non-withdrawn dataset with EEG data and at least one
 version is eligible; the Worker decides that from its own record, never from this command. A dataset

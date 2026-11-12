@@ -189,7 +189,7 @@ describe("run --eligible", () => {
     expect(r.stdout).toContain("nemar-floor: dispatched 2 of 2 tried");
     expect(r.stdout).toContain("stopped by over_concurrency");
     expect(r.stdout).toContain(
-      "room before the run: 50 left of the daily cap, 2 left of the live cap; bounded by the live cap of the pool",
+      "room before the run: 50 left of the daily cap, 2 left of the live cap, 12 left under the tenant ceiling; bounded by the live cap of the pool",
     );
     expect(await count(env, "compute_jobs")).toBe(2);
     const again = await runCli("admin", ["run", "nemar-floor", "--eligible", "--limit", "5"]);
@@ -312,7 +312,7 @@ describe("--dry-run", () => {
     expect(r.stdout).toContain("would dispatch 2:");
     expect(r.stdout).toContain("nm000104 v1.0.0");
     expect(r.stdout).toContain(
-      "room now: 50 left of the daily cap, 8 left of the live cap; bounded by the limit asked for",
+      "room now: 50 left of the daily cap, 8 left of the live cap, 12 left under the tenant ceiling; bounded by the limit asked for",
     );
     expect([
       await count(env, "compute_pipeline_stamps"),

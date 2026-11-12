@@ -63,10 +63,12 @@ open('$ROOT/native_binary.txt','w').write(str(p))
 cat native_binary.txt 2>/dev/null && file "$(cat native_binary.txt)" | head -1
 
 # ---- real recording: ds002718 sub-002 (NEMAR NFS mirror), 70 EEG channels, microvolts
+# NEMAR_PROJECT_DIR: the cluster project directory that holds the openneuro mirror (set by the caller).
 mkdir -p data
 venvs/cpu/bin/python - <<'PY'
 import mne, numpy as np
-src = "/expanse/projects/nemar/openneuro/ds002718/sub-002/eeg/sub-002_task-FaceRecognition_eeg.set"
+import os
+src = os.environ["NEMAR_PROJECT_DIR"] + "/openneuro/ds002718/sub-002/eeg/sub-002_task-FaceRecognition_eeg.set"
 raw = mne.io.read_raw_eeglab(src, preload=True, verbose="ERROR")
 x = raw.get_data(picks=raw.ch_names[:70]) * 1e6
 print("ds002718 sub-002", x.shape, "sfreq", raw.info["sfreq"])

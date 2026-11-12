@@ -369,11 +369,23 @@ describe("compute-admin: every exported schema is open", () => {
       "per_invocation",
       "daily_cap",
       "live_cap",
+      "tenant",
     ]);
     expect(admin.COMPUTE_PIPELINE_RUN_PER_INVOCATION).toBe(10);
     const room = { daily_left: 4, live_left: 0, limited_by: "live_cap" };
     const run = { ok: true, dry_run: false, recipe: "nemar-floor", room };
     expect(admin.ComputePipelineRunResponseSchema.safeParse(run).success).toBe(true);
+    // The tenant ceiling's room (issue #2121) is optional and a whole number, so an older Worker still reads.
+    const tenantRoom = { daily_left: 4, live_left: 3, tenant_left: 0, limited_by: "tenant" };
+    expect(
+      admin.ComputePipelineRunResponseSchema.safeParse({ ...run, room: tenantRoom }).success,
+    ).toBe(true);
+    expect(
+      admin.ComputePipelineRunResponseSchema.safeParse({
+        ...run,
+        room: { ...tenantRoom, tenant_left: "0" },
+      }).success,
+    ).toBe(false);
     // A response without a room (a named dataset, an older Worker) still reads.
     expect(
       admin.ComputePipelineRunResponseSchema.safeParse({ ok: true, dry_run: true, recipe: "x" })

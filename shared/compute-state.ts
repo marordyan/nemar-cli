@@ -527,6 +527,10 @@ export const COMPUTE_REFUSAL_CODES = [
   // transient fault of its database. 503 like `compute_disabled`, but a DIFFERENT word, because that one
   // says the platform is switched off and a caller told so stops retrying.
   "policy_unavailable",
+  // Issue #2121, phase P2: NEMAR's tenant-wide ceiling on live jobs is full for this job's class (the
+  // owner's `tenant.maxLiveJobs` less the floors kept for the other classes). Retryable once a job ends;
+  // it is not a queue, and it never says which class or whose jobs hold the slots.
+  "platform_busy",
 ] as const;
 
 export type ComputeRefusalCode = (typeof COMPUTE_REFUSAL_CODES)[number];
@@ -568,6 +572,7 @@ export const COMPUTE_REFUSAL_STATUS = {
   guard_refused: 409,
   results_incomplete: 409,
   policy_unavailable: 503,
+  platform_busy: 409,
 } as const satisfies Record<ComputeRefusalCode, number>;
 
 /**

@@ -85,6 +85,7 @@ const SENTENCES = {
   platform_budget_exhausted: "The platform budget is exhausted.",
   suspended: "The pipelines pool is suspended.",
   over_concurrency: "NEMAR's pipelines already have as many live jobs as the owner allows.",
+  platform_busy: "NEMAR's share of the cluster is full right now; try again shortly.",
   daily_cap_reached: "NEMAR's pipelines have already made as many jobs today as the owner allows.",
   invalid_spec: "The job could not be built from the recipe.",
   create_failed: "The job could not be created.",
@@ -343,6 +344,7 @@ export function registerComputePipelineAdminRoutes(admin: AdminRouter): void {
                 room: {
                   daily_left: run.room.daily_left,
                   live_left: run.room.live_left,
+                  tenant_left: run.room.tenant_left,
                   limited_by: run.room.limited_by,
                 },
               }),

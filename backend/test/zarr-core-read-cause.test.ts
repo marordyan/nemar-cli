@@ -90,7 +90,7 @@ afterAll(() => {
   server.stop(true);
 });
 
-async function read(startSample: number, endSampleExclusive: number) {
+async function read(startSample: number, endSampleExclusive: number, nChannels?: number) {
   return readLevel0Window({
     fetcher: (url, init) => fetch(url, init),
     cache: new MapJsonCache(),
@@ -101,7 +101,7 @@ async function read(startSample: number, endSampleExclusive: number) {
     shardSamples: expected.shard_samples,
     chunkSamples: expected.chunk_samples,
     nInner: expected.n_inner_per_shard,
-    nChannelsInStore: expected.n_channels,
+    nChannelsInStore: nChannels ?? expected.n_channels,
     nSamplesTotal: expected.n_samples,
     startSample,
     endSampleExclusive,
@@ -138,6 +138,19 @@ describe("readLevel0Window failure cause", () => {
     const r = await read(0, 1000);
     expect(r).toMatchObject({ ok: false, stage: "chunk", cause: "decode" });
   });
+
+  test("chunks that decode to another length than the channel count says are decode", async () => {
+    behaviour = "good";
+    // The shards hold 4 channels; claiming 3 makes every decoded chunk 1000 values too long.
+    const r = await read(0, 1000, 3);
+    expect(r).toMatchObject({ ok: false, stage: "chunk", cause: "decode" });
+    expect(r.ok ? "" : r.detail).toContain("decoded to 4000 values, expected 3000");
+  });
+
+  // `cause: "plan"` (read.ts) has no real path to test: the footer is always read as exactly
+  // `nInner` entries and the window's local indices are always below `nInner`, so a missing or
+  // absent entry in a planned read cannot be produced through `readLevel0Window`. It is a
+  // guard against a future planner bug, and the engine maps it to upstream_error like `fetch`.
 
   test("an unreachable host is fetch", async () => {
     behaviour = "good";

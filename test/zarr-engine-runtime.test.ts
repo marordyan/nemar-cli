@@ -18,6 +18,7 @@
 
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -81,6 +82,8 @@ type Mode =
   | "corrupt-chunk";
 let mode: Mode = "good";
 let rangeRequests: { path: string; range: string }[] = [];
+/** The path of EVERY request the stand-in received, Range or not. */
+let allRequests: string[] = [];
 let server: ReturnType<typeof Bun.serve>;
 const base = () => `http://127.0.0.1:${server.port}`;
 const shardPath = (id: string, group: string, n: number) =>
@@ -155,6 +158,22 @@ function emptyGroupNameIndex() {
 
 /** nm099505: the same store, but with 5000 extra groups, so its `opened` header is over the
  *  1 MiB frame limit and cannot be framed. The first group is the real one. */
+/** nm099506: the index says the store has 3 channels (and zarr.json has 3 scales and offsets),
+ *  but the shards hold 4: every chunk decodes to 4 x 1000 values where 3 x 1000 are expected. */
+function threeChannelIndex() {
+  const base = indexFor("nm099506", "nm099506");
+  const store = base.stores[0];
+  return { ...base, stores: [{ ...store, groups: [{ ...store.groups[0], n_channels: 3 }] }] };
+}
+const level0ThreeChannels = {
+  ...level0,
+  attributes: {
+    ...level0.attributes,
+    scale: level0.attributes.scale.slice(0, 3),
+    offset: level0.attributes.offset.slice(0, 3),
+  },
+};
+
 function hugeHeaderIndex() {
   const base = indexFor("nm099505", "nm099505");
   const store = base.stores[0];
@@ -170,6 +189,7 @@ beforeAll(() => {
     fetch(req) {
       const path = new URL(req.url).pathname;
       const range = req.headers.get("range");
+      allRequests.push(path);
       if (range) rangeRequests.push({ path, range });
       const doc = (d: unknown) => Response.json(d);
       if (path === "/nm099500/zarr/index.json") return doc(indexFor("nm099500", "nm099500"));
@@ -180,6 +200,10 @@ beforeAll(() => {
       // A group with an empty name: valid in the index, but it cannot be a protocol representation id.
       if (path === "/nm099503/zarr/index.json") return doc(emptyGroupNameIndex());
       if (path === "/nm099504/zarr/index.json") return doc(indexFor("nm099504", "nm099500"));
+      if (path === "/nm099506/zarr/index.json") return doc(threeChannelIndex());
+      if (path === `/nm099506/zarr/${ZARR}/eeg_250hz/0/zarr.json`) return doc(level0ThreeChannels);
+      if (path === shardPath("nm099506", "eeg_250hz", 0)) return serveShard(req, shard0, false);
+      if (path === shardPath("nm099506", "eeg_250hz", 1)) return serveShard(req, shard1, false);
       if (path === "/nm099505/zarr/index.json") return doc(hugeHeaderIndex());
       if (path === "/nm000111/zarr/index.json") return doc(legacyIndex);
       for (const id of ["nm099500", "nm099502", "nm099503", "nm099505"]) {
@@ -209,6 +233,17 @@ afterAll(() => server.stop(true));
 beforeEach(() => {
   mode = "good";
   rangeRequests = [];
+  allRequests = [];
+});
+
+// Every Engine child process is registered here and killed after the test, whatever it
+// asserted, so a failing test cannot leak a process.
+const engines: { proc: { kill(): void; exited: Promise<number> } }[] = [];
+afterEach(async () => {
+  for (const e of engines.splice(0)) {
+    e.proc.kill();
+    await e.proc.exited;
+  }
 });
 
 // --- The client ------------------------------------------------------------------------------
@@ -240,6 +275,7 @@ class Engine {
         ...env,
       },
     });
+    engines.push(this);
     const stdout = this.proc.stdout as ReadableStream<Uint8Array>;
     this.frames = readFrames(stdout, { maxPayloadBytes: 1 << 28 })[Symbol.asyncIterator]();
   }
@@ -494,6 +530,7 @@ describe("read_window values", () => {
   test("the zarr-python spot checks of nm099500-expected.json hold", async () => {
     await withEngine(async (e) => {
       const h = await e.ready();
+      let checked = 0;
       for (const spot of expected.spot_checks as {
         channel: number;
         global_sample: number;
@@ -503,6 +540,7 @@ describe("read_window values", () => {
         addressable_via_read_window: boolean;
       }[]) {
         if (!spot.addressable_via_read_window) continue;
+        checked++;
         const args = {
           start_s: spot.global_sample / RATE,
           duration_s: 1 / RATE,
@@ -516,6 +554,8 @@ describe("read_window values", () => {
           spot.fill_value_substituted,
         );
       }
+      // The loop must have checked something: all-skipped would pass vacuously.
+      expect(checked).toBeGreaterThan(0);
     });
   });
 
@@ -529,6 +569,38 @@ describe("read_window values", () => {
       for (let s = 0; s < 250; s++) {
         expect(rows[0][s]).toBe(referenceDigital[3 * N + s] * SCALE[3] + OFFSET[3]);
         expect(rows[1][s]).toBe(referenceDigital[1 * N + s] * SCALE[1] + OFFSET[1]);
+      }
+    });
+  });
+
+  test("an unordered 3-channel read across an absent chunk equals the core and zarr-python", async () => {
+    const channels = [3, 0, 2];
+    const w = WINDOWS.touchAbsent;
+    const reference = await coreWindow(w.start, w.n, channels);
+    await withEngine(async (e) => {
+      const h = await e.ready();
+      for (const units of ["physical", "digital"] as const) {
+        const win = await e.read(h, {
+          start_s: w.start_s,
+          duration_s: w.duration_s,
+          channels,
+          units,
+        });
+        expect(win.header.channels).toEqual(channels);
+        expect(win.header.filled_ranges).toEqual([{ start_sample: 2000, end_sample: 2125 }]);
+        const rows = rowsOf(win);
+        const ref = units === "physical" ? reference.physical : reference.digital;
+        let differences = 0;
+        channels.forEach((c, row) => {
+          for (let s = 0; s < w.n; s++) {
+            if (rows[row][s] !== ref.values[row][s]) differences++;
+            const digital = s < 125 ? referenceDigital[c * N + w.start + s] : 0;
+            const want =
+              units === "digital" ? digital : s < 125 ? digital * SCALE[c] + OFFSET[c] : OFFSET[c];
+            if (rows[row][s] !== want) differences++;
+          }
+        });
+        expect(differences).toBe(0);
       }
     });
   });
@@ -549,6 +621,18 @@ describe("read_window values", () => {
 });
 
 describe("the cache", () => {
+  test("a second open of the same dataset sends no request at all", async () => {
+    await withEngine(async (e) => {
+      await e.hello();
+      expect((await e.open()).header.type).toBe("opened");
+      expect(allRequests.filter((p) => p === "/nm099500/zarr/index.json").length).toBe(1);
+      const after = allRequests.length;
+      expect(after).toBeGreaterThan(1);
+      expect((await e.open()).header.type).toBe("opened");
+      expect(allRequests.length).toBe(after);
+    });
+  });
+
   test("the same read_window again sends no range request", async () => {
     await withEngine(async (e) => {
       const h = await e.ready();
@@ -618,6 +702,29 @@ describe("refusals and limits", () => {
     );
   });
 
+  test("a read of exactly max_payload_bytes is accepted, and one byte fewer allowed is too_large", async () => {
+    // 4 channels x 250 samples x 8 bytes = 8000 payload bytes; the decode work is 2000.
+    await withEngine(
+      async (e) => {
+        const h = await e.ready();
+        const win = await e.read(h, { start_s: 0, duration_s: 1 });
+        expect(win.header.type).toBe("window");
+        expect(win.payload.length).toBe(8000);
+      },
+      { NEMAR_ZARR_MAX_PAYLOAD_BYTES: "8000" },
+    );
+    await withEngine(
+      async (e) => {
+        const h = await e.ready();
+        rangeRequests = [];
+        const r = await e.read(h, { start_s: 0, duration_s: 1 });
+        expect(code(r)).toBe("too_large");
+        expect(rangeRequests).toEqual([]);
+      },
+      { NEMAR_ZARR_MAX_PAYLOAD_BYTES: "7999" },
+    );
+  });
+
   test("a small payload from a wide store is refused on its decode work, before any fetch", async () => {
     await withEngine(
       async (e) => {
@@ -681,6 +788,18 @@ describe("host failures never produce a window", () => {
       });
     });
   }
+});
+
+describe("a store that disagrees with its index", () => {
+  test("chunks that decode to the wrong number of values are decode_error", async () => {
+    await withEngine(async (e) => {
+      const h = await e.ready("nm099506");
+      const r = await e.read(h, { start_s: 0, duration_s: 1 });
+      expect(code(r), JSON.stringify(r.header)).toBe("decode_error");
+      expect(String(r.header.message)).toContain("decoded to");
+      expect(r.payload.length).toBe(0);
+    });
+  });
 });
 
 describe("protocol rules", () => {

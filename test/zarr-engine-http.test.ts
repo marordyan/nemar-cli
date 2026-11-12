@@ -20,6 +20,8 @@ import {
   storeIdentity,
   withBodyCaps,
   withRangeCache,
+  zarrBaseForApi,
+  zarrBaseSource,
 } from "../src/lib/zarr-engine/http.js";
 
 interface Seen {
@@ -153,6 +155,52 @@ describe("host policy", () => {
     expect(() => resolveBases({ NEMAR_ZARR_DATA_PLANE: "http://example.com/data" })).toThrow(
       EngineConfigError,
     );
+  });
+
+  test("the zarr base follows the account's API host", () => {
+    expect(resolveBases({}, "https://api.nemar.org")).toEqual({
+      zarrBase: "https://zarr.nemar.org",
+      dataPlaneBase: "https://api.nemar.org/data",
+    });
+    expect(resolveBases({}, "https://api-test.nemar.org/")).toEqual({
+      zarrBase: "https://zarr-test.nemar.org",
+      dataPlaneBase: "https://api-test.nemar.org/data",
+    });
+  });
+
+  test("any other API host falls back to the production zarr base", () => {
+    for (const api of [
+      "https://api.example.org",
+      "http://127.0.0.1:8787",
+      "https://zarr-test.nemar.org.evil.example",
+      "not a url",
+    ]) {
+      expect(zarrBaseForApi(api)).toEqual({ base: "https://zarr.nemar.org", source: "default" });
+    }
+    expect(resolveBases({}, "http://127.0.0.1:8787")).toEqual({
+      zarrBase: "https://zarr.nemar.org",
+      dataPlaneBase: "http://127.0.0.1:8787/data",
+    });
+  });
+
+  test("NEMAR_ZARR_BASE and NEMAR_ZARR_DATA_PLANE override the account, and the host rule still applies", () => {
+    expect(
+      resolveBases(
+        { NEMAR_ZARR_BASE: "http://127.0.0.1:9", NEMAR_ZARR_DATA_PLANE: "http://127.0.0.1:9/data" },
+        "https://api-test.nemar.org",
+      ),
+    ).toEqual({ zarrBase: "http://127.0.0.1:9", dataPlaneBase: "http://127.0.0.1:9/data" });
+    expect(() =>
+      resolveBases({ NEMAR_ZARR_BASE: "http://localhost:9" }, "https://api-test.nemar.org"),
+    ).toThrow(EngineConfigError);
+  });
+
+  test("zarrBaseSource says where the base came from", () => {
+    expect(zarrBaseSource({ NEMAR_ZARR_BASE: "http://127.0.0.1:9" }, "https://api.nemar.org")).toBe(
+      "env",
+    );
+    expect(zarrBaseSource({}, "https://api-test.nemar.org")).toBe("account");
+    expect(zarrBaseSource({}, "https://api.example.org")).toBe("default");
   });
 
   test("the fetcher refuses a non-loopback http URL without sending anything", async () => {

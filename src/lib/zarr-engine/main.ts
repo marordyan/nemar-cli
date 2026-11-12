@@ -6,7 +6,9 @@
  * There is no CLI command yet (phase 5).
  *
  * Environment:
- *   NEMAR_ZARR_BASE              where `<id>/zarr/index.json` is read (default https://zarr.nemar.org)
+ *   NEMAR_ZARR_BASE              where `<id>/zarr/index.json` is read (default: the host of the active account:
+ *                                https://zarr.nemar.org for api.nemar.org, https://zarr-test.nemar.org for
+ *                                api-test.nemar.org, production for any other API host)
  *   NEMAR_ZARR_DATA_PLANE        the data plane's `/data` mount (default: the API origin + /data)
  *   NEMAR_ZARR_MAX_PAYLOAD_BYTES the largest window payload, and bound on a read's decode work
  *                                (default 256 MiB)

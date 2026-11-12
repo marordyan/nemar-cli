@@ -334,7 +334,7 @@ export interface RangeCacheStats {
 
 /** What a `Range` header asks for, as a body length: `bytes=a-b` is b-a+1 and `bytes=-N`
  *  is N (the cached footers are always shorter than their shard). Null for any other form. */
-function expectedRangeLength(range: string): number | null {
+export function expectedRangeLength(range: string): number | null {
   const m = /^bytes=(?:(\d+)-(\d+)|-(\d+))$/.exec(range);
   if (!m) return null;
   if (m[3] !== undefined) return Number(m[3]);

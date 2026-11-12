@@ -159,7 +159,7 @@ export async function readWindow(
   const ceiling = rangeCeiling({ nChannels: storeChannels, chunkSamples, nInner, nSamples });
   const read = await readLevel0Window({
     fetcher: withRangeCeiling(binding.fetcher, ceiling),
-    cache: source.jsonCache,
+    cache: binding.jsonCache,
     key: binding.cacheKey,
     dataBase: binding.dataBase,
     zarr: binding.store.zarr,

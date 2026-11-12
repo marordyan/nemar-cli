@@ -11,6 +11,8 @@
  *   NEMAR_ZARR_MAX_PAYLOAD_BYTES the largest window payload, and bound on a read's decode work
  *                                (default 256 MiB)
  *   NEMAR_ZARR_RANGE_CACHE_BYTES bound of the in-memory range cache (default 256 MiB)
+ *   NEMAR_ZARR_DISK_CACHE_DIR    the disk cache's directory (default <config dir>/zarr-cache/public/v1)
+ *   NEMAR_ZARR_DISK_CACHE_BYTES  bound of the disk cache (default 2 GiB; 0 turns it off)
  * The two bases must be https, or http to a loopback address; they are NOT ADR 0114's
  * `NEMAR_DATA_HOSTS` and never decide where a credential goes (the engine sends none).
  *
@@ -19,6 +21,7 @@
  */
 
 import pkg from "../../../package.json" with { type: "json" };
+import { resolveDiskCache } from "./disk-cache.js";
 import { DEFAULT_RANGE_CACHE_BYTES, EngineConfigError, resolveBases } from "./http.js";
 import { EngineServer, serve } from "./server.js";
 import { publicSource } from "./source.js";
@@ -44,6 +47,7 @@ export async function main(env: Record<string, string | undefined> = process.env
     const source = publicSource({
       bases: resolveBases(env),
       rangeCacheBytes: envBytes(env, RANGE_CACHE_ENV, DEFAULT_RANGE_CACHE_BYTES),
+      diskCache: resolveDiskCache(env),
     });
     server = new EngineServer({
       source,

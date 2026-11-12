@@ -26,7 +26,9 @@ import {
   setDefaultTimeout,
   test,
 } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Ajv2020 } from "ajv/dist/2020";
 import { buildReadRecipe } from "../shared/contract/mcp.js";
 import {
@@ -86,6 +88,11 @@ let rangeRequests: { path: string; range: string }[] = [];
 /** The path of EVERY request the stand-in received, Range or not. */
 let allRequests: string[] = [];
 let server: ReturnType<typeof Bun.serve>;
+/** A second origin that serves the same paths, for the disk-cache origin test. */
+let alias: ReturnType<typeof Bun.serve>;
+/** What the next index says: its `updated_utc` and the origin of its `data_base`. */
+let updatedUtcOverride: string | null = null;
+let dataOriginOverride: string | null = null;
 const base = () => `http://127.0.0.1:${server.port}`;
 const shardPath = (id: string, group: string, n: number) =>
   `/${id}/zarr/${ZARR}/${group}/0/c/0/${n}`;
@@ -151,7 +158,8 @@ function indexFor(id: string, dataId: string, extraGroup = false) {
   return {
     ...index,
     dataset_id: id,
-    data_base: `${base()}/${dataId}/zarr/`,
+    ...(updatedUtcOverride === null ? {} : { updated_utc: updatedUtcOverride }),
+    data_base: `${dataOriginOverride ?? base()}/${dataId}/zarr/`,
     contract_base: `${base()}/${dataId}/zarr/`,
     stores: [{ ...store, groups }],
   };
@@ -190,6 +198,7 @@ function hugeHeaderIndex() {
 }
 
 beforeAll(() => {
+  alias = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (req) => server.fetch(req) });
   server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
@@ -236,9 +245,14 @@ beforeAll(() => {
     },
   });
 });
-afterAll(() => server.stop(true));
+afterAll(() => {
+  server.stop(true);
+  alias.stop(true);
+});
 beforeEach(() => {
   mode = "good";
+  updatedUtcOverride = null;
+  dataOriginOverride = null;
   rangeRequests = [];
   allRequests = [];
 });
@@ -279,6 +293,9 @@ class Engine {
         ...process.env,
         NEMAR_ZARR_BASE: base(),
         NEMAR_ZARR_DATA_PLANE: `${base()}/data`,
+        // Off unless a test turns it on with its own directory: nothing here may touch the
+        // developer's real cache.
+        NEMAR_ZARR_DISK_CACHE_BYTES: "0",
         ...env,
       },
     });
@@ -678,6 +695,126 @@ describe("the cache", () => {
       },
       { NEMAR_ZARR_RANGE_CACHE_BYTES: "1" },
     );
+  });
+});
+
+describe("the disk cache across engine restarts (G4)", () => {
+  let cacheDir: string;
+  beforeEach(() => {
+    cacheDir = mkdtempSync(join(tmpdir(), "nemar-engine-cache-"));
+  });
+  afterEach(() => rmSync(cacheDir, { recursive: true, force: true }));
+  const cached = (extra: Record<string, string> = {}) => ({
+    NEMAR_ZARR_DISK_CACHE_DIR: cacheDir,
+    NEMAR_ZARR_DISK_CACHE_BYTES: String(64 * 1024 * 1024),
+    ...extra,
+  });
+  const args = { start_s: 15, duration_s: 2 };
+
+  async function firstRead(): Promise<Msg> {
+    return withEngine(async (e) => {
+      const h = await e.ready();
+      rangeRequests = [];
+      const win = await e.read(h, args);
+      expect(win.header.type).toBe("window");
+      expect(rangeRequests.length).toBeGreaterThan(0);
+      return win;
+    }, cached());
+  }
+
+  test("a second engine makes the same read with zero range requests and an identical payload", async () => {
+    const first = await firstRead();
+    await withEngine(async (e) => {
+      allRequests = [];
+      const h = await e.ready();
+      rangeRequests = [];
+      const second = await e.read(h, args);
+      expect(rangeRequests).toEqual([]);
+      expect(second.payload).toEqual(first.payload);
+      expect(second.header).toEqual({ ...first.header, id: second.header.id });
+      // The index is never cached on disk: this engine read it again, which is how a
+      // re-conversion is noticed. The array metadata came from disk.
+      expect(allRequests.filter((p) => p === "/nm099500/zarr/index.json").length).toBe(1);
+      expect(allRequests.filter((p) => p.endsWith("/zarr.json"))).toEqual([]);
+    }, cached());
+  });
+
+  test("a changed updated_utc in the index sends the read back to the host", async () => {
+    const first = await firstRead();
+    updatedUtcOverride = "2099-01-01T00:00:00Z";
+    await withEngine(async (e) => {
+      const h = await e.ready();
+      rangeRequests = [];
+      const second = await e.read(h, args);
+      expect(rangeRequests.length).toBeGreaterThan(0);
+      // The store's bytes did not change here, so the values still match.
+      expect(second.payload).toEqual(first.payload);
+    }, cached());
+  });
+
+  test("a different data origin does not share entries", async () => {
+    await firstRead();
+    dataOriginOverride = `http://127.0.0.1:${alias.port}`;
+    await withEngine(async (e) => {
+      const h = await e.ready();
+      rangeRequests = [];
+      await e.read(h, args);
+      expect(rangeRequests.length).toBeGreaterThan(0);
+    }, cached());
+  });
+
+  test("a cache limit of 0 writes nothing, so the next engine goes to the host", async () => {
+    await withEngine(
+      async (e) => {
+        const h = await e.ready();
+        await e.read(h, args);
+      },
+      cached({ NEMAR_ZARR_DISK_CACHE_BYTES: "0" }),
+    );
+    expect(existsSync(cacheDir) ? readdirSync(cacheDir) : []).toEqual([]);
+    await withEngine(
+      async (e) => {
+        const h = await e.ready();
+        rangeRequests = [];
+        await e.read(h, args);
+        expect(rangeRequests.length).toBeGreaterThan(0);
+      },
+      cached({ NEMAR_ZARR_DISK_CACHE_BYTES: "0" }),
+    );
+  });
+
+  test("an unusable cache directory does not fail the read and says so once on stderr", async () => {
+    const blocker = join(cacheDir, "a-file");
+    await Bun.write(blocker, "x");
+    const engine = new Engine(cached({ NEMAR_ZARR_DISK_CACHE_DIR: join(blocker, "cache") }));
+    const h = await engine.ready();
+    const win = await engine.read(h, args);
+    expect(win.header.type).toBe("window");
+    const { stderr } = await engine.finish();
+    expect(stderr.split("\n").filter((l) => l.includes("disk cache")).length).toBe(1);
+  });
+
+  test("a corrupted cache file is a miss: the engine reads from the host and heals it", async () => {
+    const first = await firstRead();
+    // Corrupt every entry.
+    for (const sub of readdirSync(cacheDir)) {
+      for (const name of readdirSync(join(cacheDir, sub))) {
+        await Bun.write(join(cacheDir, sub, name), "garbage");
+      }
+    }
+    await withEngine(async (e) => {
+      const h = await e.ready();
+      rangeRequests = [];
+      const second = await e.read(h, args);
+      expect(rangeRequests.length).toBeGreaterThan(0);
+      expect(second.payload).toEqual(first.payload);
+    }, cached());
+    await withEngine(async (e) => {
+      const h = await e.ready();
+      rangeRequests = [];
+      await e.read(h, args);
+      expect(rangeRequests).toEqual([]);
+    }, cached());
   });
 });
 

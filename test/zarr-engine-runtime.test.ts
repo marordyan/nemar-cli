@@ -76,6 +76,8 @@ type Mode =
   | "bare200"
   | "bare200-chunk"
   | "short206"
+  | "long206"
+  | "streamed-long206"
   | "corrupt-chunk";
 let mode: Mode = "good";
 let rangeRequests: { path: string; range: string }[] = [];
@@ -101,6 +103,25 @@ function serveShard(req: Request, body: Uint8Array, misbehave: boolean): Respons
     }
     if (mode === "short206" && !isFooter) {
       return new Response(body.slice(start, end), { status: 206 });
+    }
+    if (mode === "long206" && !isFooter) {
+      // Content-Length says one byte more than the Range asked for.
+      return new Response(body.slice(start, end + 2), { status: 206 });
+    }
+    if (mode === "streamed-long206" && !isFooter) {
+      // No Content-Length: the body just keeps coming past the asked length.
+      const extra = new Uint8Array(1 << 20);
+      const slice = body.slice(start, end + 1);
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(c) {
+            c.enqueue(slice);
+            c.enqueue(extra);
+            c.close();
+          },
+        }),
+        { status: 206 },
+      );
     }
     if (mode === "corrupt-chunk" && !isFooter) {
       const slice = body.slice(start, end + 1);
@@ -635,6 +656,8 @@ describe("host failures never produce a window", () => {
     { mode: "bare200", code: "upstream_error", retry: true },
     { mode: "bare200-chunk", code: "upstream_error", retry: true },
     { mode: "short206", code: "upstream_error", retry: true },
+    { mode: "long206", code: "upstream_error", retry: true },
+    { mode: "streamed-long206", code: "upstream_error", retry: true },
     // Corrupt bytes arrive as a perfectly good 206, so they are cached; no retry claim.
     { mode: "corrupt-chunk", code: "decode_error", retry: false },
   ];

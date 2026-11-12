@@ -142,6 +142,136 @@ export function createPublicFetcher(baseFetch: BaseFetch = (u, i) => fetch(u, i)
 }
 
 // ---------------------------------------------------------------------------
+// Bounded bodies
+// ---------------------------------------------------------------------------
+
+/** The most a request without a `Range` may return through {@link withBodyCaps}: the read
+ *  core's own `zarr.json` fetch, which it reads whole. Far above any real array metadata. */
+export const MAX_PLAIN_BODY_BYTES = 8 * 1024 * 1024;
+
+export type CappedBody =
+  | { exceeded: false; bytes: Uint8Array }
+  /** `bytes` holds what was read before the read stopped: at most `cap` bytes, none when
+   *  `Content-Length` already said the body was too big. */
+  | { exceeded: true; bytes: Uint8Array };
+
+/** `Content-Length` as a count, or null when absent, not a number, or the body is encoded
+ *  (then it counts the encoded bytes, not the ones this code reads). */
+function declaredLength(response: Response): number | null {
+  const encoding = response.headers.get("content-encoding");
+  if (encoding && encoding.toLowerCase() !== "identity") return null;
+  const raw = response.headers.get("content-length");
+  if (raw === null || !/^\d+$/.test(raw)) return null;
+  return Number(raw);
+}
+
+/**
+ * Read a response body of at most `cap` bytes. A `Content-Length` over the cap fails without
+ * reading anything; otherwise the stream is read and cancelled as soon as the total passes the
+ * cap, so a hostile or broken origin cannot make the engine buffer more than `cap` (plus one
+ * chunk). The caller decides what an exceeded body means.
+ */
+export async function readBodyCapped(response: Response, cap: number): Promise<CappedBody> {
+  const declared = declaredLength(response);
+  const stream = response.body;
+  if (declared !== null && declared > cap) {
+    await stream?.cancel().catch(() => undefined);
+    return { exceeded: true, bytes: new Uint8Array(0) };
+  }
+  if (!stream) return { exceeded: false, bytes: new Uint8Array(0) };
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (total + value.length > cap) {
+      chunks.push(value.subarray(0, cap - total));
+      total = cap;
+      await reader.cancel().catch(() => undefined);
+      return { exceeded: true, bytes: concat(chunks, total) };
+    }
+    chunks.push(value);
+    total += value.length;
+  }
+  return { exceeded: false, bytes: concat(chunks, total) };
+}
+
+function concat(chunks: Uint8Array[], total: number): Uint8Array {
+  if (chunks.length === 1) return chunks[0];
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
+}
+
+/** The headers of `response` without the ones that described the body as it was sent. */
+function bodylessHeaders(response: Response): Headers {
+  const headers = new Headers(response.headers);
+  for (const name of ["content-length", "content-encoding", "transfer-encoding"]) {
+    headers.delete(name);
+  }
+  return headers;
+}
+
+/**
+ * Wrap `fetcher` so no response body is read past a bound, and the bodies the read core reads
+ * (`shared/zarr/fetch-range.ts` and `array-metadata.ts` read them whole) are bounded data.
+ *
+ *   - A `Range` request is bounded by the length the header asks for (`bytes=a-b` is b-a+1,
+ *     `bytes=-N` is N; the core sends only those two). Any other Range form is refused.
+ *   - A `206` whose `Content-Length` differs from that length, or whose body is longer, is a
+ *     failure (the fetcher throws, which the core reports as a fetch failure). A shorter body
+ *     is passed on; the core refuses it.
+ *   - Any other status is passed on with its status kept and its body cut at that length (the
+ *     core rejects a non-206 anyway; a bare `200` of a whole object is never read whole).
+ *   - A request without `Range` is bounded by `plainCap`; a body over it is a failure.
+ *
+ * Each response is returned as a fresh `Response` built from the bytes read.
+ */
+export function withBodyCaps(fetcher: Fetcher, plainCap: number = MAX_PLAIN_BODY_BYTES): Fetcher {
+  return async (url, init) => {
+    const range = init?.headers?.Range;
+    const response = await fetcher(url, init);
+    if (range === undefined) {
+      const body = await readBodyCapped(response, plainCap);
+      if (body.exceeded) throw new Error(`${url} returned more than ${plainCap} bytes`);
+      return new Response(body.bytes, {
+        status: response.status,
+        headers: bodylessHeaders(response),
+      });
+    }
+    const length = expectedRangeLength(range);
+    if (length === null) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`refused Range ${range} for ${url}: not bytes=a-b or bytes=-N`);
+    }
+    if (response.status === 206) {
+      const declared = declaredLength(response);
+      if (declared !== null && declared !== length) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(
+          `${url} (Range ${range}) answered 206 with Content-Length ${declared}, expected ${length}`,
+        );
+      }
+      const body = await readBodyCapped(response, length);
+      if (body.exceeded) {
+        throw new Error(`${url} (Range ${range}) answered 206 with more than ${length} bytes`);
+      }
+      return new Response(body.bytes, { status: 206, headers: bodylessHeaders(response) });
+    }
+    const body = await readBodyCapped(response, length);
+    return new Response(body.bytes, {
+      status: response.status,
+      headers: bodylessHeaders(response),
+    });
+  };
+}
+
+// ---------------------------------------------------------------------------
 // The range cache
 // ---------------------------------------------------------------------------
 
@@ -301,15 +431,16 @@ export async function fetchJsonDocument(
   if (!response.ok) return { status: "error", detail: `HTTP ${response.status} fetching ${url}` };
   let text: string;
   try {
-    text = await response.text();
+    const body = await readBodyCapped(response, maxBytes);
+    if (body.exceeded) {
+      return { status: "error", detail: `${url} is larger than ${maxBytes} bytes` };
+    }
+    text = new TextDecoder().decode(body.bytes);
   } catch (err) {
     return {
       status: "error",
       detail: `${url} could not be read: ${err instanceof Error ? err.message : String(err)}`,
     };
-  }
-  if (text.length > maxBytes) {
-    return { status: "error", detail: `${url} is larger than ${maxBytes} bytes` };
   }
   try {
     return { status: "ok", doc: JSON.parse(text) };

@@ -14,7 +14,9 @@ import {
   checkHost,
   createPublicFetcher,
   fetchJsonDocument,
+  readBodyCapped,
   resolveBases,
+  withBodyCaps,
   withRangeCache,
 } from "../src/lib/zarr-engine/http.js";
 
@@ -28,6 +30,23 @@ const OBJECT = new Uint8Array(1000).map((_, i) => i % 251);
 let seen: Seen[] = [];
 let mode: "good" | "short206" | "bare200" | "5xx" = "good";
 let server: ReturnType<typeof Bun.serve>;
+/** Bytes an endless-stream route has produced, and whether its client hung up. */
+let streamed = 0;
+let streamCancelled = false;
+const CHUNK = new Uint8Array(64 * 1024).fill(0x20);
+/** A body that never ends: 64 KiB of spaces per pull, counted, until the client cancels. */
+function endlessBody(): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      streamed += CHUNK.length;
+      controller.enqueue(CHUNK);
+      await Bun.sleep(0);
+    },
+    cancel() {
+      streamCancelled = true;
+    },
+  });
+}
 const base = () => `http://127.0.0.1:${server.port}`;
 
 beforeAll(() => {
@@ -53,6 +72,17 @@ beforeAll(() => {
       if (url.pathname === "/loop") {
         return new Response(null, { status: 302, headers: { location: "/loop" } });
       }
+      if (url.pathname === "/endless.json") return new Response(endlessBody());
+      if (url.pathname === "/endless-206") {
+        return new Response(endlessBody(), { status: 206 });
+      }
+      if (url.pathname === "/whole-200") return new Response(OBJECT, { status: 200 });
+      if (url.pathname === "/endless-200") return new Response(endlessBody(), { status: 200 });
+      if (url.pathname === "/long-206") {
+        // A 206 that honestly says it carries 20 bytes when 10 were asked for.
+        return new Response(OBJECT.slice(0, 20), { status: 206 });
+      }
+      if (url.pathname === "/utf8.json") return Response.json({ s: "é".repeat(10) });
       if (url.pathname === "/doc.json") return Response.json({ a: 1 });
       if (url.pathname === "/bad.json") return new Response("{nope");
       if (url.pathname === "/object") {
@@ -72,6 +102,8 @@ beforeAll(() => {
 });
 afterAll(() => server.stop(true));
 beforeEach(() => {
+  streamed = 0;
+  streamCancelled = false;
   seen = [];
   mode = "good";
 });
@@ -323,5 +355,92 @@ describe("fetchJsonDocument", () => {
     expect(await fetchJsonDocument(f, "http://example.invalid/x", 1000)).toMatchObject({
       status: "error",
     });
+  });
+});
+
+describe("bounded bodies", () => {
+  test("a JSON body without Content-Length is cut off past the cap, not read whole", async () => {
+    const r = await fetchJsonDocument(createPublicFetcher(), `${base()}/endless.json`, 1_000_000);
+    expect(r).toMatchObject({ status: "error" });
+    expect((r as { detail: string }).detail).toContain("larger than 1000000 bytes");
+    await Bun.sleep(50);
+    expect(streamCancelled).toBe(true);
+    expect(streamed).toBeLessThan(10 * 1_000_000);
+  });
+
+  test("a JSON body with a Content-Length over the cap fails without reading it", async () => {
+    // Bun sets Content-Length from the 1000-byte body.
+    const r = await fetchJsonDocument(createPublicFetcher(), `${base()}/object`, 500);
+    expect(r).toMatchObject({ status: "error" });
+    expect((r as { detail: string }).detail).toContain("larger than 500 bytes");
+  });
+
+  test("the JSON cap counts bytes, not UTF-16 units", async () => {
+    // {"s":"éééééééééé"} is 18 UTF-16 units but 28 bytes.
+    const f = createPublicFetcher();
+    expect(await fetchJsonDocument(f, `${base()}/utf8.json`, 20)).toMatchObject({
+      status: "error",
+    });
+    expect(await fetchJsonDocument(f, `${base()}/utf8.json`, 28)).toMatchObject({ status: "ok" });
+  });
+
+  test("readBodyCapped stops at the cap and keeps what it read", async () => {
+    const response = await fetch(`${base()}/endless.json`);
+    const body = await readBodyCapped(response, 100_000);
+    expect(body.exceeded).toBe(true);
+    expect(body.bytes.length).toBe(100_000);
+  });
+
+  test("a 206 that streams past the asked length fails as a fetch failure, and the stream is cancelled", async () => {
+    const f = withBodyCaps(createPublicFetcher());
+    await expect(f(`${base()}/endless-206`, rangeInit("bytes=0-9"))).rejects.toThrow(
+      "more than 10 bytes",
+    );
+    await Bun.sleep(50);
+    expect(streamCancelled).toBe(true);
+    expect(streamed).toBeLessThan(1_000_000);
+  });
+
+  test("a 206 whose Content-Length differs from the asked length fails", async () => {
+    const f = withBodyCaps(createPublicFetcher());
+    await expect(f(`${base()}/long-206`, rangeInit("bytes=0-9"))).rejects.toThrow(
+      "Content-Length 20, expected 10",
+    );
+  });
+
+  test("a 200 answer to a Range request keeps its status and is cut at the asked length", async () => {
+    const f = withBodyCaps(createPublicFetcher());
+    const r = await f(`${base()}/endless-200`, rangeInit("bytes=0-9"));
+    expect(r.status).toBe(200);
+    expect(new Uint8Array(await r.arrayBuffer()).length).toBe(10);
+    await Bun.sleep(50);
+    expect(streamCancelled).toBe(true);
+    expect(streamed).toBeLessThan(1_000_000);
+    // A whole 1000-byte object announced by Content-Length is not read at all.
+    const whole = await f(`${base()}/whole-200`, rangeInit("bytes=0-9"));
+    expect(whole.status).toBe(200);
+    expect(new Uint8Array(await whole.arrayBuffer()).length).toBe(0);
+  });
+
+  test("a suffix range is bounded by its length, and honest reads are unchanged", async () => {
+    const f = withBodyCaps(createPublicFetcher());
+    const ok = await f(`${base()}/object`, rangeInit("bytes=10-19"));
+    expect(ok.status).toBe(206);
+    expect(new Uint8Array(await ok.arrayBuffer())).toEqual(OBJECT.slice(10, 20));
+    await expect(f(`${base()}/endless-206`, rangeInit("bytes=-16"))).rejects.toThrow(
+      "more than 16 bytes",
+    );
+  });
+
+  test("a Range form other than bytes=a-b and bytes=-N is refused", async () => {
+    const f = withBodyCaps(createPublicFetcher());
+    await expect(f(`${base()}/object`, rangeInit("bytes=5-"))).rejects.toThrow("refused Range");
+  });
+
+  test("a request without Range is bounded too", async () => {
+    const f = withBodyCaps(createPublicFetcher(), 100);
+    await expect(f(`${base()}/endless.json`)).rejects.toThrow("more than 100 bytes");
+    const small = await withBodyCaps(createPublicFetcher(), 1000)(`${base()}/doc.json`);
+    expect(await small.json()).toEqual({ a: 1 });
   });
 });

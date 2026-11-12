@@ -52,6 +52,7 @@ import {
   createPublicFetcher,
   fetchJsonDocument,
   resolveBases,
+  withBodyCaps,
   withRangeCache,
 } from "./http.js";
 
@@ -155,7 +156,10 @@ export interface PublicSourceOptions {
 export function publicSource(options: PublicSourceOptions = {}): DataSource {
   const bases = options.bases ?? resolveBases();
   const rangeCache = new RangeCache("public", options.rangeCacheBytes ?? DEFAULT_RANGE_CACHE_BYTES);
-  const fetcher = withRangeCache(createPublicFetcher(), rangeCache);
+  // JSON documents read their own bodies with their own caps; the read core's fetcher
+  // gets every body bounded here, under the range cache.
+  const publicFetcher = createPublicFetcher();
+  const fetcher = withRangeCache(withBodyCaps(publicFetcher), rangeCache);
   const jsonCache = new MemoryJsonCache("public");
   const indexes = new Map<string, EngineIndex>();
   const records = new Map<string, unknown[]>();
@@ -169,7 +173,7 @@ export function publicSource(options: PublicSourceOptions = {}): DataSource {
       const cached = indexes.get(datasetId);
       if (cached) return { status: "ok", index: cached };
       const url = `${bases.zarrBase}/${datasetId}/zarr/index.json`;
-      const fetched = await fetchJsonDocument(fetcher, url, MAX_INDEX_BYTES);
+      const fetched = await fetchJsonDocument(publicFetcher, url, MAX_INDEX_BYTES);
       if (fetched.status === "not_found") return { status: "not_found" };
       if (fetched.status === "error") return { status: "error", detail: fetched.detail };
       const outcome = parseIndexDocument(fetched.doc, datasetId);
@@ -181,7 +185,7 @@ export function publicSource(options: PublicSourceOptions = {}): DataSource {
       const cached = records.get(datasetId);
       if (cached) return { status: "ok", records: cached };
       const listingUrl = `${bases.dataPlaneBase}/${datasetId}`;
-      const listing = await fetchJsonDocument(fetcher, listingUrl, MAX_LISTING_BYTES);
+      const listing = await fetchJsonDocument(publicFetcher, listingUrl, MAX_LISTING_BYTES);
       if (listing.status !== "ok") {
         return {
           status: "unavailable",
@@ -195,7 +199,7 @@ export function publicSource(options: PublicSourceOptions = {}): DataSource {
       const latest = parsed.data.latest || parsed.data.versions[0]?.version;
       if (!latest) return { status: "unavailable", detail: `${listingUrl} lists no version` };
       const url = `${listingUrl}/${encodeURIComponent(latest)}/records.json`;
-      const doc = await fetchJsonDocument(fetcher, url, MAX_RECORDS_BYTES);
+      const doc = await fetchJsonDocument(publicFetcher, url, MAX_RECORDS_BYTES);
       if (doc.status !== "ok") {
         return {
           status: "unavailable",

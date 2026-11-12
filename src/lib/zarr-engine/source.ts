@@ -332,11 +332,12 @@ function pickRecord(records: unknown[], bidsPath: string): Record<string, unknow
 }
 
 /** Why `value` may not be joined onto the data base as path segments, or null: a `..` segment,
- *  a leading `/`, a `?`, `#` or `\`, or a control character. */
+ *  a leading `/`, a `?`, `#`, `%` or `\`, or a control character. `%` is refused outright
+ *  because the URL parser decodes `%2e%2e` to a `..` segment, and no real name contains it. */
 export function unsafePathReason(value: string): string | null {
   if (value.startsWith("/")) return "it starts with /";
   if (value.split("/").includes("..")) return "it has a .. segment";
-  if (/[?#\\]/.test(value)) return "it contains ?, # or a backslash";
+  if (/[?#%\\]/.test(value)) return "it contains ?, #, % or a backslash";
   // biome-ignore lint/suspicious/noControlCharactersInRegex: that is the check
   if (/[\u0000-\u001f\u007f]/.test(value)) return "it contains a control character";
   return null;

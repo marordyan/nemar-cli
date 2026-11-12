@@ -171,6 +171,9 @@ describe("index paths and logged strings", () => {
     "a#b.zarr",
     "a\\b.zarr",
     "a\u0001b.zarr",
+    "%2e%2e/x.zarr",
+    "a/%2E%2e/x.zarr",
+    ".%2e/x.zarr",
   ]) {
     test(`a zarr path of ${JSON.stringify(bad)} is upstream_error`, async () => {
       withStore((store) => {
@@ -185,6 +188,15 @@ describe("index paths and logged strings", () => {
   test("a group name with a .. segment is upstream_error", async () => {
     withStore((_store, group) => {
       group.name = "../eeg_250hz";
+    });
+    const r = await open(source());
+    expect(r).toMatchObject({ ok: false, code: "upstream_error" });
+    expect(r.ok ? "" : r.message).toContain("group name");
+  });
+
+  test("a group name with a percent-encoded .. segment is upstream_error", async () => {
+    withStore((_store, group) => {
+      group.name = "%2e%2e";
     });
     const r = await open(source());
     expect(r).toMatchObject({ ok: false, code: "upstream_error" });

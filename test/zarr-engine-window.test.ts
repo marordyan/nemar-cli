@@ -8,8 +8,9 @@
 import { describe, expect, test } from "bun:test";
 import { rangeCeiling } from "../src/lib/zarr-engine/window.js";
 
-/** blosc2's worst case for a chunk that does not compress: the raw bytes plus a 32-byte header
- *  (BLOSC2_MAX_OVERHEAD). Independent of the engine's own constant. */
+/** The worst case for one stored chunk: the raw bytes plus at most 32 bytes of blosc2 overhead
+ *  (BLOSC2_MAX_OVERHEAD), in a chunk that is still stored compressed (the decoder refuses a
+ *  memcpyed frame). Independent of the engine's own constant. */
 const BLOSC2_MAX_OVERHEAD = 32;
 
 describe("rangeCeiling", () => {

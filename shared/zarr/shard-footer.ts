@@ -55,7 +55,7 @@ export async function loadShardFooter(opts: {
   groupName: string;
   shardIndex: number;
   nInner: number;
-}): Promise<ShardFooterLoaded | { error: string }> {
+}): Promise<ShardFooterLoaded | { error: string; cause: "fetch" | "decode" }> {
   const { fetcher, cache, key, dataBase, zarr, groupName, shardIndex, nInner } = opts;
   const cacheKey: CacheKey = {
     ...key,
@@ -93,7 +93,7 @@ export async function loadShardFooter(opts: {
   const url = `${dataBase}${zarr}/${groupName}/0/c/0/${shardIndex}`;
   const fetched = await fetchRangeBytes(fetcher, url, `bytes=-${footerLen}`, footerLen);
   if ("error" in fetched) {
-    return { error: fetched.error };
+    return { error: fetched.error, cause: "fetch" };
   }
   let entries: ShardIndexEntry[];
   try {
@@ -101,6 +101,7 @@ export async function loadShardFooter(opts: {
   } catch (err) {
     return {
       error: `shard footer ${url} failed to parse: ${err instanceof Error ? err.message : String(err)}`,
+      cause: "decode",
     };
   }
   cache.put(cacheKey, shardEntriesToPairs(entries));

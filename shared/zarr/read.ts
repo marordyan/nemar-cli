@@ -26,6 +26,10 @@ export type ReadLevel0WindowResult =
       ok: false;
       /** Which step failed: the shard footer, the read plan, or a chunk. */
       stage: "footer" | "plan" | "chunk";
+      /** Why: the host could not be read as asked (a network error, a non-206 or a
+       *  short body), the bytes read could not be decoded, or the footer disagrees
+       *  with the geometry the index published (`plan`). Additive; the MCP ignores it. */
+      cause: "fetch" | "decode" | "plan";
       detail: string;
     };
 
@@ -54,7 +58,7 @@ async function fetchAndDecodeRangeRead(opts: {
   shardSamples: number;
   chunkSamples: number;
   nSamplesTotal: number;
-}): Promise<RangeReadResult | { error: string }> {
+}): Promise<RangeReadResult | { error: string; cause: "fetch" | "decode" | "plan" }> {
   const {
     fetcher,
     dataBase,
@@ -77,7 +81,7 @@ async function fetchAndDecodeRangeRead(opts: {
     expectedLength,
   );
   if ("error" in fetched) {
-    return { error: fetched.error };
+    return { error: fetched.error, cause: "fetch" };
   }
   const buf = fetched.buf;
   const runStart = read.start;
@@ -88,7 +92,10 @@ async function fetchAndDecodeRangeRead(opts: {
       // planShardReads only ever puts a PRESENT entry's local index into a
       // "range" read's localIndices -- reaching here with an absent one
       // would be a caller/planner bug, not a data condition.
-      return { error: `shard ${shardIndex} chunk ${localIndex}: footer entry is not present` };
+      return {
+        error: `shard ${shardIndex} chunk ${localIndex}: footer entry is not present`,
+        cause: "plan",
+      };
     }
     const relStart = entry.offset - runStart;
     const chunkBytes = buf.subarray(relStart, relStart + entry.nbytes);
@@ -98,6 +105,7 @@ async function fetchAndDecodeRangeRead(opts: {
     } catch (err) {
       return {
         error: `shard ${shardIndex} chunk ${localIndex} failed to decode: ${err instanceof Error ? err.message : String(err)}`,
+        cause: "decode",
       };
     }
     const expectedLen = nChannelsInStore * chunkSamples;
@@ -106,6 +114,7 @@ async function fetchAndDecodeRangeRead(opts: {
         error:
           `shard ${shardIndex} chunk ${localIndex} decoded to ${decoded.length} values, expected ` +
           `${expectedLen} (${nChannelsInStore} channels x ${chunkSamples} chunk_samples)`,
+        cause: "decode",
       };
     }
     const span = chunkSampleSpan({
@@ -183,7 +192,7 @@ export async function readLevel0Window(opts: {
       nInner,
     });
     if ("error" in footer) {
-      return { ok: false, stage: "footer", detail: footer.error };
+      return { ok: false, stage: "footer", cause: footer.cause, detail: footer.error };
     }
     footersAllHit = footersAllHit && footer.cacheStatus === "hit";
     bytes += footer.bytes;
@@ -206,6 +215,7 @@ export async function readLevel0Window(opts: {
       return {
         ok: false,
         stage: "plan",
+        cause: "plan",
         detail: err instanceof Error ? err.message : String(err),
       };
     }
@@ -235,7 +245,7 @@ export async function readLevel0Window(opts: {
         nSamplesTotal,
       });
       if ("error" in fetched) {
-        return { ok: false, stage: "chunk", detail: fetched.error };
+        return { ok: false, stage: "chunk", cause: fetched.cause, detail: fetched.error };
       }
       segments.push(...fetched.segments);
       bytes += fetched.bytes;

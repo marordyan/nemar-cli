@@ -79,6 +79,23 @@ A Zarr store is not the file, though: one recording can have several groups, and
 8. **Missing data is never zeros.**
    A `window` reports what could not be read in `filled_ranges` (ADR 0005).
 9. **Still open:** plan A versus plan B for shipping the engine; private-dataset access, where ADR 0114's credential helper is the likely route; and a Unix-domain socket, which would add a transport and not change the messages.
+10. **Engine policies (phase 4, `src/lib/zarr-engine/`).**
+   These are the engine's rules, not the protocol's.
+   *Framing.* Bad JSON or a bad header with an intact prefix is `invalid_message` with `id: null` and the engine keeps reading; bad magic, a `header_len` over the limit, an unpadded prefix, a request payload over 1 MiB, and end of input inside a frame cannot be resynchronized, so the engine sends the same error and exits with status 2; end of input between frames exits 0; logs go to stderr only; requests are handled one at a time.
+   *Hosts.* The zarr base (`NEMAR_ZARR_BASE`, default `https://zarr.nemar.org`), the data-plane base (`NEMAR_ZARR_DATA_PLANE`, default the API origin plus `/data`) and the index's `data_base` and `contract_base` must be `https`, or `http` to a loopback address only, the exception ADR 0114 makes for `NEMAR_DATA_HOSTS`. Loopback here means the literal addresses `127.0.0.1` and `[::1]`; unlike ADR 0114's list, the name `localhost` is refused, because the hosts file decides where a name resolves.
+   These settings are not ADR 0114's list: they are never added to `NEMAR_DATA_HOSTS` and never decide where a credential goes, and `src/lib/data-hosts.ts` stays the only list a credential follows.
+   The public fetcher sends no `Authorization` or `Cookie` and refuses a request that carries one; every cache key starts with the source kind (`public`).
+   *The record* comes from the dataset's data-plane version listing: its `latest`, then `<latest>/records.json`, the record whose `bids_relpath` is the recording; any failure is `record: null` and one line on stderr, and the open succeeds.
+   *Limits.* `max_payload_bytes` defaults to 256 MiB (`NEMAR_ZARR_MAX_PAYLOAD_BYTES`), and a read whose decode work (store channels x samples x 2 bytes) would exceed it is `too_large` as well, before anything is fetched, because a chunk holds every channel; the range cache holds 256 MiB of `206` bodies (`NEMAR_ZARR_RANGE_CACHE_BYTES`) so a repeated window sends no request.
+   *Bodies and bounds.* A reply's `record` over 256 KiB (serialized) is sent as `null` with one stderr line, like a missing record, and a reply that still cannot be framed (a header over 1 MiB) is an `internal` error for its request while the engine keeps serving.
+   A response body is never read past a bound: a JSON document past its limit (counted in bytes) fails without being read whole, a `Range` request is bounded by the length it asks for (a `206` whose `Content-Length` or body differs fails as `upstream_error`; any other status keeps its status and a body cut at that length), and any other body the read core reads is bounded at 8 MiB.
+   Because that asked-for length comes from the shard footer, which the data host serves, each `Range` read of a window is also capped, before it is sent, at what the store's geometry allows (the chunks the window can touch, each holding every channel, plus 64 bytes of compression overhead per chunk); a footer claiming more is `upstream_error`.
+   The process keeps the parsed index and the records of the 4 most recently used datasets, and at most 1024 handles are open (an `open` beyond that is `too_large`, telling the client to release handles).
+   A redirect from `https` to `http` is refused even to loopback, an index's `data_base` and `contract_base` may be plain `http` to loopback only when the configured zarr base is itself plain `http` to loopback (otherwise they must be `https`), and an index naming a `zarr` path or group with a `..` segment, a leading `/`, `?`, `#`, `%` (the URL parser decodes `%2e%2e` to `..`), a backslash or a control character is `upstream_error`.
+   The fetcher refuses `Proxy-Authorization` as well; Bun honours `HTTP_PROXY` and `HTTPS_PROXY`, and the no-credentials guarantee does not cover a proxy URL's own userinfo.
+   Index-derived strings written to stderr are JSON-quoted so a control character cannot forge a log line.
+   *A private source, when one is added,* attaches credentials per request and only to an origin `src/lib/data-hosts.ts` admits, never because "this dataset is private", never across a redirect, and never from the index's `data_base`, which is a published document.
+   Private bytes are not written to disk (the phase 5 cache) without a decision first, since access can be revoked and cached bytes would outlive it.
 
 ## Consequences
 
@@ -124,7 +141,7 @@ A Zarr store is not the file, though: one recording can have several groups, and
 
 ## Receipts
 
-- `shared/zarr-engine-protocol.schema.json`, `shared/contract/zarr-engine-protocol.ts`, `shared/zarr/protocol-frame.ts`.
+- `shared/zarr-engine-protocol.schema.json`, `shared/contract/zarr-engine-protocol.ts`, `shared/zarr/protocol-frame.ts`; the engine, `src/lib/zarr-engine/`, and `test/zarr-engine-runtime.test.ts` (a real child process).
 - `test/zarr-engine-protocol-contract.test.ts`, `test/zarr-engine-frame.test.ts`, `test/fixtures/engine-frames/`, `scripts/zarr/engine_frame_fixtures.py`.
 - `shared/contract/neuroschema/record.bundle.json`, `test/contract-neuroschema-record.test.ts`, `test/fixtures/neuroschema-records/` (three records from nm000103's public `records.json`); `shared/zarr/window-samples.ts` and `backend/test/zarr-window-samples.test.ts`.
 - `backend/src/routes/schemas.ts` serves the v0 schema; `backend/test/zarr-index-v3.test.ts` tests it.

@@ -1169,6 +1169,9 @@ describe("oversized replies", () => {
     await e.hello();
     const big = await e.open(BIDS, {}, "nm099505");
     expect(big.header).toMatchObject({ type: "error", code: "internal", id: 2 });
+    // The unsent `opened` registered h1; it must not stay open, since no client knows it.
+    const leaked = await e.call({ type: "release", handle: "h1" });
+    expect(leaked.header).toMatchObject({ type: "error", code: "unknown_handle" });
     const next = await e.open();
     expect(next.header.type).toBe("opened");
     const { code: status, stderr } = await e.finish();

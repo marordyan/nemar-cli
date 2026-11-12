@@ -94,6 +94,13 @@ export class EngineServer {
       );
       return errorReply(id, "internal", "the engine built a malformed response");
     }
+    // A reply that cannot be framed (a header over the limit) is never sent, so an `opened`
+    // one must not leave its handle open: the client never learns the handle's name.
+    if (!canFrame(reply)) {
+      if (reply.header.type === "opened") this.handles.delete(String(reply.header.handle));
+      this.log("[zarr-engine] internal error: a reply could not be framed");
+      return errorReply(id, "internal", "the engine could not frame its reply");
+    }
     return reply;
   }
 
@@ -203,6 +210,17 @@ export class EngineServer {
         return { header: { id: rid, type: "released" } };
       }
     }
+  }
+}
+
+/** Whether `reply` fits in a frame (its header within the frame header limit). */
+function canFrame(reply: Reply): boolean {
+  try {
+    encodeFrameParts(reply.header, reply.payload);
+    return true;
+  } catch (err) {
+    if (err instanceof FrameError) return false;
+    throw err;
   }
 }
 

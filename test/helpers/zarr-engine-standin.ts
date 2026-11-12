@@ -111,7 +111,39 @@ export function startStandin(): Standin {
       NEMAR_ZARR_DISK_CACHE_DIR: dirs.cache,
       NEMAR_NO_UPDATE_CHECK: "1",
       NO_COLOR: "1",
-      TEST_API_URL: "",
+      // The API is the stand-in too: a command must never reach a real host (the pre-action
+      // notices call lands here and gets a 404).
+      TEST_API_URL: url,
     }),
   };
+}
+
+export interface RunResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+const CLI_ENTRY = new URL("../../src/index.ts", import.meta.url).pathname;
+const REPO_ROOT = new URL("../../", import.meta.url).pathname;
+
+/** Run the real `nemar` entry point as a subprocess, with `env` over the process's. */
+export async function runNemar(
+  args: string[],
+  env: Record<string, string>,
+  stdinIgnore = true,
+): Promise<RunResult> {
+  const proc = Bun.spawn({
+    cmd: [process.execPath, "run", CLI_ENTRY, ...args],
+    cwd: REPO_ROOT,
+    env: { ...process.env, ...env },
+    stdin: stdinIgnore ? "ignore" : "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
+  return { stdout, stderr, exitCode: await proc.exited };
 }

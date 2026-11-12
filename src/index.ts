@@ -30,6 +30,7 @@ import { completionCommand } from "./commands/completion.js";
 import { createDownloadCommand, createUploadCommand, datasetCommand } from "./commands/dataset.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { sandboxCommand } from "./commands/sandbox.js";
+import { zarrCommand } from "./commands/zarr.js";
 import { IS_DEV_BUILD } from "./lib/api/client.js";
 import { MaintenanceError, errorDetail } from "./lib/api/errors.js";
 import {
@@ -214,6 +215,7 @@ program.addCommand(sandboxCommand);
 program.addCommand(adminCommand);
 program.addCommand(doctorCommand);
 program.addCommand(completionCommand);
+program.addCommand(zarrCommand);
 
 // ============================================================================
 // Root-level shortcuts (convenience aliases)

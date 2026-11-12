@@ -29,6 +29,7 @@ import {
 import { completionCommand } from "./commands/completion.js";
 import { createDownloadCommand, createUploadCommand, datasetCommand } from "./commands/dataset.js";
 import { doctorCommand } from "./commands/doctor.js";
+import { engineCommand } from "./commands/engine.js";
 import { sandboxCommand } from "./commands/sandbox.js";
 import { zarrCommand } from "./commands/zarr.js";
 import { IS_DEV_BUILD } from "./lib/api/client.js";
@@ -216,6 +217,7 @@ program.addCommand(adminCommand);
 program.addCommand(doctorCommand);
 program.addCommand(completionCommand);
 program.addCommand(zarrCommand);
+program.addCommand(engineCommand);
 
 // ============================================================================
 // Root-level shortcuts (convenience aliases)

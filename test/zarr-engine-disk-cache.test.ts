@@ -348,6 +348,18 @@ describe("stats and clear", () => {
     expect(a.get("k0")).toEqual(body(100));
   });
 
+  test("clear removes only the cache's own subdirectories from a shared directory", () => {
+    const a = make(10_000);
+    a.put("k0", body(100));
+    writeFileSync(join(dir(), "notes.txt"), "mine");
+    mkdirSync(join(dir(), "photos"));
+    writeFileSync(join(dir(), "photos", "a.jpg"), "mine");
+    expect(a.clear()).toBe(114);
+    expect(readdirSync(dir()).sort()).toEqual(["notes.txt", "photos"]);
+    expect(readFileSync(join(dir(), "notes.txt"), "utf8")).toBe("mine");
+    expect(readFileSync(join(dir(), "photos", "a.jpg"), "utf8")).toBe("mine");
+  });
+
   test("stats of a directory that does not exist is zeros", () => {
     expect(make().stats()).toMatchObject({ entries: 0, bytes: 0 });
     expect(make().clear()).toBe(0);

@@ -34,6 +34,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  rmdirSync,
   statSync,
   unlinkSync,
   utimesSync,
@@ -268,10 +269,25 @@ export class DiskCache {
     };
   }
 
-  /** Remove the whole cache directory; the bytes it held. */
+  /** Remove the cache's entries and the directory itself if nothing else is in it; the bytes
+   *  the entries held. Only the two-hex-digit subdirectories the cache makes are removed, so a
+   *  `NEMAR_ZARR_DISK_CACHE_DIR` that names a directory holding other files loses none of them. */
   clear(): number {
     const { bytes } = this.stats();
-    rmSync(this.dir, { recursive: true, force: true });
+    let subdirs: string[] = [];
+    try {
+      subdirs = readdirSync(this.dir);
+    } catch {
+      // no directory: nothing to remove
+    }
+    for (const sub of subdirs) {
+      if (/^[0-9a-f]{2}$/.test(sub)) rmSync(join(this.dir, sub), { recursive: true, force: true });
+    }
+    try {
+      rmdirSync(this.dir);
+    } catch {
+      // not empty, or already gone
+    }
     this.total = 0;
     return bytes;
   }

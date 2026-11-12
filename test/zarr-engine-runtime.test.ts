@@ -132,6 +132,16 @@ function emptyGroupNameIndex() {
   return { ...base, stores: [{ ...store, groups: [{ ...store.groups[0], name: "" }] }] };
 }
 
+/** nm099505: the same store, but with 5000 extra groups, so its `opened` header is over the
+ *  1 MiB frame limit and cannot be framed. The first group is the real one. */
+function hugeHeaderIndex() {
+  const base = indexFor("nm099505", "nm099505");
+  const store = base.stores[0];
+  const g1 = store.groups[0];
+  const extra = Array.from({ length: 5000 }, (_, i) => ({ ...g1, name: `extra_group_${i}` }));
+  return { ...base, stores: [{ ...store, groups: [g1, ...extra] }] };
+}
+
 beforeAll(() => {
   server = Bun.serve({
     hostname: "127.0.0.1",
@@ -148,8 +158,10 @@ beforeAll(() => {
       if (path === "/nm099502/zarr/index.json") return doc(indexFor("nm099502", "nm099502", true));
       // A group with an empty name: valid in the index, but it cannot be a protocol representation id.
       if (path === "/nm099503/zarr/index.json") return doc(emptyGroupNameIndex());
+      if (path === "/nm099504/zarr/index.json") return doc(indexFor("nm099504", "nm099500"));
+      if (path === "/nm099505/zarr/index.json") return doc(hugeHeaderIndex());
       if (path === "/nm000111/zarr/index.json") return doc(legacyIndex);
-      for (const id of ["nm099500", "nm099502", "nm099503"]) {
+      for (const id of ["nm099500", "nm099502", "nm099503", "nm099505"]) {
         for (const g of ["eeg_250hz", "eeg_500hz", ""]) {
           if (path === `/${id}/zarr/${ZARR}/${g}/0/zarr.json`) return doc(level0);
           if (path === shardPath(id, g, 0)) {
@@ -162,6 +174,12 @@ beforeAll(() => {
         return doc({ latest: "1.0.0", versions: [{ version: "0.5.0" }, { version: "1.0.0" }] });
       }
       if (path === "/data/nm099500/1.0.0/records.json") return doc([RECORD]);
+      // A matching record over the 256 KiB cap.
+      if (path === "/data/nm099504")
+        return doc({ latest: "1.0.0", versions: [{ version: "1.0.0" }] });
+      if (path === "/data/nm099504/1.0.0/records.json") {
+        return doc([{ bids_relpath: BIDS, filler: "x".repeat(300 * 1024) }]);
+      }
       return new Response(null, { status: 404 });
     },
   });
@@ -964,6 +982,31 @@ describe("open", () => {
       expect(opened.header.record).toBeNull();
       expect(opened.header.recording).toBe(BIDS);
     });
+  });
+});
+
+describe("oversized replies", () => {
+  test("a record over 256 KiB is sent as null with one stderr warning, and the open succeeds", async () => {
+    const e = new Engine();
+    await e.hello();
+    const opened = await e.open(BIDS, {}, "nm099504");
+    expect(opened.header.type).toBe("opened");
+    expect(opened.header.record).toBeNull();
+    const { code: status, stderr } = await e.finish();
+    expect(status).toBe(0);
+    expect(stderr.match(/is over 262144 bytes/g)?.length).toBe(1);
+  });
+
+  test("a reply too big to frame is an internal error for its id, and the engine keeps serving", async () => {
+    const e = new Engine();
+    await e.hello();
+    const big = await e.open(BIDS, {}, "nm099505");
+    expect(big.header).toMatchObject({ type: "error", code: "internal", id: 2 });
+    const next = await e.open();
+    expect(next.header.type).toBe("opened");
+    const { code: status, stderr } = await e.finish();
+    expect(status).toBe(0);
+    expect(stderr).toContain("could not be framed");
   });
 });
 

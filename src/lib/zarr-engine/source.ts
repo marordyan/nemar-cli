@@ -60,6 +60,10 @@ import {
 export const MAX_INDEX_BYTES = 24 * 1024 * 1024;
 const MAX_LISTING_BYTES = 1024 * 1024;
 const MAX_RECORDS_BYTES = 64 * 1024 * 1024;
+/** The most serialized JSON (UTF-8 bytes) the matched `record` may take in an `opened` reply.
+ *  A larger one is dropped like a missing record (ADR 0005, ADR 0077), so a hostile or broken
+ *  `records.json` cannot make the reply too big to frame. */
+export const RECORD_MAX_BYTES = 256 * 1024;
 
 /**
  * The v3 index schema with the two base URLs relaxed from "https" to "any string". The shared
@@ -390,6 +394,12 @@ export async function openRecording(
   if (recordsOutcome.status === "ok") {
     record = pickRecord(recordsOutcome.records, store.path);
     if (!record) warn(`[zarr-engine] no record for ${store.path} in ${datasetId} records.json`);
+    else if (new TextEncoder().encode(JSON.stringify(record)).length > RECORD_MAX_BYTES) {
+      warn(
+        `[zarr-engine] the record for ${store.path} in ${datasetId} is over ${RECORD_MAX_BYTES} bytes; sending null`,
+      );
+      record = null;
+    }
   } else {
     warn(`[zarr-engine] records for ${datasetId} unavailable: ${recordsOutcome.detail}`);
   }

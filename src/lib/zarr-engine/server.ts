@@ -194,8 +194,23 @@ export class EngineServer {
   }
 }
 
-async function send(sink: FrameSink, reply: Reply): Promise<void> {
-  await writeFrame(sink, encodeFrame(reply.header, reply.payload));
+/** Encode and write one reply. A reply that cannot be framed (a header over the limit) goes out
+ *  as an `internal` error for the same request instead; only a failed write is thrown. */
+async function send(
+  sink: FrameSink,
+  reply: Reply,
+  log: (line: string) => void = (line) => console.error(line),
+): Promise<void> {
+  let bytes: Uint8Array;
+  try {
+    bytes = encodeFrame(reply.header, reply.payload);
+  } catch (err) {
+    if (!(err instanceof FrameError)) throw err;
+    log(`[zarr-engine] internal error: a reply could not be framed: ${err.message}`);
+    const id = readId(reply.header);
+    bytes = encodeFrame(errorReply(id, "internal", "the engine could not frame its reply").header);
+  }
+  await writeFrame(sink, bytes);
 }
 
 /**
@@ -212,13 +227,13 @@ export async function serve(
   try {
     for await (const event of readFrames(input)) {
       if (event.type === "frame") {
-        await send(output, await server.handle(event.header));
+        await send(output, await server.handle(event.header), log);
       } else if (event.type === "invalid") {
         log(`[zarr-engine] invalid frame: ${event.message}`);
-        await send(output, errorReply(null, "invalid_message", event.message));
+        await send(output, errorReply(null, "invalid_message", event.message), log);
       } else {
         log(`[zarr-engine] unrecoverable framing error (${event.kind}): ${event.message}`);
-        await send(output, errorReply(null, "invalid_message", event.message));
+        await send(output, errorReply(null, "invalid_message", event.message), log);
         return 2;
       }
     }

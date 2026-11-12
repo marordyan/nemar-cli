@@ -19,6 +19,7 @@ import {
   MAX_HEADER_BYTES,
   decodeFrame,
   encodeFrame,
+  encodeFrameParts,
 } from "../shared/zarr/protocol-frame.js";
 import {
   compileNeuroschemaRecordValidator,
@@ -133,6 +134,22 @@ describe("golden frames written by Python", () => {
         expect(Buffer.from(ours).equals(Buffer.from(bytes))).toBe(true);
       });
 
+      test("encodeFrameParts: head then payload is the same bytes, and the payload is not copied", () => {
+        const payload = exp.payload
+          ? packPayload(exp.payload.dtype, exp.payload.values)
+          : undefined;
+        const parts = encodeFrameParts(exp.header, payload);
+        const joined = new Uint8Array(parts.head.length + parts.payload.length);
+        joined.set(parts.head, 0);
+        joined.set(parts.payload, parts.head.length);
+        expect(Buffer.from(joined).equals(Buffer.from(bytes))).toBe(true);
+        expect(
+          Buffer.from(parts.head).equals(Buffer.from(bytes.subarray(0, parts.head.length))),
+        ).toBe(true);
+        if (payload) expect(parts.payload).toBe(payload);
+        else expect(parts.payload.length).toBe(0);
+      });
+
       test("the header validates as a protocol message", () => {
         const parsed = engineMessageSchema.safeParse(decodeFrame(bytes).header);
         expect(parsed.success, JSON.stringify(parsed.success ? null : parsed.error.issues)).toBe(
@@ -232,6 +249,14 @@ describe("malformed frames fail with a typed error", () => {
     expectFrameError("payload_mismatch", () => encodeFrame(header, new Uint8Array(47)));
     expectFrameError("payload_mismatch", () =>
       encodeFrame({ id: 1, type: "released" }, new Uint8Array(1)),
+    );
+  });
+
+  test("encodeFrameParts refuses what encodeFrame refuses", () => {
+    const { header } = decodeFrame(windowFrame);
+    expectFrameError("payload_mismatch", () => encodeFrameParts(header, new Uint8Array(47)));
+    expectFrameError("header_too_large", () =>
+      encodeFrameParts({ id: 1, type: "error", message: "x".repeat(MAX_HEADER_BYTES) }),
     );
   });
 

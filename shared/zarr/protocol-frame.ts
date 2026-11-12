@@ -70,14 +70,15 @@ function declaredPayloadBytes(header: Record<string, unknown>): number {
 }
 
 /**
- * Encode one frame. The header is serialized with `JSON.stringify` in the
- * object's own key order (compact, no spaces). Decoders must accept any valid
- * JSON header; byte-identical output across languages is only claimed for the
- * fixtures' headers (integers, ASCII strings, a fixed key order), not for
- * arbitrary JSON (float formatting and non-ASCII escaping differ by language).
- * Throws a `FrameError` if `payload_bytes` disagrees with `payload`.
+ * Encode one frame as two pieces that are NOT joined: `head` (the 8-byte prefix and the padded
+ * header) and `payload` (the caller's own bytes, not copied). Writing `head` then `payload` puts
+ * exactly the bytes {@link encodeFrame} returns on the wire, without a second copy of a large
+ * payload. Header serialization and errors are those of {@link encodeFrame}.
  */
-export function encodeFrame(header: Record<string, unknown>, payload?: Uint8Array): Uint8Array {
+export function encodeFrameParts(
+  header: Record<string, unknown>,
+  payload?: Uint8Array,
+): { head: Uint8Array; payload: Uint8Array } {
   const body = payload ?? new Uint8Array(0);
   if (declaredPayloadBytes(header) !== body.length) {
     throw new FrameError(
@@ -94,12 +95,27 @@ export function encodeFrame(header: Record<string, unknown>, payload?: Uint8Arra
       `header is ${headerLen} bytes, limit ${MAX_HEADER_BYTES}`,
     );
   }
-  const out = new Uint8Array(FRAME_PREFIX_BYTES + headerLen + body.length);
-  out.set(encoder.encode(FRAME_MAGIC), 0);
-  new DataView(out.buffer).setUint32(4, headerLen, true);
-  out.set(json, FRAME_PREFIX_BYTES);
-  out.fill(0x20, FRAME_PREFIX_BYTES + json.length, FRAME_PREFIX_BYTES + headerLen);
-  out.set(body, FRAME_PREFIX_BYTES + headerLen);
+  const head = new Uint8Array(FRAME_PREFIX_BYTES + headerLen);
+  head.set(encoder.encode(FRAME_MAGIC), 0);
+  new DataView(head.buffer).setUint32(4, headerLen, true);
+  head.set(json, FRAME_PREFIX_BYTES);
+  head.fill(0x20, FRAME_PREFIX_BYTES + json.length, FRAME_PREFIX_BYTES + headerLen);
+  return { head, payload: body };
+}
+
+/**
+ * Encode one frame. The header is serialized with `JSON.stringify` in the
+ * object's own key order (compact, no spaces). Decoders must accept any valid
+ * JSON header; byte-identical output across languages is only claimed for the
+ * fixtures' headers (integers, ASCII strings, a fixed key order), not for
+ * arbitrary JSON (float formatting and non-ASCII escaping differ by language).
+ * Throws a `FrameError` if `payload_bytes` disagrees with `payload`.
+ */
+export function encodeFrame(header: Record<string, unknown>, payload?: Uint8Array): Uint8Array {
+  const { head, payload: body } = encodeFrameParts(header, payload);
+  const out = new Uint8Array(head.length + body.length);
+  out.set(head, 0);
+  out.set(body, head.length);
   return out;
 }
 

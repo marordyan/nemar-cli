@@ -26,7 +26,7 @@ import {
   engineRequestSchema,
   engineResponseSchema,
 } from "../../../shared/contract/zarr-engine-protocol.js";
-import { FrameError, encodeFrame } from "../../../shared/zarr/protocol-frame.js";
+import { FrameError, encodeFrameParts } from "../../../shared/zarr/protocol-frame.js";
 import { type FrameSink, readFrames, writeFrame } from "./frame-stream.js";
 import { type Binding, type DataSource, openRecording } from "./source.js";
 import { readWindow, recipeFor } from "./window.js";
@@ -213,16 +213,21 @@ async function send(
   reply: Reply,
   log: (line: string) => void = (line) => console.error(line),
 ): Promise<void> {
-  let bytes: Uint8Array;
+  let parts: { head: Uint8Array; payload: Uint8Array };
   try {
-    bytes = encodeFrame(reply.header, reply.payload);
+    parts = encodeFrameParts(reply.header, reply.payload);
   } catch (err) {
     if (!(err instanceof FrameError)) throw err;
     log(`[zarr-engine] internal error: a reply could not be framed: ${err.message}`);
     const id = readId(reply.header);
-    bytes = encodeFrame(errorReply(id, "internal", "the engine could not frame its reply").header);
+    parts = encodeFrameParts(
+      errorReply(id, "internal", "the engine could not frame its reply").header,
+    );
   }
-  await writeFrame(sink, bytes);
+  // The head and the payload are written one after the other, so a large payload is never
+  // copied into a frame buffer next to itself.
+  await writeFrame(sink, parts.head);
+  if (parts.payload.length > 0) await writeFrame(sink, parts.payload);
 }
 
 /**

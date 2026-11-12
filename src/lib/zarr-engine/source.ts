@@ -43,6 +43,7 @@ import { loadLevel0ArrayMetadata } from "../../../shared/zarr/array-metadata.js"
 import type { CacheKey, Fetcher, JsonCache } from "../../../shared/zarr/interfaces.js";
 import { nInnerForShard } from "../../../shared/zarr/sharding.js";
 import {
+  type BaseFetch,
   DEFAULT_RANGE_CACHE_BYTES,
   type EngineBases,
   MemoryJsonCache,
@@ -51,6 +52,7 @@ import {
   checkHost,
   createPublicFetcher,
   fetchJsonDocument,
+  isPlainHttpBase,
   resolveBases,
   withBodyCaps,
   withRangeCache,
@@ -141,8 +143,15 @@ export interface DataSource {
   readRecords(datasetId: string): Promise<RecordsOutcome>;
 }
 
-/** Parse an index document: v3 against the engine schema, any other format_version as legacy. */
-export function parseIndexDocument(doc: unknown, datasetId: string): IndexOutcome {
+/** Parse an index document: v3 against the engine schema, any other format_version as legacy.
+ *  The index is a published document, so its bases are only as trusted as the host that served
+ *  it: they must be `https`, and plain `http` to loopback only when `allowLoopbackHttp` (the
+ *  engine's own zarr base is itself plain http to loopback, as in a test). */
+export function parseIndexDocument(
+  doc: unknown,
+  datasetId: string,
+  allowLoopbackHttp: boolean,
+): IndexOutcome {
   const claimsV3 =
     typeof doc === "object" &&
     doc !== null &&
@@ -167,6 +176,12 @@ export function parseIndexDocument(doc: unknown, datasetId: string): IndexOutcom
       if (!check.ok) {
         return { status: "error", detail: `index.json ${field} is not allowed: ${check.reason}` };
       }
+      if (check.url.protocol === "http:" && !allowLoopbackHttp) {
+        return {
+          status: "error",
+          detail: `index.json ${field} is not allowed: plain http, but this engine's zarr base is https`,
+        };
+      }
     }
     return { status: "ok", index: parsed.data };
   }
@@ -179,6 +194,8 @@ export interface PublicSourceOptions {
   bases?: EngineBases;
   /** Bound on cached `206` bodies, in bytes. */
   rangeCacheBytes?: number;
+  /** The transport under the public fetcher; `fetch` unless a test needs another one. */
+  baseFetch?: BaseFetch;
 }
 
 /** The public source: Zarr from `NEMAR_ZARR_BASE`, records from the data plane, no credentials. */
@@ -187,7 +204,8 @@ export function publicSource(options: PublicSourceOptions = {}): DataSource {
   const rangeCache = new RangeCache("public", options.rangeCacheBytes ?? DEFAULT_RANGE_CACHE_BYTES);
   // JSON documents read their own bodies with their own caps; the read core's fetcher
   // gets every body bounded here, under the range cache.
-  const publicFetcher = createPublicFetcher();
+  const publicFetcher = createPublicFetcher(options.baseFetch);
+  const allowLoopbackHttp = isPlainHttpBase(bases.zarrBase);
   const fetcher = withRangeCache(withBodyCaps(publicFetcher), rangeCache);
   const jsonCache = new MemoryJsonCache("public");
   const indexes = new LruCache<EngineIndex>(MAX_CACHED_DATASETS);
@@ -205,7 +223,7 @@ export function publicSource(options: PublicSourceOptions = {}): DataSource {
       const fetched = await fetchJsonDocument(publicFetcher, url, MAX_INDEX_BYTES);
       if (fetched.status === "not_found") return { status: "not_found" };
       if (fetched.status === "error") return { status: "error", detail: fetched.detail };
-      const outcome = parseIndexDocument(fetched.doc, datasetId);
+      const outcome = parseIndexDocument(fetched.doc, datasetId, allowLoopbackHttp);
       if (outcome.status === "ok") indexes.set(datasetId, outcome.index);
       return outcome;
     },

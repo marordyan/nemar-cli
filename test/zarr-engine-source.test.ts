@@ -397,19 +397,53 @@ describe("open failures and their codes", () => {
 
   test("an index whose data_base is plain http to a non-loopback host is upstream_error", () => {
     const doc = { ...nm099500Index, data_base: "http://example.com/nm099500/zarr/" };
-    expect(parseIndexDocument(doc, ID)).toMatchObject({ status: "error" });
+    expect(parseIndexDocument(doc, ID, true)).toMatchObject({ status: "error" });
     const ok = { ...nm099500Index, data_base: "https://example.com/nm099500/zarr/" };
-    expect(parseIndexDocument(ok, ID).status).toBe("ok");
+    expect(parseIndexDocument(ok, ID, false).status).toBe("ok");
   });
 
   test("an index whose contract_base is plain http to a non-loopback host is upstream_error", () => {
     const doc = { ...nm099500Index, contract_base: "http://example.com/nm099500/zarr/" };
-    expect(parseIndexDocument(doc, ID)).toMatchObject({
+    expect(parseIndexDocument(doc, ID, true)).toMatchObject({
       status: "error",
       detail: expect.stringContaining("contract_base"),
     });
     const loopback = { ...nm099500Index, contract_base: "http://127.0.0.1:9/nm099500/zarr/" };
-    expect(parseIndexDocument(loopback, ID).status).toBe("ok");
+    expect(parseIndexDocument(loopback, ID, true).status).toBe("ok");
+  });
+
+  test("a loopback http base in the index is accepted only when the engine's zarr base is loopback http", async () => {
+    // The stand-in serves a loopback index (base()); the engine thinks it is talking to
+    // https://zarr.test, whose requests are carried to the stand-in by a custom transport.
+    const carried = (url: string, init: RequestInit) =>
+      fetch(url.replace("https://zarr.test", base()), init);
+    const httpsSource = publicSource({
+      bases: resolveBases({
+        NEMAR_ZARR_BASE: "https://zarr.test",
+        NEMAR_ZARR_DATA_PLANE: `${base()}/data`,
+      }),
+      baseFetch: carried,
+    });
+    const refused = await open(httpsSource);
+    expect(refused).toMatchObject({ ok: false, code: "upstream_error" });
+    expect(refused.ok ? "" : refused.message).toContain("plain http");
+    // The same index with https bases passes the check (it then fails to read: no such host).
+    files.set(`/${ID}/zarr/index.json`, { body: JSON.stringify(nm099500Index) });
+    const httpsIndex = await httpsSource.readIndex(ID);
+    expect(httpsIndex.status).toBe("ok");
+    // And with a loopback http zarr base the loopback index opens.
+    files.set(`/${ID}/zarr/index.json`, { body: JSON.stringify(indexWithBase(nm099500Index)) });
+    expect((await open(source())).ok).toBe(true);
+  });
+
+  test("parseIndexDocument refuses a loopback http base unless allowed", () => {
+    const loopback = {
+      ...nm099500Index,
+      data_base: "http://127.0.0.1:9/nm099500/zarr/",
+      contract_base: "http://127.0.0.1:9/nm099500/zarr/",
+    };
+    expect(parseIndexDocument(loopback, ID, false)).toMatchObject({ status: "error" });
+    expect(parseIndexDocument(loopback, ID, true).status).toBe("ok");
   });
 
   test("a group without shard geometry is upstream_error", async () => {

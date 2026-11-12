@@ -14,6 +14,7 @@ import {
   checkHost,
   createPublicFetcher,
   fetchJsonDocument,
+  isHttpsDowngrade,
   readBodyCapped,
   resolveBases,
   withBodyCaps,
@@ -68,6 +69,10 @@ beforeAll(() => {
           status: 302,
           headers: { location: "http://example.invalid/object" },
         });
+      }
+      if (url.pathname === "/redirect-down") {
+        // What an https origin does when it sends the client to a plain-http address.
+        return new Response(null, { status: 302, headers: { location: `${base()}/object` } });
       }
       if (url.pathname === "/loop") {
         return new Response(null, { status: 302, headers: { location: "/loop" } });
@@ -165,6 +170,35 @@ describe("host policy", () => {
     const r = await f(`${base()}/redirect-local`);
     expect(r.status).toBe(200);
     await expect(f(`${base()}/loop`)).rejects.toThrow("too many redirects");
+  });
+});
+
+describe("no https to http redirect", () => {
+  // An https origin cannot be stood up here without a certificate, so the https hop goes through
+  // the fetcher's injectable transport: a request for https://zarr.test/... is carried, over a
+  // real connection, to the stand-in, which answers with the redirect an https host would send.
+  const carried = (url: string, init: RequestInit) =>
+    fetch(url.replace("https://zarr.test", base()), init);
+
+  test("a redirect from https to plain http on loopback is refused, and the target is not requested", async () => {
+    const f = createPublicFetcher(carried);
+    await expect(f("https://zarr.test/redirect-down")).rejects.toThrow("https to http");
+    expect(seen.map((s) => s.path)).toEqual(["/redirect-down"]);
+  });
+
+  test("http to http on loopback and https to https still follow", async () => {
+    const plain = await createPublicFetcher()(`${base()}/redirect-local`);
+    expect(plain.status).toBe(200);
+    const secure = await createPublicFetcher(carried)("https://zarr.test/redirect-local");
+    // The carried request's redirect is relative, so it stays https://zarr.test.
+    expect(secure.status).toBe(200);
+  });
+
+  test("isHttpsDowngrade is true only for https -> http", () => {
+    expect(isHttpsDowngrade("https://a.test/x", "http://127.0.0.1/y")).toBe(true);
+    expect(isHttpsDowngrade("http://127.0.0.1/x", "http://127.0.0.1/y")).toBe(false);
+    expect(isHttpsDowngrade("https://a.test/x", "https://b.test/y")).toBe(false);
+    expect(isHttpsDowngrade("http://127.0.0.1/x", "https://b.test/y")).toBe(false);
   });
 });
 

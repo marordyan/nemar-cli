@@ -11,6 +11,7 @@
  * **Host policy.** Every URL the engine requests, redirect targets included, must be
  * `https`, or `http` to a loopback address only (the exception ADR 0114 makes for
  * `NEMAR_DATA_HOSTS`, so a test can stand a plain-HTTP origin up on its own machine).
+ * A redirect from an `https` URL to an `http` one is refused even to loopback (a downgrade).
  * Loopback means the literal addresses `127.0.0.1` and `[::1]`: unlike ADR 0114's list, the
  * name `localhost` is refused, because the hosts file decides where a name resolves.
  * The bases come from `NEMAR_ZARR_BASE` and `NEMAR_ZARR_DATA_PLANE`. **Those settings are
@@ -47,6 +48,21 @@ const MAX_REDIRECTS = 3;
 const LOOPBACK_ADDRESSES = new Set(["127.0.0.1", "[::1]"]);
 
 export type HostCheck = { ok: true; url: URL } | { ok: false; reason: string };
+
+/** Is `value` a plain-`http` base (which {@link checkHost} admits only on loopback)? */
+export function isPlainHttpBase(value: string): boolean {
+  try {
+    return new URL(value).protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+/** Does moving from `from` to `to` step down from `https` to `http`? A redirect that does
+ *  is refused: a transfer that began encrypted must not continue in the clear. */
+export function isHttpsDowngrade(from: string, to: string): boolean {
+  return new URL(from).protocol === "https:" && new URL(to).protocol === "http:";
+}
 
 /** Does `value` name an origin the engine may request: `https`, or `http` to loopback, with
  *  no embedded credentials? */
@@ -105,7 +121,7 @@ export function resolveBases(env: Record<string, string | undefined> = process.e
 const FORBIDDEN_HEADERS = ["authorization", "cookie", "proxy-authorization"];
 
 /** The underlying `fetch`, injectable for a test that needs a different transport. */
-type BaseFetch = (url: string, init: RequestInit) => Promise<Response>;
+export type BaseFetch = (url: string, init: RequestInit) => Promise<Response>;
 
 /**
  * A `Fetcher` for public data. Throws (which the read core reports as a fetch failure) when
@@ -133,7 +149,11 @@ export function createPublicFetcher(baseFetch: BaseFetch = (u, i) => fetch(u, i)
       if (response.status >= 300 && response.status < 400 && location) {
         if (hop >= MAX_REDIRECTS) throw new Error(`too many redirects fetching ${url}`);
         await response.arrayBuffer().catch(() => undefined);
-        target = new URL(location, target).toString();
+        const next = new URL(location, target).toString();
+        if (isHttpsDowngrade(target, next)) {
+          throw new Error(`refused redirect from ${target} to ${next}: https to http`);
+        }
+        target = next;
         continue;
       }
       return response;

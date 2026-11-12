@@ -21,6 +21,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Hono } from "hono";
+import pkg from "../../package.json" with { type: "json" };
 import type { ReadWindowOutput } from "../../shared/contract/mcp.js";
 import { READ_WINDOW_TASTE_MAX_CHANNEL_SAMPLES } from "../../shared/contract/mcp.js";
 import {
@@ -1183,6 +1184,9 @@ describe("read_window (route)", () => {
       };
       const info = copy?._meta?.["io.modelcontextprotocol/serverInfo"];
       if (info && typeof info.version === "string") {
+        // The placeholder must not hide a wrong version: the server reports the
+        // version of the package.json it imports (backend/src/mcp/server.ts).
+        expect(info.version).toBe(pkg.version);
         info.version = SERVER_VERSION_PLACEHOLDER;
       }
       return copy;

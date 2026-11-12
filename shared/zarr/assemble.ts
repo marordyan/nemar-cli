@@ -62,7 +62,9 @@ export interface AssembleWindowInput {
 
 export interface AssembleWindowResult {
   /** One `Float64Array` per requested channel, `nSamples` long, physical
-   *  units at FULL float64 precision (rounding is the caller's choice). */
+   *  units at FULL float64 precision (rounding is the caller's choice). The rows are views
+   *  (`subarray`) into ONE shared buffer, not separate allocations: writing to a row writes
+   *  to its neighbours' buffer, and keeping one row alive keeps all of them. */
   values: Float64Array[];
   /** GLOBAL sample ranges (clipped to the requested window) that were
    *  fill-substituted, ascending, adjacent ranges merged into one. */
@@ -77,10 +79,52 @@ export interface AssembleWindowResult {
  * silently.
  */
 export function assembleWindow(input: AssembleWindowInput): AssembleWindowResult {
+  const { channels, nSamples } = input;
+  const flat = new Float64Array(channels.length * nSamples);
+  const filledRanges = fillChannelMajor(input, flat, true);
+  const values = channels.map((_, i) => flat.subarray(i * nSamples, (i + 1) * nSamples));
+  return { values, filledRanges };
+}
+
+/** What {@link assembleChannelMajor} writes: physical float64, or the stored int16 as is. */
+export type AssembleUnits = "physical" | "digital";
+
+export interface AssembleChannelMajorInput extends AssembleWindowInput {
+  units: AssembleUnits;
+}
+
+export interface AssembleChannelMajorResult {
+  /** `channels.length * nSamples` values, channel-major (row i is `channels[i]`, starting at
+   *  `i * nSamples`): `Float64Array` physical values, or `Int16Array` stored digital values
+   *  with no scale or offset applied (`scale`/`offset` are then ignored). */
+  values: Float64Array | Int16Array;
+  /** As {@link AssembleWindowResult.filledRanges}. */
+  filledRanges: FilledRange[];
+}
+
+/**
+ * {@link assembleWindow}'s result as ONE channel-major array in the requested units, written
+ * in place: a digital window never passes through float64, and a caller that sends the
+ * values on (the local engine's `window` payload) can use the array's bytes without a copy.
+ * Same coverage rule: throws if `segments` does not cover the window.
+ */
+export function assembleChannelMajor(input: AssembleChannelMajorInput): AssembleChannelMajorResult {
+  const size = input.channels.length * input.nSamples;
+  const values = input.units === "digital" ? new Int16Array(size) : new Float64Array(size);
+  const filledRanges = fillChannelMajor(input, values, input.units === "physical");
+  return { values, filledRanges };
+}
+
+/** The one assembly loop: writes `out` channel-major, physical when `applyScale`, else the
+ *  stored digital values unchanged; returns the fill-substituted ranges. */
+function fillChannelMajor(
+  input: AssembleWindowInput,
+  out: Float64Array | Int16Array,
+  applyScale: boolean,
+): FilledRange[] {
   const { channels, startSample, nSamples, segments, scale, offset, fillValue } = input;
 
   const endSample = startSample + nSamples;
-  const out: Float64Array[] = channels.map(() => new Float64Array(nSamples));
   const covered = new Uint8Array(nSamples);
   const filledRanges: FilledRange[] = [];
 
@@ -100,13 +144,14 @@ export function assembleWindow(input: AssembleWindowInput): AssembleWindowResult
 
     for (let outIdx = 0; outIdx < channels.length; outIdx++) {
       const ch = channels[outIdx];
-      const chScale = scale[ch];
-      const chOffset = offset[ch];
+      const chScale = applyScale ? scale[ch] : 1;
+      const chOffset = applyScale ? offset[ch] : 0;
+      const rowBase = outIdx * nSamples - startSample;
       for (let globalSample = overlapStart; globalSample < overlapEnd; globalSample++) {
         const digital = segment.data
           ? segment.data[ch * segment.stride + (globalSample - segment.start)]
           : fillValue;
-        out[outIdx][globalSample - startSample] = digital * chScale + chOffset;
+        out[rowBase + globalSample] = applyScale ? digital * chScale + chOffset : digital;
       }
     }
     for (let s = overlapStart; s < overlapEnd; s++) covered[s - startSample] = 1;
@@ -120,5 +165,5 @@ export function assembleWindow(input: AssembleWindowInput): AssembleWindowResult
     }
   }
 
-  return { values: out, filledRanges };
+  return filledRanges;
 }

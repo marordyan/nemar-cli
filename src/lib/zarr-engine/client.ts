@@ -24,7 +24,7 @@ import {
   windowSchema,
 } from "../../../shared/contract/zarr-engine-protocol.js";
 import { encodeFrame } from "../../../shared/zarr/protocol-frame.js";
-import { type FrameEvent, readFrames } from "./frame-stream.js";
+import { type FrameEvent, MAX_CLIENT_PAYLOAD_BYTES, readFrames } from "./frame-stream.js";
 
 /** The hidden subcommand that runs the engine. */
 export const ZARR_ENGINE_COMMAND = "__zarr-engine";
@@ -32,8 +32,61 @@ export const ZARR_ENGINE_COMMAND = "__zarr-engine";
 /** The default time one request may take. A window read over a slow link can be long. */
 export const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 const STDERR_KEEP_BYTES = 8 * 1024;
-/** The largest payload the client accepts in a reply (the engine's own cap is lower). */
-const MAX_CLIENT_PAYLOAD_BYTES = 1 << 30;
+
+/** Exact names of the environment variables the engine child receives, besides the prefixes in
+ *  {@link ENGINE_ENV_PREFIXES}: what Bun and the CLI's own config and network code need (where the
+ *  home and temporary directories are, the locale, the proxy and certificate settings). The
+ *  engine sends no credential, so it is not handed one: `NEMAR_API_KEY`, `GITHUB_TOKEN`, cloud
+ *  keys and the rest of the parent's environment stay behind. */
+const ENGINE_ENV_NAMES = new Set([
+  "PATH",
+  "HOME",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "SYSTEMROOT",
+  "SystemRoot",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LANGUAGE",
+  "TZ",
+  "TERM",
+  "NO_COLOR",
+  "FORCE_COLOR",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "all_proxy",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "NEMAR_CONFIG_DIR",
+  "NEMAR_NO_UPDATE_CHECK",
+  "TEST_API_URL",
+]);
+/** Variables of these families pass too: the locale (`LC_*`), XDG directories, Bun's own settings,
+ *  and every engine setting (`NEMAR_ZARR_*`). */
+const ENGINE_ENV_PREFIXES = ["LC_", "XDG_", "BUN_", "NEMAR_ZARR_"];
+
+/** The part of `source` the engine child is started with. */
+export function engineEnvironment(
+  source: Record<string, string | undefined> = process.env,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(source)) {
+    if (value === undefined) continue;
+    if (ENGINE_ENV_NAMES.has(name) || ENGINE_ENV_PREFIXES.some((p) => name.startsWith(p))) {
+      out[name] = value;
+    }
+  }
+  return out;
+}
 
 export type ClientErrorCode = EngineErrorCode | "timeout" | "exited" | "protocol";
 
@@ -55,6 +108,9 @@ export interface ClientOptions {
   env?: Record<string, string | undefined>;
   /** Per-request timeout, milliseconds. */
   timeoutMs?: number;
+  /** How long {@link EngineClient.close} waits for the engine to end before SIGTERM, and then
+   *  again before SIGKILL. */
+  closeGraceMs?: number;
 }
 
 export interface WindowReply {
@@ -90,12 +146,17 @@ export class EngineClient {
   private exited: Promise<number | null>;
   private nextId = 1;
   private closed = false;
+  private readonly closeGraceMs: number;
+  /** Set once a request timed out: the engine may still answer it, so no later answer can be
+   *  matched to a later request. */
+  private unusable: EngineClientError | null = null;
 
   private constructor(options: ClientOptions) {
     const cmd = options.cmd ?? defaultEngineCommand();
     this.timeoutMs = options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
+    this.closeGraceMs = options.closeGraceMs ?? 3000;
     this.child = spawn(cmd[0], cmd.slice(1), {
-      env: { ...process.env, ...options.env } as NodeJS.ProcessEnv,
+      env: { ...engineEnvironment(), ...options.env } as NodeJS.ProcessEnv,
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child.stderr.on("data", (chunk: Buffer) => {
@@ -104,7 +165,8 @@ export class EngineClient {
     // A write to a child that already exited is reported by the pending call, not here.
     this.child.stdin.on("error", () => undefined);
     this.exited = new Promise((resolve) => {
-      this.child.once("exit", (code) => resolve(code));
+      // "close", not "exit": it comes after the stdio streams end, so stderr is complete.
+      this.child.once("close", (code) => resolve(code));
       this.child.once("error", (err) => {
         this.stderrText += `${err.message}\n`;
         resolve(null);
@@ -132,6 +194,7 @@ export class EngineClient {
   private async call(
     header: Record<string, unknown>,
   ): Promise<{ header: Record<string, unknown>; payload: Uint8Array }> {
+    if (this.unusable) throw this.unusable;
     if (this.closed) throw this.fail("exited", "the engine is closed");
     const id = this.nextId++;
     try {
@@ -141,10 +204,15 @@ export class EngineClient {
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(this.fail("timeout", `the engine did not answer within ${this.timeoutMs} ms`)),
-        this.timeoutMs,
-      );
+      timer = setTimeout(() => {
+        const err = this.fail("timeout", `the engine did not answer within ${this.timeoutMs} ms`);
+        // A late answer to this request must never be taken for the next one's.
+        this.unusable = this.fail(
+          "timeout",
+          "an earlier request timed out, so this engine client can no longer be used",
+        );
+        reject(err);
+      }, this.timeoutMs);
     });
     const died = this.exited.then((code): never => {
       throw this.fail("exited", `the engine exited (status ${code ?? "unknown"}) before answering`);
@@ -236,17 +304,20 @@ export class EngineClient {
     await this.call({ type: "release", handle });
   }
 
-  /** End the engine: close its stdin and wait for it to exit (killing it after 3 s). Safe to
-   *  call twice. Resolves with its exit status. */
+  /** End the engine: close its stdin and wait for it to exit, asking with SIGTERM after the grace
+   *  period and forcing it with SIGKILL after another. Safe to call twice. Resolves with its exit
+   *  status (null when a signal ended it). */
   async close(): Promise<number | null> {
     if (!this.closed) {
       this.closed = true;
       this.child.stdin.end();
     }
-    const kill = setTimeout(() => this.child.kill(), 3000);
+    const term = setTimeout(() => this.child.kill("SIGTERM"), this.closeGraceMs);
+    const kill = setTimeout(() => this.child.kill("SIGKILL"), this.closeGraceMs * 2);
     try {
       return await this.exited;
     } finally {
+      clearTimeout(term);
       clearTimeout(kill);
     }
   }

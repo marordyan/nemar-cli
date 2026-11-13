@@ -19,7 +19,12 @@ import {
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EngineClient, EngineClientError } from "../src/lib/zarr-engine/client.js";
+import { encodeFrame } from "../shared/zarr/protocol-frame.js";
+import {
+  EngineClient,
+  EngineClientError,
+  engineEnvironment,
+} from "../src/lib/zarr-engine/client.js";
 import {
   BIDS,
   ID,
@@ -185,5 +190,176 @@ describe("a child that misbehaves", () => {
     const err = await c.hello().catch((e) => e);
     expect(err).toBeInstanceOf(EngineClientError);
     expect(err.code).toBe("protocol");
+  });
+});
+
+const b64 = (header: Record<string, unknown>, payload?: Uint8Array) =>
+  Buffer.from(encodeFrame(header, payload)).toString("base64");
+/** A child that writes `frameB64` to stdout after `delayMs`, then idles. */
+const replying = (frameB64: string, delayMs = 0) => [
+  process.execPath,
+  "-e",
+  `setTimeout(() => process.stdout.write(Buffer.from("${frameB64}", "base64")), ${delayMs}); setInterval(() => {}, 1000)`,
+];
+
+describe("the engine's environment", () => {
+  test("engineEnvironment keeps what the engine needs and drops credentials", () => {
+    const env = engineEnvironment({
+      PATH: "/bin",
+      HOME: "/home/x",
+      LC_ALL: "C",
+      XDG_CONFIG_HOME: "/x",
+      NEMAR_ZARR_BASE: "http://127.0.0.1:1",
+      NEMAR_CONFIG_DIR: "/c",
+      TEST_API_URL: "http://127.0.0.1:2",
+      HTTPS_PROXY: "http://proxy",
+      NEMAR_API_KEY: "secret",
+      GITHUB_TOKEN: "secret",
+      AWS_SECRET_ACCESS_KEY: "secret",
+      NEMAR_DEBUG: "1",
+    });
+    expect(Object.keys(env).sort()).toEqual(
+      [
+        "HOME",
+        "HTTPS_PROXY",
+        "LC_ALL",
+        "NEMAR_CONFIG_DIR",
+        "NEMAR_ZARR_BASE",
+        "PATH",
+        "TEST_API_URL",
+        "XDG_CONFIG_HOME",
+      ].sort(),
+    );
+  });
+
+  test("a child started by the client does not receive NEMAR_API_KEY or other secrets", async () => {
+    const saved = { ...process.env };
+    process.env.NEMAR_API_KEY = "nemar-secret";
+    process.env.GITHUB_TOKEN = "gh-secret";
+    process.env.NEMAR_ZARR_BASE = "http://127.0.0.1:9";
+    try {
+      const c = EngineClient.start({
+        cmd: [
+          process.execPath,
+          "-e",
+          "console.error(JSON.stringify(Object.keys(process.env))); setInterval(() => {}, 1000)",
+        ],
+        timeoutMs: 1500,
+      });
+      clients.push(c);
+      await c.hello().catch(() => undefined);
+      const keys = JSON.parse(c.stderr.split("\n")[0]) as string[];
+      expect(keys).not.toContain("NEMAR_API_KEY");
+      expect(keys).not.toContain("GITHUB_TOKEN");
+      expect(keys).toContain("PATH");
+      expect(keys).toContain("NEMAR_ZARR_BASE");
+    } finally {
+      for (const k of ["NEMAR_API_KEY", "GITHUB_TOKEN", "NEMAR_ZARR_BASE"]) {
+        if (saved[k] === undefined) Reflect.deleteProperty(process.env, k);
+        else process.env[k] = saved[k];
+      }
+    }
+  });
+});
+
+describe("closing and failing", () => {
+  test("the stderr a child wrote just before exiting is complete", async () => {
+    for (let i = 0; i < 15; i++) {
+      const c = EngineClient.start({
+        cmd: [
+          process.execPath,
+          "-e",
+          `console.error("x".repeat(20000)); console.error("LAST-LINE-${i}"); process.exit(3)`,
+        ],
+      });
+      clients.push(c);
+      const err = await c.hello().catch((e) => e);
+      expect(err.code).toBe("exited");
+      expect(err.stderr).toContain(`LAST-LINE-${i}`);
+    }
+  });
+
+  test("stderr written after the child process exited, by a process that inherited it, is still captured", async () => {
+    // "exit" would resolve while the grandchild still holds stderr; "close" waits for it.
+    const c = EngineClient.start({
+      cmd: [
+        process.execPath,
+        "-e",
+        'Bun.spawn(["sh", "-c", "sleep 0.4; echo LATE-LINE >&2"], { stderr: "inherit" }); process.exit(3)',
+      ],
+    });
+    clients.push(c);
+    const err = await c.hello().catch((e) => e);
+    expect(err.code).toBe("exited");
+    expect(err.stderr).toContain("LATE-LINE");
+  });
+
+  test("close() kills a child that ignores SIGTERM and never ends", async () => {
+    const c = EngineClient.start({
+      cmd: [process.execPath, "-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'],
+      closeGraceMs: 300,
+    });
+    const started = Date.now();
+    const status = await c.close();
+    expect(status).toBeNull();
+    expect(Date.now() - started).toBeLessThan(5000);
+  });
+
+  test("after a timeout the client is unusable, and a late reply cannot answer the next request", async () => {
+    const hello = b64({
+      id: 1,
+      type: "hello",
+      protocol: "0.1",
+      engine: "late/1",
+      max_payload_bytes: 1000,
+    });
+    const c = EngineClient.start({ cmd: replying(hello, 700), timeoutMs: 250 });
+    clients.push(c);
+    const first = await c.hello().catch((e) => e);
+    expect(first.code).toBe("timeout");
+    const started = Date.now();
+    const second = await c.hello().catch((e) => e);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(second).toBeInstanceOf(EngineClientError);
+    expect(second.message).toContain("can no longer be used");
+  });
+});
+
+describe("a window that does not match its header", () => {
+  test("a payload that is not channels x samples x dtype size is a protocol error", async () => {
+    const bad = b64(
+      {
+        id: 1,
+        type: "window",
+        start_sample: 0,
+        n_samples: 1,
+        channels: [0],
+        dtype: "float64",
+        layout: "channel-major",
+        byte_order: "little",
+        filled_ranges: [],
+        payload_bytes: 16,
+      },
+      new Uint8Array(16),
+    );
+    const c = EngineClient.start({ cmd: replying(bad), timeoutMs: 5000 });
+    clients.push(c);
+    const err = await c.readWindow({ handle: "h1", startS: 0, durationS: 1 }).catch((e) => e);
+    expect(err.code).toBe("protocol");
+    expect(err.message).toContain("invalid");
+  });
+});
+
+describe("the payload limit", () => {
+  test("a setting above the client's 1 GiB limit is a configuration error", async () => {
+    const c = engine({ NEMAR_ZARR_MAX_PAYLOAD_BYTES: String(2 ** 30 + 1) });
+    const err = await c.hello().catch((e) => e);
+    expect(err.code).toBe("exited");
+    expect(err.stderr).toContain("NEMAR_ZARR_MAX_PAYLOAD_BYTES must be at most");
+  });
+
+  test("1 GiB itself is accepted and reported by hello", async () => {
+    const c = engine({ NEMAR_ZARR_MAX_PAYLOAD_BYTES: String(2 ** 30) });
+    expect((await c.hello()).max_payload_bytes).toBe(2 ** 30);
   });
 });

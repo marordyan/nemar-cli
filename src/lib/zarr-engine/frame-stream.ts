@@ -40,6 +40,11 @@ import {
  *  a misbehaving client can make the engine buffer. */
 export const MAX_REQUEST_PAYLOAD_BYTES = 1024 * 1024;
 
+/** The largest reply payload the engine's client reads (1 GiB). The engine refuses a
+ *  `NEMAR_ZARR_MAX_PAYLOAD_BYTES` above it as a configuration error, so a window the engine
+ *  would send always fits, and one that is too big is `too_large`, never a framing failure. */
+export const MAX_CLIENT_PAYLOAD_BYTES = 1 << 30;
+
 export type StreamErrorKind = FrameErrorKind | "payload_too_large";
 
 export type FrameEvent =

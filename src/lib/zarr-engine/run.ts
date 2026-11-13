@@ -16,7 +16,7 @@
  *                                api-test.nemar.org, production for any other API host)
  *   NEMAR_ZARR_DATA_PLANE        the data plane's `/data` mount (default: the API origin + /data)
  *   NEMAR_ZARR_MAX_PAYLOAD_BYTES the largest window payload, and bound on a read's decode work
- *                                (default 256 MiB)
+ *                                (default 256 MiB, at most 1 GiB: the CLI client's limit)
  *   NEMAR_ZARR_RANGE_CACHE_BYTES bound of the in-memory range cache (default 256 MiB)
  *   NEMAR_ZARR_DISK_CACHE_DIR    the disk cache's directory (default <config dir>/zarr-cache/public/v1)
  *   NEMAR_ZARR_DISK_CACHE_BYTES  bound of the disk cache (default 2 GiB; 0 turns it off)
@@ -29,7 +29,7 @@
 
 import pkg from "../../../package.json" with { type: "json" };
 import { resolveDiskCache } from "./disk-cache.js";
-import type { FrameSink } from "./frame-stream.js";
+import { type FrameSink, MAX_CLIENT_PAYLOAD_BYTES } from "./frame-stream.js";
 import { DEFAULT_RANGE_CACHE_BYTES, EngineConfigError, resolveBases } from "./http.js";
 import { EngineServer, serve } from "./server.js";
 import { publicSource } from "./source.js";
@@ -39,13 +39,19 @@ export const DEFAULT_MAX_PAYLOAD_BYTES = 256 * 1024 * 1024;
 export const MAX_PAYLOAD_ENV = "NEMAR_ZARR_MAX_PAYLOAD_BYTES";
 export const RANGE_CACHE_ENV = "NEMAR_ZARR_RANGE_CACHE_BYTES";
 
-function envBytes(env: Record<string, string | undefined>, name: string, fallback: number): number {
+function envBytes(
+  env: Record<string, string | undefined>,
+  name: string,
+  fallback: number,
+  max = Number.MAX_SAFE_INTEGER,
+): number {
   const raw = env[name]?.trim();
   if (!raw) return fallback;
   const n = Number(raw);
   if (!Number.isSafeInteger(n) || n < 1) {
     throw new EngineConfigError(`${name} must be a positive integer, got ${raw}`);
   }
+  if (n > max) throw new EngineConfigError(`${name} must be at most ${max} bytes, got ${raw}`);
   return n;
 }
 
@@ -65,7 +71,12 @@ export async function runEngine(
     });
     server = new EngineServer({
       source,
-      maxPayloadBytes: envBytes(env, MAX_PAYLOAD_ENV, DEFAULT_MAX_PAYLOAD_BYTES),
+      maxPayloadBytes: envBytes(
+        env,
+        MAX_PAYLOAD_ENV,
+        DEFAULT_MAX_PAYLOAD_BYTES,
+        MAX_CLIENT_PAYLOAD_BYTES,
+      ),
       engineName: `nemar-zarr-engine/${pkg.version}`,
     });
   } catch (err) {

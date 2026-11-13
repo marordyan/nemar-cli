@@ -15,7 +15,15 @@ import {
   setDefaultTimeout,
   test,
 } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BIDS, ID, type Standin, runNemar, startStandin } from "./helpers/zarr-engine-standin.js";
@@ -46,11 +54,13 @@ const status = async () => JSON.parse((await nemar(["engine", "status", "--json"
 /** Entry files under the cache directory, by walking it the way the cache lays it out. */
 function entryFiles(): string[] {
   if (!existsSync(cacheDir())) return [];
-  return readdirSync(cacheDir()).flatMap((sub) =>
-    readdirSync(join(cacheDir(), sub))
-      .filter((n) => !n.startsWith("."))
-      .map((n) => join(cacheDir(), sub, n)),
-  );
+  return readdirSync(cacheDir())
+    .filter((sub) => /^[0-9a-f]{2}$/.test(sub))
+    .flatMap((sub) =>
+      readdirSync(join(cacheDir(), sub))
+        .filter((n) => !n.startsWith("."))
+        .map((n) => join(cacheDir(), sub, n)),
+    );
 }
 
 describe("nemar engine status", () => {
@@ -163,6 +173,17 @@ describe("nemar engine cache clear", () => {
     writeFileSync(join(cacheDir(), "keep-me.txt"), "mine");
     expect((await nemar(["engine", "cache", "clear"])).exitCode).toBe(0);
     expect(readFileSync(join(cacheDir(), "keep-me.txt"), "utf8")).toBe("mine");
+  });
+
+  test("refuses a directory the cache did not create, and removes nothing from it", async () => {
+    const unrelated = join(tmp, "unrelated");
+    mkdirSync(join(unrelated, "ab"), { recursive: true });
+    const lookalike = join(unrelated, "ab", "c".repeat(64));
+    writeFileSync(lookalike, "mine");
+    const r = await nemar(["engine", "cache", "clear"], { NEMAR_ZARR_DISK_CACHE_DIR: unrelated });
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout + r.stderr).toContain("nothing was removed");
+    expect(readFileSync(lookalike, "utf8")).toBe("mine");
   });
 
   test("a bad setting is exit 1", async () => {

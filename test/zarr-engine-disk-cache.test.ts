@@ -8,6 +8,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -15,14 +16,17 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  CACHE_MARKER,
   DEFAULT_DISK_CACHE_BYTES,
   DiskCache,
+  DiskCacheRefusal,
   TieredJsonCache,
   resolveDiskCache,
   withDiskRangeCache,
@@ -57,11 +61,13 @@ function age(key: string, secondsAgo: number): void {
 /** Every entry file under the cache directory. */
 function entryFiles(d = dir()): string[] {
   if (!existsSync(d)) return [];
-  return readdirSync(d).flatMap((sub) =>
-    readdirSync(join(d, sub))
-      .filter((n) => !n.startsWith("."))
-      .map((n) => join(d, sub, n)),
-  );
+  return readdirSync(d)
+    .filter((sub) => /^[0-9a-f]{2}$/.test(sub))
+    .flatMap((sub) =>
+      readdirSync(join(d, sub))
+        .filter((n) => !n.startsWith("."))
+        .map((n) => join(d, sub, n)),
+    );
 }
 
 describe("the round trip", () => {
@@ -253,9 +259,9 @@ describe("two instances sharing one directory", () => {
   test("a write leaves no temporary file behind", () => {
     const a = make();
     for (let i = 0; i < 20; i++) a.put(`k${i}`, body(50));
-    const temps = readdirSync(dir()).flatMap((sub) =>
-      readdirSync(join(dir(), sub)).filter((n) => n.startsWith(".")),
-    );
+    const temps = readdirSync(dir())
+      .filter((sub) => /^[0-9a-f]{2}$/.test(sub))
+      .flatMap((sub) => readdirSync(join(dir(), sub)).filter((n) => n.startsWith(".")));
     expect(temps).toEqual([]);
   });
 });
@@ -355,7 +361,7 @@ describe("stats and clear", () => {
     mkdirSync(join(dir(), "photos"));
     writeFileSync(join(dir(), "photos", "a.jpg"), "mine");
     expect(a.clear()).toBe(114);
-    expect(readdirSync(dir()).sort()).toEqual(["notes.txt", "photos"]);
+    expect(readdirSync(dir()).sort()).toEqual([CACHE_MARKER, "notes.txt", "photos"].sort());
     expect(readFileSync(join(dir(), "notes.txt"), "utf8")).toBe("mine");
     expect(readFileSync(join(dir(), "photos", "a.jpg"), "utf8")).toBe("mine");
   });
@@ -480,5 +486,101 @@ describe("TieredJsonCache", () => {
     expect(
       await new TieredJsonCache(new MemoryJsonCache("public"), disk, scope).get(key()),
     ).toBeUndefined();
+  });
+});
+
+describe("links and special files are never followed", () => {
+  test("an entry replaced by a symbolic link is a miss, and the link (not its target) is removed", () => {
+    const a = make();
+    a.put("k", body(50, 3));
+    const file = fileFor("k");
+    const target = join(root, "elsewhere");
+    writeFileSync(target, readFileSync(file));
+    rmSync(file);
+    symlinkSync(target, file);
+    // Same bytes behind the link: a reader that followed it would hit.
+    expect(a.get("k")).toBeUndefined();
+    expect(existsSync(file)).toBe(false);
+    expect(existsSync(target)).toBe(true);
+  });
+
+  test("a symbolic link is not counted by stats", () => {
+    const a = make();
+    a.put("k", body(50));
+    const link = join(fileFor("k", dir()), "..", "a".repeat(64));
+    symlinkSync(join(root, "nowhere"), link);
+    expect(a.stats().entries).toBe(1);
+  });
+
+  test("an entry subdirectory that is a symbolic link gets no write and no chmod", () => {
+    const a = make();
+    a.put("seed", body(10));
+    const outside = join(root, "outside");
+    mkdirSync(outside, { mode: 0o755 });
+    chmodSync(outside, 0o755);
+    const sub = join(fileFor("victim"), "..");
+    expect(existsSync(sub)).toBe(false);
+    symlinkSync(outside, sub);
+    a.put("victim", body(10));
+    expect(readdirSync(outside)).toEqual([]);
+    expect(statSync(outside).mode & 0o777).toBe(0o755);
+    expect(a.get("victim")).toBeUndefined();
+    expect(logged.length).toBe(1);
+  });
+});
+
+describe("clear only removes what the cache made", () => {
+  test("the cache writes a marker when it creates its root, and not into an existing non-empty one", () => {
+    const a = make();
+    a.put("k", body(10));
+    expect(existsSync(join(dir(), CACHE_MARKER))).toBe(true);
+    const other = join(root, "other");
+    mkdirSync(other);
+    writeFileSync(join(other, "mine.txt"), "mine");
+    make(1_000_000, other).put("k", body(10));
+    expect(existsSync(join(other, CACHE_MARKER))).toBe(false);
+  });
+
+  test("clear refuses a directory without the marker and removes nothing", () => {
+    const unrelated = join(root, "unrelated");
+    mkdirSync(join(unrelated, "ab"), { recursive: true });
+    const lookalike = join(unrelated, "ab", "c".repeat(64));
+    writeFileSync(lookalike, "not a cache entry");
+    expect(() => make(1_000_000, unrelated).clear()).toThrow(DiskCacheRefusal);
+    expect(readFileSync(lookalike, "utf8")).toBe("not a cache entry");
+  });
+
+  test("inside entry directories only entry-named files go, and a directory with other files stays", () => {
+    const a = make();
+    a.put("k", body(10));
+    const sub = join(fileFor("k"), "..");
+    writeFileSync(join(sub, "notes.txt"), "mine");
+    writeFileSync(join(sub, "A".repeat(64)), "uppercase is not an entry name");
+    a.clear();
+    expect(existsSync(fileFor("k"))).toBe(false);
+    expect(readFileSync(join(sub, "notes.txt"), "utf8")).toBe("mine");
+    expect(existsSync(join(sub, "A".repeat(64)))).toBe(true);
+    // The directory kept foreign files, so it is still the cache's: it can be cleared again.
+    expect(existsSync(join(dir(), CACHE_MARKER))).toBe(true);
+    expect(() => a.clear()).not.toThrow();
+  });
+
+  test("a cache that held only entries is gone entirely after clear", () => {
+    const a = make();
+    a.put("k", body(10));
+    a.clear();
+    expect(existsSync(dir())).toBe(false);
+  });
+});
+
+describe("engines sharing one directory stay near one limit", () => {
+  test("an instance that wrote little rescans and evicts what the others wrote", () => {
+    // 114-byte entries, a 2000-byte limit: a rescan after ~200 own bytes.
+    const a = make(2000);
+    const b = make(2000);
+    b.put("b0", body(100)); // b's total is now 114
+    for (let i = 0; i < 17; i++) a.put(`a${i}`, body(100)); // a: 1938 bytes
+    for (let i = 1; i < 6; i++) b.put(`b${i}`, body(100));
+    expect(make(2000).stats().bytes).toBeLessThanOrEqual(2000);
   });
 });

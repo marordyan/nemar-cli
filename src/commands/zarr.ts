@@ -343,6 +343,7 @@ Examples:
 Environment:
   NEMAR_ZARR_BASE               Zarr host (default: the one for your account's API host)
   NEMAR_ZARR_DISK_CACHE_BYTES   Disk cache limit in bytes (default 2 GiB, 0 turns it off)
+  NEMAR_ZARR_DISK_CACHE_DIR     Disk cache directory; it is made private (mode 0700)
   See \`nemar engine status\` for what is in use and \`nemar engine cache clear\` to empty the cache.`;
 
 export const zarrCommand = new Command("zarr").description(

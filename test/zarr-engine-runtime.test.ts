@@ -797,7 +797,7 @@ describe("the disk cache across engine restarts (G4)", () => {
   test("a corrupted cache file is a miss: the engine reads from the host and heals it", async () => {
     const first = await firstRead();
     // Corrupt every entry.
-    for (const sub of readdirSync(cacheDir)) {
+    for (const sub of readdirSync(cacheDir).filter((n) => /^[0-9a-f]{2}$/.test(n))) {
       for (const name of readdirSync(join(cacheDir, sub))) {
         await Bun.write(join(cacheDir, sub, name), "garbage");
       }

@@ -14,7 +14,7 @@ import { Command } from "commander";
 import { failMessage } from "../lib/admin-command.js";
 import { plain } from "../lib/terminal-text.js";
 import { EngineClient, EngineClientError } from "../lib/zarr-engine/client.js";
-import { resolveDiskCache } from "../lib/zarr-engine/disk-cache.js";
+import { DiskCacheRefusal, resolveDiskCache } from "../lib/zarr-engine/disk-cache.js";
 import { EngineConfigError, resolveBases, zarrBaseSource } from "../lib/zarr-engine/http.js";
 
 /** `1.5 GiB`, `12.3 MiB`, `512 B`. */
@@ -132,6 +132,14 @@ export function engineCacheClearAction(options: EngineOptions = {}): void {
   try {
     freed = cache.clear();
   } catch (err) {
+    if (err instanceof DiskCacheRefusal) {
+      failMessage(plain(err.message), {
+        json,
+        answered: true,
+        hint: "NEMAR_ZARR_DISK_CACHE_DIR must name a directory the Zarr cache created (or a new one). Remove the files yourself if you are sure.",
+      });
+      return;
+    }
     failMessage(`Could not clear ${cache.dir}: ${plain((err as Error).message)}`, {
       json,
       answered: false,
@@ -157,7 +165,9 @@ Examples:
 const CLEAR_HELP = `
 Removes every entry of the Zarr disk cache and says how many bytes that freed. The cache holds
 public data only and is refilled by the next read. It is at <config dir>/zarr-cache/public/v1
-unless NEMAR_ZARR_DISK_CACHE_DIR names another directory.
+unless NEMAR_ZARR_DISK_CACHE_DIR names another directory. The cache directory is made private (mode
+0700). Only files the cache wrote are removed, and a directory the cache did not create (it has no
+.nemar-zarr-cache file) is refused.
 
 Examples:
   $ nemar engine cache clear

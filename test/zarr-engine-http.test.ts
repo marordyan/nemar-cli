@@ -17,8 +17,11 @@ import {
   isHttpsDowngrade,
   readBodyCapped,
   resolveBases,
+  storeIdentity,
   withBodyCaps,
   withRangeCache,
+  zarrBaseForApi,
+  zarrBaseSource,
 } from "../src/lib/zarr-engine/http.js";
 
 interface Seen {
@@ -154,6 +157,52 @@ describe("host policy", () => {
     );
   });
 
+  test("the zarr base follows the account's API host", () => {
+    expect(resolveBases({}, "https://api.nemar.org")).toEqual({
+      zarrBase: "https://zarr.nemar.org",
+      dataPlaneBase: "https://api.nemar.org/data",
+    });
+    expect(resolveBases({}, "https://api-test.nemar.org/")).toEqual({
+      zarrBase: "https://zarr-test.nemar.org",
+      dataPlaneBase: "https://api-test.nemar.org/data",
+    });
+  });
+
+  test("any other API host falls back to the production zarr base", () => {
+    for (const api of [
+      "https://api.example.org",
+      "http://127.0.0.1:8787",
+      "https://zarr-test.nemar.org.evil.example",
+      "not a url",
+    ]) {
+      expect(zarrBaseForApi(api)).toEqual({ base: "https://zarr.nemar.org", source: "default" });
+    }
+    expect(resolveBases({}, "http://127.0.0.1:8787")).toEqual({
+      zarrBase: "https://zarr.nemar.org",
+      dataPlaneBase: "http://127.0.0.1:8787/data",
+    });
+  });
+
+  test("NEMAR_ZARR_BASE and NEMAR_ZARR_DATA_PLANE override the account, and the host rule still applies", () => {
+    expect(
+      resolveBases(
+        { NEMAR_ZARR_BASE: "http://127.0.0.1:9", NEMAR_ZARR_DATA_PLANE: "http://127.0.0.1:9/data" },
+        "https://api-test.nemar.org",
+      ),
+    ).toEqual({ zarrBase: "http://127.0.0.1:9", dataPlaneBase: "http://127.0.0.1:9/data" });
+    expect(() =>
+      resolveBases({ NEMAR_ZARR_BASE: "http://localhost:9" }, "https://api-test.nemar.org"),
+    ).toThrow(EngineConfigError);
+  });
+
+  test("zarrBaseSource says where the base came from", () => {
+    expect(zarrBaseSource({ NEMAR_ZARR_BASE: "http://127.0.0.1:9" }, "https://api.nemar.org")).toBe(
+      "env",
+    );
+    expect(zarrBaseSource({}, "https://api-test.nemar.org")).toBe("account");
+    expect(zarrBaseSource({}, "https://api.example.org")).toBe("default");
+  });
+
   test("the fetcher refuses a non-loopback http URL without sending anything", async () => {
     const f = createPublicFetcher();
     await expect(f("http://example.invalid/object")).rejects.toThrow("refused");
@@ -276,6 +325,19 @@ describe("range cache", () => {
     expect(seen.length).toBe(3);
   });
 
+  test("the same URL and Range under two store identities are two entries", async () => {
+    const cache = new RangeCache("public");
+    const oldStore = withRangeCache(createPublicFetcher(), cache, "store-a");
+    const newStore = withRangeCache(createPublicFetcher(), cache, "store-b");
+    await oldStore(`${base()}/object`, rangeInit("bytes=0-9"));
+    await oldStore(`${base()}/object`, rangeInit("bytes=0-9"));
+    expect(seen.length).toBe(1);
+    // A re-converted store keeps its chunk URLs: only the identity tells the bytes apart.
+    await newStore(`${base()}/object`, rangeInit("bytes=0-9"));
+    expect(seen.length).toBe(2);
+    expect(cache.stats().entries).toBe(2);
+  });
+
   test("the least recently used entry is evicted when the byte bound is passed", async () => {
     const cache = new RangeCache("public", 25);
     const f = withRangeCache(createPublicFetcher(), cache);
@@ -342,6 +404,28 @@ describe("range cache", () => {
 });
 
 describe("the source kind is in every cache key", () => {
+  test("storeIdentity changes with each of kind-origin, dataset, commit and timestamp", () => {
+    const store = {
+      dataBase: "https://data.example/nm000001/zarr/",
+      datasetId: "nm000001",
+      sourceCommit: "a".repeat(40),
+      convertedAt: "2026-01-01T00:00:00Z",
+    };
+    const id = storeIdentity("public", store);
+    expect(storeIdentity("public", { ...store })).toBe(id);
+    // The path under the origin is not identity, the origin is.
+    expect(storeIdentity("public", { ...store, dataBase: "https://data.example/other/" })).toBe(id);
+    for (const changed of [
+      { dataBase: "https://other.example/nm000001/zarr/" },
+      { datasetId: "nm000002" },
+      { sourceCommit: "b".repeat(40) },
+      { convertedAt: "2026-01-02T00:00:00Z" },
+      { convertedAt: null },
+    ]) {
+      expect(storeIdentity("public", { ...store, ...changed })).not.toBe(id);
+    }
+  });
+
   test("range cache keys start with the kind", () => {
     const cache = new RangeCache("public");
     expect(cache.key("u", "bytes=0-1").startsWith("public\n")).toBe(true);

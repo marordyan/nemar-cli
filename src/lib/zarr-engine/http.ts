@@ -35,6 +35,12 @@ import { getApiUrl } from "../api/client.js";
 export type SourceKind = "public";
 
 export const DEFAULT_ZARR_BASE = "https://zarr.nemar.org";
+/** The Zarr host that goes with each NEMAR API host. Any other API host (a self-hosted or
+ *  development backend) has no entry and falls back to {@link DEFAULT_ZARR_BASE}. */
+const ZARR_BASE_BY_API_HOST: Record<string, string> = {
+  "api.nemar.org": DEFAULT_ZARR_BASE,
+  "api-test.nemar.org": "https://zarr-test.nemar.org",
+};
 export const ZARR_BASE_ENV = "NEMAR_ZARR_BASE";
 export const ZARR_DATA_PLANE_ENV = "NEMAR_ZARR_DATA_PLANE";
 /** 256 MiB, the engine's default for both the range cache and `max_payload_bytes`. */
@@ -106,10 +112,41 @@ function validBase(name: string, value: string): string {
   return value.replace(/\/+$/, "");
 }
 
-/** The two bases from the environment, defaults applied and the host policy enforced. */
-export function resolveBases(env: Record<string, string | undefined> = process.env): EngineBases {
-  const zarr = env[ZARR_BASE_ENV]?.trim() || DEFAULT_ZARR_BASE;
-  const plane = env[ZARR_DATA_PLANE_ENV]?.trim() || `${getApiUrl().replace(/\/+$/, "")}/data`;
+/** Where the zarr base came from: the environment, the signed-in account's API host, or the
+ *  production default (an API host with no Zarr host of its own). */
+export type ZarrBaseSource = "env" | "account" | "default";
+
+/** The Zarr base that goes with an API URL, and whether the account chose it. */
+export function zarrBaseForApi(apiUrl: string): { base: string; source: "account" | "default" } {
+  try {
+    const known = ZARR_BASE_BY_API_HOST[new URL(apiUrl).hostname];
+    if (known) return { base: known, source: "account" };
+  } catch {
+    // not a URL: the default
+  }
+  return { base: DEFAULT_ZARR_BASE, source: "default" };
+}
+
+/** Where {@link resolveBases} takes the zarr base from, for `nemar engine status`. */
+export function zarrBaseSource(
+  env: Record<string, string | undefined> = process.env,
+  apiUrl: string = getApiUrl(),
+): ZarrBaseSource {
+  return env[ZARR_BASE_ENV]?.trim() ? "env" : zarrBaseForApi(apiUrl).source;
+}
+
+/**
+ * The two bases, defaults applied and the host policy enforced. The zarr base is
+ * `NEMAR_ZARR_BASE`, else the one that goes with the active account's API host
+ * (`api.nemar.org` gives `zarr.nemar.org`, `api-test.nemar.org` gives `zarr-test.nemar.org`),
+ * else production. The data plane follows the API URL.
+ */
+export function resolveBases(
+  env: Record<string, string | undefined> = process.env,
+  apiUrl: string = getApiUrl(),
+): EngineBases {
+  const zarr = env[ZARR_BASE_ENV]?.trim() || zarrBaseForApi(apiUrl).base;
+  const plane = env[ZARR_DATA_PLANE_ENV]?.trim() || `${apiUrl.replace(/\/+$/, "")}/data`;
   return {
     zarrBase: validBase(ZARR_BASE_ENV, zarr),
     dataPlaneBase: validBase(ZARR_DATA_PLANE_ENV, plane),
@@ -334,7 +371,7 @@ export interface RangeCacheStats {
 
 /** What a `Range` header asks for, as a body length: `bytes=a-b` is b-a+1 and `bytes=-N`
  *  is N (the cached footers are always shorter than their shard). Null for any other form. */
-function expectedRangeLength(range: string): number | null {
+export function expectedRangeLength(range: string): number | null {
   const m = /^bytes=(?:(\d+)-(\d+)|-(\d+))$/.exec(range);
   if (!m) return null;
   if (m[3] !== undefined) return Number(m[3]);
@@ -354,13 +391,17 @@ export class RangeCache {
     private readonly maxBytes: number = DEFAULT_RANGE_CACHE_BYTES,
   ) {}
 
-  /** The key an entry is stored under: the source kind first. */
-  key(url: string, range: string): string {
-    return `${this.kind}\n${url}\n${range}`;
+  /** The key an entry is stored under: the source kind first, then the store identity
+   *  (`scope`, see {@link storeIdentity}), then the URL and Range. An empty scope leaves the
+   *  key as kind, URL, Range. */
+  key(url: string, range: string, scope = ""): string {
+    return scope === ""
+      ? `${this.kind}\n${url}\n${range}`
+      : `${this.kind}\n${scope}\n${url}\n${range}`;
   }
 
-  get(url: string, range: string): Uint8Array | undefined {
-    const k = this.key(url, range);
+  get(url: string, range: string, scope = ""): Uint8Array | undefined {
+    const k = this.key(url, range, scope);
     const hit = this.entries.get(k);
     if (hit === undefined) {
       this.misses++;
@@ -373,9 +414,9 @@ export class RangeCache {
     return hit;
   }
 
-  put(url: string, range: string, body: Uint8Array): void {
+  put(url: string, range: string, body: Uint8Array, scope = ""): void {
     if (body.length > this.maxBytes) return;
-    const k = this.key(url, range);
+    const k = this.key(url, range, scope);
     const old = this.entries.get(k);
     if (old) {
       this.bytes -= old.length;
@@ -397,19 +438,37 @@ export class RangeCache {
   }
 }
 
+/** The identity of one converted store, as a string for a cache key. Chunk URLs do not change
+ *  when a store is re-converted (`data_base` is `<id>/zarr/`), so a key of kind, URL and Range
+ *  alone would serve the old bytes for the new store. The identity adds what does change: the
+ *  data origin, the dataset, `source_commit` and `updated_utc` (the same `convertedAt` the JSON
+ *  cache uses). */
+export function storeIdentity(
+  kind: SourceKind,
+  store: { dataBase: string; datasetId: string; sourceCommit: string; convertedAt: string | null },
+): string {
+  let origin: string;
+  try {
+    origin = new URL(store.dataBase).origin;
+  } catch {
+    origin = store.dataBase;
+  }
+  return JSON.stringify([kind, origin, store.datasetId, store.sourceCommit, store.convertedAt]);
+}
+
 /** Wrap `fetcher` so a `Range` request answered with a complete `206` is served from
- *  `cache` next time. Requests without a Range, and any response that is not a `206` of
- *  exactly the asked length, pass through and are never stored. */
-export function withRangeCache(fetcher: Fetcher, cache: RangeCache): Fetcher {
+ *  `cache` next time, under `scope` (the store identity). Requests without a Range, and any
+ *  response that is not a `206` of exactly the asked length, pass through and are never stored. */
+export function withRangeCache(fetcher: Fetcher, cache: RangeCache, scope = ""): Fetcher {
   return async (url, init) => {
     const range = init?.headers?.Range;
     if (range === undefined) return fetcher(url, init);
-    const cached = cache.get(url, range);
+    const cached = cache.get(url, range, scope);
     if (cached) return new Response(cached, { status: 206 });
     const response = await fetcher(url, init);
     if (response.status !== 206) return response;
     const body = new Uint8Array(await response.arrayBuffer());
-    if (body.length === expectedRangeLength(range)) cache.put(url, range, body);
+    if (body.length === expectedRangeLength(range)) cache.put(url, range, body, scope);
     return new Response(body, { status: 206, headers: response.headers });
   };
 }

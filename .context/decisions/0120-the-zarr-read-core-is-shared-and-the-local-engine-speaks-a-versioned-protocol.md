@@ -78,15 +78,15 @@ A Zarr store is not the file, though: one recording can have several groups, and
    v0 is published at `https://api.nemar.org/schemas/zarr-engine-protocol-v0.json` and is the one published schema that may change in place; every version after it is immutable like the index schema.
 8. **Missing data is never zeros.**
    A `window` reports what could not be read in `filled_ranges` (ADR 0005).
-9. **Still open:** plan A versus plan B for shipping the engine; private-dataset access, where ADR 0114's credential helper is the likely route; and a Unix-domain socket, which would add a transport and not change the messages.
+9. **Still open:** plan A versus plan B for shipping the engine; private-dataset access, where ADR 0114's credential helper is the likely route (and what, if anything, may be cached on disk, decision 11); and a Unix-domain socket, which would add a transport and not change the messages.
 10. **Engine policies (phase 4, `src/lib/zarr-engine/`).**
    These are the engine's rules, not the protocol's.
    *Framing.* Bad JSON or a bad header with an intact prefix is `invalid_message` with `id: null` and the engine keeps reading; bad magic, a `header_len` over the limit, an unpadded prefix, a request payload over 1 MiB, and end of input inside a frame cannot be resynchronized, so the engine sends the same error and exits with status 2; end of input between frames exits 0; logs go to stderr only; requests are handled one at a time.
-   *Hosts.* The zarr base (`NEMAR_ZARR_BASE`, default `https://zarr.nemar.org`), the data-plane base (`NEMAR_ZARR_DATA_PLANE`, default the API origin plus `/data`) and the index's `data_base` and `contract_base` must be `https`, or `http` to a loopback address only, the exception ADR 0114 makes for `NEMAR_DATA_HOSTS`. Loopback here means the literal addresses `127.0.0.1` and `[::1]`; unlike ADR 0114's list, the name `localhost` is refused, because the hosts file decides where a name resolves.
+   *Hosts.* The zarr base (`NEMAR_ZARR_BASE`, else the host that goes with the active account's API host: `https://zarr.nemar.org` for `api.nemar.org`, `https://zarr-test.nemar.org` for `api-test.nemar.org`, and production for any other API host), the data-plane base (`NEMAR_ZARR_DATA_PLANE`, default the API origin plus `/data`) and the index's `data_base` and `contract_base` must be `https`, or `http` to a loopback address only, the exception ADR 0114 makes for `NEMAR_DATA_HOSTS`. Loopback here means the literal addresses `127.0.0.1` and `[::1]`; unlike ADR 0114's list, the name `localhost` is refused, because the hosts file decides where a name resolves.
    These settings are not ADR 0114's list: they are never added to `NEMAR_DATA_HOSTS` and never decide where a credential goes, and `src/lib/data-hosts.ts` stays the only list a credential follows.
    The public fetcher sends no `Authorization` or `Cookie` and refuses a request that carries one; every cache key starts with the source kind (`public`).
    *The record* comes from the dataset's data-plane version listing: its `latest`, then `<latest>/records.json`, the record whose `bids_relpath` is the recording; any failure is `record: null` and one line on stderr, and the open succeeds.
-   *Limits.* `max_payload_bytes` defaults to 256 MiB (`NEMAR_ZARR_MAX_PAYLOAD_BYTES`), and a read whose decode work (store channels x samples x 2 bytes) would exceed it is `too_large` as well, before anything is fetched, because a chunk holds every channel; the range cache holds 256 MiB of `206` bodies (`NEMAR_ZARR_RANGE_CACHE_BYTES`) so a repeated window sends no request.
+   *Limits.* `max_payload_bytes` defaults to 256 MiB (`NEMAR_ZARR_MAX_PAYLOAD_BYTES`), and a read whose decode work (store channels x samples x 2 bytes) would exceed it is `too_large` as well, before anything is fetched, because a chunk holds every channel; the range cache holds 256 MiB of `206` bodies (`NEMAR_ZARR_RANGE_CACHE_BYTES`) so a repeated window sends no range request.
    *Bodies and bounds.* A reply's `record` over 256 KiB (serialized) is sent as `null` with one stderr line, like a missing record, and a reply that still cannot be framed (a header over 1 MiB) is an `internal` error for its request while the engine keeps serving.
    A response body is never read past a bound: a JSON document past its limit (counted in bytes) fails without being read whole, a `Range` request is bounded by the length it asks for (a `206` whose `Content-Length` or body differs fails as `upstream_error`; any other status keeps its status and a body cut at that length), and any other body the read core reads is bounded at 8 MiB.
    Because that asked-for length comes from the shard footer, which the data host serves, each `Range` read of a window is also capped, before it is sent, at what the store's geometry allows (the chunks the window can touch, each holding every channel, plus 64 bytes of compression overhead per chunk); a footer claiming more is `upstream_error`.
@@ -95,7 +95,21 @@ A Zarr store is not the file, though: one recording can have several groups, and
    The fetcher refuses `Proxy-Authorization` as well; Bun honours `HTTP_PROXY` and `HTTPS_PROXY`, and the no-credentials guarantee does not cover a proxy URL's own userinfo.
    Index-derived strings written to stderr are JSON-quoted so a control character cannot forge a log line.
    *A private source, when one is added,* attaches credentials per request and only to an origin `src/lib/data-hosts.ts` admits, never because "this dataset is private", never across a redirect, and never from the index's `data_base`, which is a published document.
-   Private bytes are not written to disk (the phase 5 cache) without a decision first, since access can be revoked and cached bytes would outlive it.
+   Private bytes are not written to disk without a decision first (decision 11), since access can be revoked and cached bytes would outlive it.
+11. **The disk cache (phase 5, `src/lib/zarr-engine/disk-cache.ts`).**
+   A repeated read sends no data (range) request, even after the engine restarts, because the engine keeps `206` range bodies, and the read core's JSON (shard footers and array metadata) as a second tier behind the in-memory cache, on disk.
+   The dataset's `index.json` and records are still read again at each engine start; only the data requests are saved.
+   *Public only, one cache per host.* Only the public source writes it. It lives at `<config dir>/zarr-cache/public/v1/` (`NEMAR_ZARR_DISK_CACHE_DIR` overrides the directory), created at mode 0700 (the directory and each one above it up to the config directory; a directory named by `NEMAR_ZARR_DISK_CACHE_DIR` is made 0700 too, so name one that is meant to be private), and holds 2 GiB by default (`NEMAR_ZARR_DISK_CACHE_BYTES`; `0` turns it off).
+   *The key is the store's identity.* Chunk URLs do not change when a store is re-converted (`data_base` is `<id>/zarr/`), so a key of URL and Range would serve the old bytes for the new store. Every key (in memory too) is the source kind, the origin of `data_base`, the dataset id, `source_commit` and the index's `updated_utc` (the `convertedAt` the JSON cache already uses), then the URL and the Range.
+   *`index.json` is never cached on disk.* It is read again at each engine start, which is how a re-conversion is noticed; a changed `updated_utc` makes every older entry unreachable, and the eviction removes it in time.
+   *Entries are verified and written whole.* One file per entry, named for the hash of its key, holding a magic word, the full key, the body length and the body; a read checks all of it, and an entry that fails is a miss and is deleted. A write goes to a temporary file in the same directory and is renamed into place, so a crash or a second engine never leaves a torn entry. Only a `206` body of exactly the asked length, after the byte caps, is stored.
+   *The directory is the cache's own, and links are not followed.* An entry is opened without following a link and must be a regular file within the limit; an entry subdirectory that is a link, or not a directory, is refused and nothing is written or chmodded through it. When the cache creates its root it writes a marker file there (`.nemar-zarr-cache`); `nemar engine cache clear` refuses a directory without it, and removes only files named like entries inside the two-hex-digit directories, so a setting that names an unrelated folder cannot cost it anything.
+   *Several engines may share the directory.* Each instance rescans the directory total once its own writes since the last scan pass a tenth of the limit, so the cache stays near its limit and does not grow to one limit per engine.
+   *The engine child gets an allowlisted environment* (the home, temporary and locale variables, proxy and certificate settings, `NEMAR_CONFIG_DIR`, `TEST_API_URL` and `NEMAR_ZARR_*`): it sends no credential, so `NEMAR_API_KEY` and the rest of the parent's environment are not passed. Its `NEMAR_ZARR_MAX_PAYLOAD_BYTES` may not exceed 1 GiB, the largest reply the CLI client reads, so a window that is too big is `too_large` and never a framing failure.
+   *The cache never fails a read.* A disk error is a miss, with one stderr line. A hit refreshes the file's modification time; a write that takes the total past the limit deletes the oldest entries until it is at 90%; a missing file is tolerated everywhere because two engines may share the directory.
+   *The rule for a private source, when one is added:* private bytes get their own per-account location, or none, under a separate decision, and are wiped on logout or revocation. They never share this directory.
+   *The edge case:* a public dataset that is later made private leaves its public bytes in this cache until they are cleared (`nemar engine cache clear`) or evicted; the cache cannot see the change, because it never asks the host again for bytes it holds.
+   *The commands* `nemar zarr read`, `nemar engine status`, `nemar engine cache clear` and the Zarr engine section of `nemar doctor` start the engine as the hidden subcommand `nemar __zarr-engine`, which is dispatched before notices and the update check.
 
 ## Consequences
 
@@ -116,8 +130,15 @@ A Zarr store is not the file, though: one recording can have several groups, and
 - **This ADR's number was settled when the epic merged upstream `dev`.**
   It was drafted as 0118, but upstream's compute gateway and OpenID Connect records took 0118 and 0119 first, so it is 0120.
 
+- **A repeated read costs nothing, and a cache can outlive its reason.**
+  The disk cache holds public bytes for as long as the limit allows; the price is the made-private edge case in decision 11, which `nemar engine cache clear` answers by hand.
+
 ## Alternatives considered
 
+- **A disk cache for private data too, or one cache per account.**
+  Private bytes outlive the access that fetched them, so they need their own decision about revocation first; a per-account split of public bytes would store the same public chunk once per account for nothing.
+- **Caching `index.json` on disk.**
+  It is the only thing that says a store was re-converted; a cached copy would hide exactly that.
 - **Closed requests (the engine rejects an unknown request field).**
   The first draft's rule. It needs `.strict()` in the zod mirror, which the repository forbids under `shared/contract/` (the JSON Schema would then differ from its mirror), and it turns every newer client into an error against an older engine; ignoring unknown fields, with new request fields safe to ignore, gives the same safety for known fields.
 - **Copy the core instead of moving it.**
@@ -145,4 +166,5 @@ A Zarr store is not the file, though: one recording can have several groups, and
 - `test/zarr-engine-protocol-contract.test.ts`, `test/zarr-engine-frame.test.ts`, `test/fixtures/engine-frames/`, `scripts/zarr/engine_frame_fixtures.py`.
 - `shared/contract/neuroschema/record.bundle.json`, `test/contract-neuroschema-record.test.ts`, `test/fixtures/neuroschema-records/` (three records from nm000103's public `records.json`); `shared/zarr/window-samples.ts` and `backend/test/zarr-window-samples.test.ts`.
 - `backend/src/routes/schemas.ts` serves the v0 schema; `backend/test/zarr-index-v3.test.ts` tests it.
+- `src/lib/zarr-engine/disk-cache.ts`, `test/zarr-engine-disk-cache.test.ts`, the restart tests in `test/zarr-engine-runtime.test.ts`; `src/lib/zarr-engine/client.ts`, `src/commands/zarr.ts`, `src/commands/engine.ts` and their `test/zarr-*cli.test.ts` files.
 - ADR 0005, ADR 0029, ADR 0037, ADR 0057, ADR 0077 (precedent only), ADR 0114.

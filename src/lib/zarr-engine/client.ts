@@ -375,17 +375,15 @@ export class EngineClient {
     try {
       const next = await Promise.race([frame, timeout, died]);
       if ("failed" in next) {
-        if (next.failed instanceof QueueOverflow) throw this.fail("protocol", next.failed.message);
-        const code = await Promise.race([
-          this.exited,
-          new Promise<"pending">((r) => setTimeout(() => r("pending"), 1000)),
-        ]);
-        throw this.fail(
-          "exited",
-          `reading the engine's output failed: ${next.failed.message}${
-            code === "pending" ? "" : ` (the engine exited with status ${code ?? "unknown"})`
-          }`,
+        // A broken or overflowing output stream cannot be trusted again: stop the engine and
+        // refuse further calls, as after a timeout or a fatal frame.
+        this.unusable = this.fail(
+          "protocol",
+          "the engine's output failed, so this client can no longer be used",
         );
+        this.child.kill("SIGKILL");
+        if (next.failed instanceof QueueOverflow) throw this.fail("protocol", next.failed.message);
+        throw this.fail("exited", `reading the engine's output failed: ${next.failed.message}`);
       }
       if (next.done) {
         // Its output ended: it is exiting, so say with what status when it has.

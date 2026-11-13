@@ -519,6 +519,43 @@ describe("a stream that fails is not a stream that ended", () => {
     expect(err.message).not.toContain("closed its output");
   });
 
+  test("the engine is killed and the client unusable, even when it ignores SIGTERM and stays alive", async () => {
+    const c = EngineClient.start({
+      cmd: [process.execPath, "-e", 'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)'],
+      timeoutMs: 5000,
+      closeGraceMs: 5000,
+    });
+    clients.push(c);
+    (c as unknown as { child: { stdout: { destroy(e: Error): void } } }).child.stdout.destroy(
+      new Error("EIO: input/output error"),
+    );
+    const started = Date.now();
+    const err = await c.hello().catch((e) => e);
+    expect(err.message).toContain("reading the engine's output failed: EIO: input/output error");
+    const again = await c.hello().catch((e) => e);
+    expect(again.message).toContain("can no longer be used");
+    expect(await c.close()).toBeNull();
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  test("an output overflow also leaves the client unusable", async () => {
+    const c = EngineClient.start({
+      cmd: [
+        process.execPath,
+        "-e",
+        "const b = Buffer.alloc(65536, 0x41); setInterval(() => process.stdout.write(b), 1);",
+      ],
+      maxQueuedBytes: 200_000,
+      timeoutMs: 20_000,
+    });
+    clients.push(c);
+    await new Promise((r) => setTimeout(r, 800));
+    const err = await c.hello().catch((e) => e);
+    expect(err.message).toContain("without being read");
+    const again = await c.hello().catch((e) => e);
+    expect(again.message).toContain("can no longer be used");
+  });
+
   test("a clean end of output is still reported as closed", async () => {
     const c = EngineClient.start({
       cmd: [process.execPath, "-e", "require('fs').closeSync(1); setInterval(() => {}, 1000)"],

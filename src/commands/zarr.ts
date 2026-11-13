@@ -391,7 +391,7 @@ Environment:
   NEMAR_ZARR_RANGE_CACHE_BYTES  In-memory range cache limit in bytes (default 256 MiB)
   NEMAR_ZARR_DISK_CACHE_BYTES   Disk cache limit in bytes (default 2 GiB, 0 turns it off)
   NEMAR_ZARR_DISK_CACHE_DIR     Disk cache directory; it is made private (mode 0700)
-  The two hosts must be https (or http to 127.0.0.1 or [::1]); the byte limits are positive integers.
+  The two hosts must be https (or http to 127.0.0.1 or [::1]); the payload and range-cache limits are positive integers.
   See \`nemar engine status\` for what is in use and \`nemar engine cache clear\` to empty the cache.`;
 
 export const zarrCommand = new Command("zarr").description(

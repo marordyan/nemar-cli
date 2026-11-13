@@ -13,6 +13,7 @@
  * silent engine keeps the "attach the log" hint.
  */
 
+import { randomBytes } from "node:crypto";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import chalk from "chalk";
@@ -201,12 +202,14 @@ function printSummary(
 }
 
 /** Write `bytes` to `path` through a temporary file and a rename, so a failed run never
- *  leaves a half-written file where a good one may have been. */
-function writeFileAtomic(path: string, bytes: Uint8Array): void {
+ *  leaves a half-written file where a good one may have been. The temporary file has a random
+ *  name and is created exclusively (`wx`, which does not follow a symbolic link at that name),
+ *  so a link planted next to the output cannot redirect the write. */
+export function writeFileAtomic(path: string, bytes: Uint8Array): void {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp-${process.pid}`;
+  const tmp = `${path}.tmp-${randomBytes(8).toString("hex")}`;
   try {
-    writeFileSync(tmp, bytes, { mode: 0o644 });
+    writeFileSync(tmp, bytes, { mode: 0o644, flag: "wx" });
     renameSync(tmp, path);
   } catch (err) {
     rmSync(tmp, { force: true });

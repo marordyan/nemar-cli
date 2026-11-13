@@ -75,8 +75,10 @@ export function normalizeErrorCode(code: string): EngineErrorCode {
 /** Bytes per sample for each payload dtype. */
 export const ENGINE_DTYPE_BYTES = { float64: 8, int16: 2 } as const;
 
-/** 1 to 2^53 - 1: a double holds every id exactly, so any client echoes it unchanged. */
-const id = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
+/** The largest request id: 2^53 - 1, so a double holds every id exactly and any client echoes it unchanged. */
+export const MAX_MESSAGE_ID = Number.MAX_SAFE_INTEGER;
+/** 1 to {@link MAX_MESSAGE_ID}. */
+const id = z.number().int().min(1).max(MAX_MESSAGE_ID);
 const handle = z.string().min(1);
 const datasetId = z.string().regex(/^[a-z]{2}[0-9]{6}$/);
 const nonEmpty = z.string().min(1);

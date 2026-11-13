@@ -7,9 +7,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   type AssembleWindowInput,
+  type DecodedSegment,
   assembleChannelMajor,
   assembleWindow,
-  type DecodedSegment,
 } from "../shared/zarr/assemble.js";
 
 // Two store channels. Samples [0, 4) are a stored chunk (stride 4: channel 0 then channel 1);

@@ -6,7 +6,7 @@ import type { Fetcher } from "./interfaces.js";
  * apart on what "a valid Range response" means. A compliant origin ALWAYS
  * answers `206` to a `Range` request; a bare `200` means the origin ignored
  * `Range` and returned the whole object, which would silently misalign every
- * downstream byte offset (see `read-window.ts`'s module doc). The body length
+ * downstream byte offset (see the module doc of `backend/src/mcp/tools/read-window.ts`). The body length
  * is asserted against `expectedLength` too -- a `206` with the wrong slice is
  * just as wrong as a `200`.
  */

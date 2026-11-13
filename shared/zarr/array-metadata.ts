@@ -35,7 +35,8 @@ import type { CacheKey, Fetcher, JsonCache } from "./interfaces.js";
 export interface Level0ArrayMetadata {
   dataType: string;
   codecs: ZarrArrayMetadata["codecs"];
-  /** One entry per channel -- `read-window.ts` cross-checks the length
+  /** One entry per channel -- the MCP `read_window` tool
+   *  (`backend/src/mcp/tools/read-window.ts`) cross-checks the length
    *  against the group's own `n_channels` before trusting either array. */
   scale: number[];
   offset: number[];

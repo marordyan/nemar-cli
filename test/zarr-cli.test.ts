@@ -105,6 +105,16 @@ describe("the summary", () => {
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toContain("Filled ranges  [2000, 2250)");
     expect(r.stdout).toContain("int16");
+    expect(r.stdout).toContain("the store does not hold; they read as 0.");
+  });
+
+  test("the filled-range note says offset for physical units", async () => {
+    const r = await read(window(7, 2));
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain(
+      "the store does not hold; they read as each channel's offset, the physical value of a digital 0.",
+    );
+    expect(r.stdout).not.toContain("they read as 0.");
   });
 
   test("previews at most four channels", async () => {

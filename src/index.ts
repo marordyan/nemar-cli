@@ -58,7 +58,7 @@ import { fetchAndDisplayNotices } from "./lib/notices.js";
 import { installAutomaticQuiet, isAutomaticInvocation } from "./lib/repull/execute/automatic.js";
 import { initUpdateCheck, printUpdateBanner } from "./lib/update-check.js";
 import { version } from "./lib/version.js";
-import { ZARR_ENGINE_COMMAND } from "./lib/zarr-engine/client.js";
+import { ZARR_ENGINE_COMMAND } from "./lib/zarr-engine/command.js";
 
 /**
  * Index into `argv` (already `process.argv.slice(2)`) of the `__complete`

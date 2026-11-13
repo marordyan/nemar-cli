@@ -7,7 +7,7 @@
  * inner chunk (the codec's own `sharding_indexed.configuration.chunk_shape`)
  * `[n_channels, chunk_samples]`, `index_location: "end"`. `shard_samples`/
  * `chunk_samples` are per-STORE properties (read from the specific store's
- * own group entry, `targetGroup.shard_samples` in `read-window.ts` -- never
+ * own group entry, `targetGroup.shard_samples` in `backend/src/mcp/tools/read-window.ts` -- never
  * hardcoded or assumed constant across a dataset or group name): verified
  * live on nm000329's `sub-1` store `eeg_250hz` group (shard 75000, chunk
  * 1000) and on003392's `sub-06` store `meg_250hz` group (shard 68000, chunk
@@ -85,7 +85,7 @@
  * (always `chunk_samples`) for exactly this reason -- see `taste.ts`'s
  * `DecodedSegment` doc for the conflation this separation prevents.
  *
- * No I/O in this file -- `read-window.ts` does the fetching and decoding;
+ * No I/O in this file -- `read.ts` does the fetching and decoding;
  * this file only computes which shards, which local chunk indices, and
  * which byte ranges to ask for.
  */
@@ -237,7 +237,7 @@ export function chunkSampleSpan(opts: {
 
 /** A discriminated union, like {@link ShardIndexEntry}: `{ kind: "range",
  *  start: undefined, end: undefined }` used to typecheck, which is why
- *  `read-window.ts` needed an `as number` cast on `read.start`. The absent
+ *  the window reader needed an `as number` cast on `read.start`. The absent
  *  variant carries a SINGULAR `localIndex` (it is always constructed for
  *  exactly one local index, and was always read back as
  *  `localIndices[0]`) rather than a one-element array. */
@@ -294,10 +294,10 @@ export function planShardReads(
 
 // ---------------------------------------------------------------------------
 // Cache serialization for the `shardidx/<zarr>/<group>/0/<j>` projection kind
-// (`read-window.ts`) -- a compact `[offset, nbytes]` pair per entry, `[-1,
+// (`shard-footer.ts`) -- a compact `[offset, nbytes]` pair per entry, `[-1,
 // -1]` for an absent one (real offsets/nbytes are always non-negative, so
 // this sentinel is unambiguous). The cache-entry SCHEMA
-// (`shardIndexPairSchema`, `read-window.ts`) is what rejects a malformed
+// (`shardIndexPairSchema`, `shard-footer.ts`) is what rejects a malformed
 // pair (e.g. `[-1, 240]`) as a cache miss -- these two functions trust their
 // input is already well-formed, which holds for anything that passed that
 // schema or came straight from `parseShardFooter`.

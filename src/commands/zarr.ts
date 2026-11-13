@@ -48,7 +48,11 @@ export interface ZarrReadOptions {
 const PREVIEW_CHANNELS = 4;
 const PREVIEW_VALUES = 6;
 
-/** A sentence and a hint for each engine error code. */
+/** A sentence and a hint for each engine error code.
+ *  `invalid_message`, `unsupported_version`, `unknown_handle` and `internal` have no entry on
+ *  purpose: they mean a bug in this CLI or a version mismatch between it and its own engine,
+ *  which changing the arguments cannot fix, so they take the generic hint that points at
+ *  `--debug` (see `failEngine`). */
 const ERROR_HINTS: Record<string, { hint: string; answered: boolean }> = {
   not_found: {
     hint: "Check the dataset id and the recording path (the BIDS path of the file, like sub-01/eeg/sub-01_task-x_eeg.edf). Only public datasets with a Zarr conversion can be read.",
@@ -182,10 +186,13 @@ function printSummary(
   line("Values", `${channels.length * n} ${dtype} (${args.units}, little-endian, channel-major)`);
   line("Filled ranges", describeRanges(window));
   if (window.header.filled_ranges.length > 0) {
+    // The payload inside a range is the fill value (0) converted like any other value (ADR 0120).
+    const filledAs =
+      args.units === "digital"
+        ? "they read as 0."
+        : "they read as each channel's offset, the physical value of a digital 0.";
     console.log(
-      chalk.dim(
-        "                 Filled ranges are samples the store does not hold; they read as 0.",
-      ),
+      chalk.dim(`                 Filled ranges are samples the store does not hold; ${filledAs}`),
     );
   }
   const rows = previewRows(window);
@@ -379,8 +386,12 @@ Examples:
 
 Environment:
   NEMAR_ZARR_BASE               Zarr host (default: the one for your account's API host)
+  NEMAR_ZARR_DATA_PLANE         Data plane's /data mount (default: your API host's origin plus /data)
+  NEMAR_ZARR_MAX_PAYLOAD_BYTES  Largest window the engine returns, in bytes (default 256 MiB, at most 1 GiB)
+  NEMAR_ZARR_RANGE_CACHE_BYTES  In-memory range cache limit in bytes (default 256 MiB)
   NEMAR_ZARR_DISK_CACHE_BYTES   Disk cache limit in bytes (default 2 GiB, 0 turns it off)
   NEMAR_ZARR_DISK_CACHE_DIR     Disk cache directory; it is made private (mode 0700)
+  The two hosts must be https (or http to 127.0.0.1 or [::1]); the payload and range-cache limits are positive integers.
   See \`nemar engine status\` for what is in use and \`nemar engine cache clear\` to empty the cache.`;
 
 export const zarrCommand = new Command("zarr").description(

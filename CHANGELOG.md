@@ -40,6 +40,9 @@ It carries no migration and sets no Worker variable or secret; the MCP `read_win
   It holds public data only, at `<config dir>/zarr-cache/public/v1/` (made private, mode 0700), up to 2 GiB by default and evicting the least recently used entries.
   `NEMAR_ZARR_DISK_CACHE_DIR` moves it and `NEMAR_ZARR_DISK_CACHE_BYTES` sets the limit (`0` turns it off).
   Entries are keyed by the store's identity (dataset, conversion commit and time), so a re-converted store is fetched again; the dataset index is never cached on disk and is read at each engine start.
+- **Three more engine settings, listed in `nemar zarr read --help`.**
+  `NEMAR_ZARR_MAX_PAYLOAD_BYTES` sets the largest window the engine returns (default 256 MiB, at most 1 GiB), `NEMAR_ZARR_RANGE_CACHE_BYTES` bounds the in-memory range cache (default 256 MiB) and `NEMAR_ZARR_DATA_PLANE` moves the data plane's `/data` mount (default: the API origin plus `/data`).
+  A byte limit that is not a positive integer, or a payload limit above 1 GiB, is reported as a configuration error naming the setting.
 - **`nemar engine status` and `nemar engine cache clear`.**
   `status` starts the engine and shows its version, protocol, largest window, the Zarr host and data plane in use, and the cache's size and limit.
   `cache clear` removes only the files the cache wrote and reports the bytes freed.

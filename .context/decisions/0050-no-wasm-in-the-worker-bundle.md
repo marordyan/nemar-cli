@@ -57,8 +57,8 @@ class of failure at all.
 
 The two substitutions this rule has already produced:
 
-- `backend/src/services/blosc-decode.ts` decodes blosc/zstd/shuffle int16 chunks in pure
-  JavaScript (a blosc header parse plus `fzstd` plus an unshuffle), replacing `numcodecs`.
+- `shared/zarr/codecs/blosc.ts` (formerly `backend/src/services/blosc-decode.ts`) decodes
+  blosc/zstd/shuffle int16 chunks in pure JavaScript (a blosc header parse plus `fzstd` plus an unshuffle), replacing `numcodecs`.
 - `backend/src/mcp/tools/get-events.ts` builds a one-entry `{ ZSTD }` compressors map over
   `fzstd` instead of importing `hyparquet-compressors`. That the archive is entirely ZSTD is
   measured, not assumed: `bun run zarr:geometry-check` reads every published `events.parquet`
@@ -136,7 +136,7 @@ does. Closing #1324 closes the gap.
 - `.context/mcp-server-design.md` section 9 (dependency table, both offending rows, including that
   `numcodecs` was the spike's path (a) and never a dependency of the real server), section 10
   (phase 1 decode-path measurements and the bundle figures), section 10.3 (the phase 3 failure).
-- `backend/src/services/blosc-decode.ts`, `backend/src/mcp/tools/get-events.ts`,
+- `shared/zarr/codecs/blosc.ts` (formerly `backend/src/services/blosc-decode.ts`), `backend/src/mcp/tools/get-events.ts`,
   `backend/scripts/mcp-smoke.sh`, `backend/scripts/mcp-smoke-entry.ts`.
 - PR #1326 (the phase 3 failure, caught by the smoke script with `bun test` green).
 - Issue #1324 (`wrangler dev --local` cannot start `backend/src/index.ts`).
@@ -147,3 +147,7 @@ does. Closing #1324 closes the gap.
 - ADR 0049 for the posture this server inherits: a stateless, recipe-first broker whose job is
   to hand a client the information to fetch bytes itself, which is what keeps the Worker's
   dependency surface small enough for this rule to be practical.
+
+## Amendment 2026-11-13: the blosc decoder moved
+
+The decoder named above as `backend/src/services/blosc-decode.ts` now lives at `shared/zarr/codecs/blosc.ts`, moved there with the rest of the Zarr reader core under [ADR 0120](0120-the-zarr-read-core-is-shared-and-the-local-engine-speaks-a-versioned-protocol.md) so the Worker and the local engine share one copy. It is the same pure-JavaScript decoder and this rule applies to it unchanged. The paths in the body and the receipts are updated in place; its error messages still begin `blosc-decode:`.

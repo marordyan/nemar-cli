@@ -654,6 +654,51 @@ describe("a fatal frame", () => {
 });
 
 describe("a reply to the wrong request", () => {
+  const errorFrame = (id: number | null) =>
+    b64({ id, type: "error", code: "not_found", message: "no such thing" });
+  const staying = (frame: string) => [
+    process.execPath,
+    "-e",
+    `process.on("SIGTERM", () => {}); process.stdout.write(Buffer.from("${frame}", "base64")); setInterval(() => {}, 1000)`,
+  ];
+
+  test("an error for another request is the same desync: engine killed, client unusable", async () => {
+    const c = EngineClient.start({
+      cmd: staying(errorFrame(99)),
+      timeoutMs: 5000,
+      closeGraceMs: 5000,
+    });
+    clients.push(c);
+    const started = Date.now();
+    const err = await c.hello().catch((e) => e);
+    expect(err.code).toBe("protocol");
+    expect(err.message).toContain("answered request 99, not 1");
+    const again = await c.hello().catch((e) => e);
+    expect(again.message).toContain("can no longer be used");
+    expect(await c.close()).toBeNull();
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  test("an error with id null is still an ordinary engine error, and the client stays usable", async () => {
+    const c = EngineClient.start({
+      cmd: staying(errorFrame(null)),
+      timeoutMs: 5000,
+      closeGraceMs: 300,
+    });
+    clients.push(c);
+    const err = await c.hello().catch((e) => e);
+    expect(err).toBeInstanceOf(EngineClientError);
+    expect(err.code).toBe("not_found");
+    expect(err.message).toContain("no such thing");
+    // Not unusable: the next call waits for an answer (and times out), instead of failing fast.
+    const second = c.hello().catch((e) => e);
+    const result = await Promise.race([
+      second,
+      new Promise((r) => setTimeout(() => r("waiting"), 500)),
+    ]);
+    expect(result).toBe("waiting");
+  });
+
   test("kills the engine and leaves the client unusable", async () => {
     const wrong = b64({
       id: 99,

@@ -414,7 +414,7 @@ export class EngineClient {
       }
       const parsed = engineResponseSchema.safeParse(event.header);
       if (!parsed.success) throw this.fail("protocol", "the engine sent an invalid response");
-      if (event.header.id !== id && event.header.type !== "error") {
+      if (event.header.id !== id && !(event.header.type === "error" && event.header.id === null)) {
         // Requests and replies are out of step: no later reply can be matched to its request.
         this.unusable = this.fail(
           "protocol",

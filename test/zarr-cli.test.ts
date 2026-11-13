@@ -145,6 +145,32 @@ describe("--out", () => {
     expect(r.stdout).toContain('"<i2").reshape(2, 250)');
   });
 
+  test("a window over the absent chunk: reference values before it, fill after, byte for byte", async () => {
+    // Samples 1750..2250 straddle shard 0's absent inner chunk [2000, 3000).
+    const out = join(tmp, "gap.bin");
+    const r = await read(window(7, 2, ["--out", out]));
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("Filled ranges  [2000, 2250)");
+    const want = new Float64Array(4 * 500);
+    for (let c = 0; c < 4; c++) {
+      for (let s = 0; s < 500; s++) {
+        const sample = 1750 + s;
+        // Present samples are the zarr-python reference; absent ones are digital 0, which is
+        // the channel's offset in physical units.
+        want[c * 500 + s] =
+          sample < 2000 ? referenceDigital[c * N + sample] * SCALE[c] + OFFSET[c] : OFFSET[c];
+      }
+    }
+    expect(new Uint8Array(readFileSync(out))).toEqual(asBytes(want));
+    const digital = join(tmp, "gap-digital.bin");
+    expect((await read(window(7, 2, ["--units", "digital", "--out", digital]))).exitCode).toBe(0);
+    const wantDigital = new Int16Array(4 * 500);
+    for (let c = 0; c < 4; c++) {
+      for (let s = 0; s < 250; s++) wantDigital[c * 500 + s] = referenceDigital[c * N + 1750 + s];
+    }
+    expect(new Uint8Array(readFileSync(digital))).toEqual(asBytes(wantDigital));
+  });
+
   test("creates the parent directory, and a failed read leaves an existing file alone", async () => {
     const out = join(tmp, "nested", "dir", "w.bin");
     expect((await read(window(1, 1, ["--out", out]))).exitCode).toBe(0);

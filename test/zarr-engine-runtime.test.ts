@@ -724,6 +724,21 @@ describe("the disk cache across engine restarts (G4)", () => {
 
   test("a second engine makes the same read with zero range requests and an identical payload", async () => {
     const first = await firstRead();
+    // Engine 1 really wrote the array metadata (zarr.json) and a shard footer to disk, so the
+    // assertions below about zarr.json are not vacuous.
+    const stored = readdirSync(cacheDir)
+      .filter((n) => /^[0-9a-f]{2}$/.test(n))
+      .flatMap((sub) =>
+        readdirSync(join(cacheDir, sub)).map((n) =>
+          readFileSync(join(cacheDir, sub, n)).toString("latin1"),
+        ),
+      );
+    expect(stored.some((t) => t.includes("json\n") && t.includes('"projection":"array/'))).toBe(
+      true,
+    );
+    expect(stored.some((t) => t.includes("json\n") && t.includes('"projection":"shardidx/'))).toBe(
+      true,
+    );
     await withEngine(async (e) => {
       allRequests = [];
       const h = await e.ready();
@@ -752,7 +767,7 @@ describe("the disk cache across engine restarts (G4)", () => {
     }, cached());
   });
 
-  test("a different data origin does not share entries", async () => {
+  test("an index whose data base moves to another origin is read from the new origin", async () => {
     await firstRead();
     dataOriginOverride = `http://127.0.0.1:${alias.port}`;
     await withEngine(async (e) => {

@@ -31,7 +31,8 @@ import {
   resolveDiskCache,
   withDiskRangeCache,
 } from "../src/lib/zarr-engine/disk-cache.js";
-import { EngineConfigError, MemoryJsonCache } from "../src/lib/zarr-engine/http.js";
+import { EngineConfigError, MemoryJsonCache, resolveBases } from "../src/lib/zarr-engine/http.js";
+import { publicSource } from "../src/lib/zarr-engine/source.js";
 
 let root: string;
 let logged: string[];
@@ -582,5 +583,64 @@ describe("engines sharing one directory stay near one limit", () => {
     for (let i = 0; i < 17; i++) a.put(`a${i}`, body(100)); // a: 1938 bytes
     for (let i = 1; i < 6; i++) b.put(`b${i}`, body(100));
     expect(make(2000).stats().bytes).toBeLessThanOrEqual(2000);
+  });
+});
+
+describe("the data origin is part of the store identity (same URL, same Range)", () => {
+  const OBJECT = new Uint8Array(1000).map((_, i) => i % 251);
+  let server: ReturnType<typeof Bun.serve>;
+  let ranges: string[] = [];
+  beforeAll(() => {
+    server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req) {
+        const m = /^bytes=(\d+)-(\d+)$/.exec(req.headers.get("range") ?? "");
+        if (!m) return new Response("no", { status: 400 });
+        ranges.push(req.headers.get("range") ?? "");
+        return new Response(OBJECT.slice(Number(m[1]), Number(m[2]) + 1), { status: 206 });
+      },
+    });
+  });
+  afterAll(() => server.stop(true));
+  beforeEach(() => {
+    ranges = [];
+  });
+
+  // Two stores that differ only in the origin of their data base. The request URL and Range are
+  // the same for both, so only the identity can tell their bytes apart.
+  const store = (origin: string) => ({
+    dataBase: `${origin}/nm000001/zarr/`,
+    datasetId: "nm000001",
+    sourceCommit: "a".repeat(40),
+    convertedAt: "2026-01-01T00:00:00Z",
+  });
+  const sourceOver = (disk?: DiskCache) =>
+    publicSource({
+      bases: resolveBases({
+        NEMAR_ZARR_BASE: `http://127.0.0.1:${server.port}`,
+        NEMAR_ZARR_DATA_PLANE: `http://127.0.0.1:${server.port}/data`,
+      }),
+      diskCache: disk,
+    });
+  const fetchRange = async (f: ReturnType<ReturnType<typeof sourceOver>["fetcherFor"]>) =>
+    f(`http://127.0.0.1:${server.port}/chunk`, { headers: { Range: "bytes=10-19" } });
+
+  test("in memory: another origin is another entry, the same origin is a hit", async () => {
+    const source = sourceOver();
+    await fetchRange(source.fetcherFor(store("https://data-a.example")));
+    await fetchRange(source.fetcherFor(store("https://data-a.example")));
+    expect(ranges.length).toBe(1);
+    await fetchRange(source.fetcherFor(store("https://data-b.example")));
+    expect(ranges.length).toBe(2);
+  });
+
+  test("on disk: a new process sharing the cache reuses the same origin's bytes and not another's", async () => {
+    await fetchRange(sourceOver(make()).fetcherFor(store("https://data-a.example")));
+    expect(ranges.length).toBe(1);
+    await fetchRange(sourceOver(make()).fetcherFor(store("https://data-a.example")));
+    expect(ranges.length).toBe(1);
+    await fetchRange(sourceOver(make()).fetcherFor(store("https://data-b.example")));
+    expect(ranges.length).toBe(2);
   });
 });

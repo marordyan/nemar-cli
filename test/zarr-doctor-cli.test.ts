@@ -17,6 +17,7 @@ import {
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { doctorSummary } from "../src/commands/doctor.js";
 import { type Standin, runNemar, startStandin } from "./helpers/zarr-engine-standin.js";
 
 // `doctor` itself probes five external tools; give it the budget other doctor tests use.
@@ -60,6 +61,7 @@ describe("nemar doctor: Zarr engine", () => {
     expect(lines.length).toBe(2);
     expect(lines[0]).toMatch(/^✓ engine starts\s+nemar-zarr-engine\/\S+ answered in \d+\.\d s$/);
     expect(lines[1]).toMatch(new RegExp(`^✓ cache directory\\s+${cacheDir()} is writable$`));
+    expect(r.stdout).not.toMatch(/needs attention/);
     // The directory exists and is private.
     expect(statSync(cacheDir()).mode & 0o777).toBe(0o700);
   });
@@ -71,6 +73,9 @@ describe("nemar doctor: Zarr engine", () => {
     expect(engine).toMatch(/^✗ engine starts/);
     expect(engine).toContain("NEMAR_ZARR_BASE");
     expect(cache).toMatch(/^✓ cache directory/);
+    // The closing summary does not call this all well.
+    expect(r.stdout).toContain("Zarr engine");
+    expect(r.stdout).toMatch(/needs attention/);
   });
 
   test("a cache directory that cannot be created is a cross naming it, and the exit code is still 0", async () => {
@@ -108,5 +113,31 @@ describe("nemar doctor: Zarr engine", () => {
     expect(r.stdout.indexOf("NEMAR environment check")).toBeLessThan(
       r.stdout.indexOf("Zarr engine"),
     );
+  });
+});
+
+describe("doctorSummary", () => {
+  const ok = { available: true, required: true };
+  const missing = { available: false, required: true };
+  const strip = (lines: string[]) =>
+    lines.join("\n").replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g"), "");
+
+  test("all tools and a working engine is the plain all-clear", () => {
+    expect(strip(doctorSummary([ok, ok], [{ ok: true }, { ok: true }]))).toContain(
+      "All 2 required tools are installed.",
+    );
+  });
+
+  test("a failed engine is never summarised as all well", () => {
+    const text = strip(doctorSummary([ok, ok], [{ ok: true }, { ok: false }]));
+    expect(text).not.toContain("installed.\n");
+    expect(text).toContain("but the Zarr engine needs attention");
+  });
+
+  test("missing tools keep their own summary, and a failed engine is added to it", () => {
+    const text = strip(doctorSummary([ok, missing], [{ ok: false }]));
+    expect(text).toContain("1/2 tools installed");
+    expect(text).toContain("The Zarr engine also needs attention");
+    expect(strip(doctorSummary([ok, missing], [{ ok: true }]))).not.toContain("Zarr engine");
   });
 });

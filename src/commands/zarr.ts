@@ -182,10 +182,13 @@ function printSummary(
   line("Values", `${channels.length * n} ${dtype} (${args.units}, little-endian, channel-major)`);
   line("Filled ranges", describeRanges(window));
   if (window.header.filled_ranges.length > 0) {
+    // The payload inside a range is the fill value (0) converted like any other value (ADR 0120).
+    const filledAs =
+      args.units === "digital"
+        ? "they read as 0."
+        : "they read as each channel's offset, the physical value of a digital 0.";
     console.log(
-      chalk.dim(
-        "                 Filled ranges are samples the store does not hold; they read as 0.",
-      ),
+      chalk.dim(`                 Filled ranges are samples the store does not hold; ${filledAs}`),
     );
   }
   const rows = previewRows(window);

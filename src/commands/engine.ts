@@ -15,7 +15,8 @@ import { failMessage } from "../lib/admin-command.js";
 import { plain } from "../lib/terminal-text.js";
 import { EngineClient, EngineClientError } from "../lib/zarr-engine/client.js";
 import { DiskCacheRefusal, resolveDiskCache } from "../lib/zarr-engine/disk-cache.js";
-import { EngineConfigError, resolveBases, zarrBaseSource } from "../lib/zarr-engine/http.js";
+import { CONFIG_HINT, resolveEngineConfig } from "../lib/zarr-engine/engine-config.js";
+import { EngineConfigError, type resolveBases, zarrBaseSource } from "../lib/zarr-engine/http.js";
 
 /** `1.5 GiB`, `12.3 MiB`, `512 B`. */
 export function formatBytes(n: number): string {
@@ -44,14 +45,13 @@ export async function engineStatusAction(options: EngineOptions = {}): Promise<v
   let bases: ReturnType<typeof resolveBases>;
   let cache: ReturnType<typeof resolveDiskCache>;
   try {
-    bases = resolveBases();
-    cache = resolveDiskCache();
+    ({ bases, diskCache: cache } = resolveEngineConfig());
   } catch (err) {
     if (err instanceof EngineConfigError) {
       failMessage(plain(err.message), {
         json,
         answered: true,
-        hint: "Fix or unset that environment variable.",
+        hint: CONFIG_HINT,
       });
       return;
     }

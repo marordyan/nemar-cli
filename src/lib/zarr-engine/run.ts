@@ -28,32 +28,11 @@
  */
 
 import pkg from "../../../package.json" with { type: "json" };
-import { resolveDiskCache } from "./disk-cache.js";
-import { type FrameSink, MAX_CLIENT_PAYLOAD_BYTES } from "./frame-stream.js";
-import { DEFAULT_RANGE_CACHE_BYTES, EngineConfigError, resolveBases } from "./http.js";
+import { type EngineConfig, resolveEngineConfig } from "./engine-config.js";
+import type { FrameSink } from "./frame-stream.js";
+import { EngineConfigError } from "./http.js";
 import { EngineServer, serve } from "./server.js";
 import { publicSource } from "./source.js";
-
-/** 256 MiB, the default for `max_payload_bytes` (its own constant, not the range cache's). */
-export const DEFAULT_MAX_PAYLOAD_BYTES = 256 * 1024 * 1024;
-export const MAX_PAYLOAD_ENV = "NEMAR_ZARR_MAX_PAYLOAD_BYTES";
-export const RANGE_CACHE_ENV = "NEMAR_ZARR_RANGE_CACHE_BYTES";
-
-function envBytes(
-  env: Record<string, string | undefined>,
-  name: string,
-  fallback: number,
-  max = Number.MAX_SAFE_INTEGER,
-): number {
-  const raw = env[name]?.trim();
-  if (!raw) return fallback;
-  const n = Number(raw);
-  if (!Number.isSafeInteger(n) || n < 1) {
-    throw new EngineConfigError(`${name} must be a positive integer, got ${raw}`);
-  }
-  if (n > max) throw new EngineConfigError(`${name} must be at most ${max} bytes, got ${raw}`);
-  return n;
-}
 
 /** Serve the protocol on `input` and `output` (stdin and stdout) until end of input; resolves
  *  with the exit status. */
@@ -64,19 +43,15 @@ export async function runEngine(
 ): Promise<number> {
   let server: EngineServer;
   try {
+    const config = resolveEngineConfig(env);
     const source = publicSource({
-      bases: resolveBases(env),
-      rangeCacheBytes: envBytes(env, RANGE_CACHE_ENV, DEFAULT_RANGE_CACHE_BYTES),
-      diskCache: resolveDiskCache(env),
+      bases: config.bases,
+      rangeCacheBytes: config.rangeCacheBytes,
+      diskCache: config.diskCache,
     });
     server = new EngineServer({
       source,
-      maxPayloadBytes: envBytes(
-        env,
-        MAX_PAYLOAD_ENV,
-        DEFAULT_MAX_PAYLOAD_BYTES,
-        MAX_CLIENT_PAYLOAD_BYTES,
-      ),
+      maxPayloadBytes: config.maxPayloadBytes,
       engineName: `nemar-zarr-engine/${pkg.version}`,
     });
   } catch (err) {

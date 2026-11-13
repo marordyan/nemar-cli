@@ -125,6 +125,8 @@ describe("--out", () => {
     expect(r.stdout).toContain(`Wrote 8000 bytes to ${out}`);
     expect(r.stdout).toContain(`numpy.fromfile("${out}", "<f8").reshape(4, 250)`);
     expect(r.stdout).toContain("MATLAB");
+    // Little-endian on any machine: the permission and the machine format are named.
+    expect(r.stdout).toContain(`fopen('${out}', 'r', 'l')`);
     expect(r.stdout).toContain("float64=>float64");
     // No temporary file is left next to it.
     expect(readdirSync(tmp).filter((n) => n.includes(".tmp-"))).toEqual([]);
@@ -159,6 +161,7 @@ describe("--out", () => {
     const r = await read(window(1, 1, ["--out", join(file, "w.bin")]));
     expect(r.exitCode).toBe(1);
     expect(r.stdout + r.stderr).toContain("Could not write");
+    expect(r.stdout + r.stderr).not.toContain("null");
   });
 });
 
@@ -267,10 +270,33 @@ describe("errors are exit 1 with a hint", () => {
     expect(r.stdout + r.stderr).toContain("data host failed");
   });
 
-  test("a bad engine configuration names the setting and exits 1", async () => {
-    const r = await read(window(0, 1), { NEMAR_ZARR_BASE: "http://example.com" });
+  test("a bad engine setting is a configuration error with a hint, before any engine starts", async () => {
+    for (const [name, value] of [
+      ["NEMAR_ZARR_BASE", "http://example.com"],
+      ["NEMAR_ZARR_MAX_PAYLOAD_BYTES", "abc"],
+      ["NEMAR_ZARR_RANGE_CACHE_BYTES", "0"],
+      ["NEMAR_ZARR_DISK_CACHE_BYTES", "-1"],
+    ]) {
+      const r = await read(window(0, 1), { [name]: value });
+      const all = r.stdout + r.stderr;
+      expect(r.exitCode, name).toBe(1);
+      expect(all, name).toContain(name);
+      expect(all, name).toContain("Fix or unset that environment variable");
+      // Not a crash: no engine was started, no engine line, no bug-report nudge.
+      expect(all, name).not.toContain("[zarr-engine]");
+      expect(all, name).not.toContain("Run again with --debug");
+    }
+    // (The CLI's own notices call reaches the stand-in too; nothing of the store's did.)
+    expect(standin.requests.filter((p) => p.includes("/zarr/") || p.startsWith("/data"))).toEqual(
+      [],
+    );
+  });
+
+  test("under --json a configuration error goes to stderr only", async () => {
+    const r = await read(window(0, 1, ["--json"]), { NEMAR_ZARR_BASE: "http://example.com" });
     expect(r.exitCode).toBe(1);
-    expect(r.stdout + r.stderr).toContain("NEMAR_ZARR_BASE");
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toContain("NEMAR_ZARR_BASE");
   });
 });
 
@@ -340,6 +366,10 @@ describe("--help", () => {
     expect(r.stdout).toContain("--out <file>");
     expect(r.stdout).toContain("channel-major");
     expect(r.stdout).toContain("NEMAR_ZARR_DISK_CACHE_BYTES");
+    expect(r.stdout).toContain("mode 0700");
+    // The cache saves data requests, not the index and records, which are read at each start.
+    expect(r.stdout).toContain("sends no data request");
+    expect(r.stdout).not.toContain("sends no request");
   });
 
   test("nemar --help lists the zarr group", async () => {

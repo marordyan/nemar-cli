@@ -31,6 +31,8 @@ import {
   type ReadWindowArgs,
   type WindowReply,
 } from "../lib/zarr-engine/client.js";
+import { CONFIG_HINT, resolveEngineConfig } from "../lib/zarr-engine/engine-config.js";
+import { EngineConfigError } from "../lib/zarr-engine/http.js";
 
 export interface ZarrReadOptions {
   start?: string;
@@ -106,8 +108,10 @@ function parseChannels(raw: string, json?: boolean): number[] | null {
   return channels;
 }
 
-/** The window's values as numbers, row by row (`rows[i]` is `channels[i]`). */
-function rowsOf(window: WindowReply): number[][] {
+/** The first {@link PREVIEW_VALUES} values of the first {@link PREVIEW_CHANNELS} channels, and
+ *  nothing else: only those bytes are decoded, so a window of millions of samples costs the
+ *  summary no more than a short one. `rows[i]` belongs to `channels[i]`. */
+export function previewRows(window: WindowReply): number[][] {
   const { channels, n_samples: n, dtype } = window.header;
   const view = new DataView(
     window.payload.buffer,
@@ -115,12 +119,16 @@ function rowsOf(window: WindowReply): number[][] {
     window.payload.length,
   );
   const size = dtype === "int16" ? 2 : 8;
-  return channels.map((_, i) =>
-    Array.from({ length: n }, (_, j) => {
+  const rows: number[][] = [];
+  for (let i = 0; i < Math.min(channels.length, PREVIEW_CHANNELS); i++) {
+    const row: number[] = [];
+    for (let j = 0; j < Math.min(n, PREVIEW_VALUES); j++) {
       const at = (i * n + j) * size;
-      return dtype === "int16" ? view.getInt16(at, true) : view.getFloat64(at, true);
-    }),
-  );
+      row.push(dtype === "int16" ? view.getInt16(at, true) : view.getFloat64(at, true));
+    }
+    rows.push(row);
+  }
+  return rows;
 }
 
 function formatValue(v: number, dtype: string): string {
@@ -134,7 +142,7 @@ function loadHint(path: string, window: WindowReply): string[] {
   const matlab = dtype === "int16" ? "int16" : "float64";
   return [
     `  Python  x = numpy.fromfile(${JSON.stringify(path)}, "${np}").reshape(${channels.length}, ${n})`,
-    `  MATLAB  f = fopen('${path.replace(/'/g, "''")}'); x = fread(f, [${n} ${channels.length}], '${matlab}=>${matlab}')'; fclose(f);`,
+    `  MATLAB  f = fopen('${path.replace(/'/g, "''")}', 'r', 'l'); x = fread(f, [${n} ${channels.length}], '${matlab}=>${matlab}')'; fclose(f);`,
   ];
 }
 
@@ -180,16 +188,16 @@ function printSummary(
       ),
     );
   }
-  const rows = rowsOf(window);
+  const rows = previewRows(window);
   console.log(chalk.bold("\nFirst values\n"));
   for (let i = 0; i < Math.min(rows.length, PREVIEW_CHANNELS); i++) {
-    const vals = rows[i].slice(0, PREVIEW_VALUES).map((v) => formatValue(v, dtype));
+    const vals = rows[i].map((v) => formatValue(v, dtype));
     console.log(
       `  ch ${String(channels[i]).padEnd(4)}${vals.join("  ")}${n > PREVIEW_VALUES ? "  ..." : ""}`,
     );
   }
-  if (rows.length > PREVIEW_CHANNELS) {
-    console.log(chalk.dim(`  (${rows.length - PREVIEW_CHANNELS} more channels not shown)`));
+  if (channels.length > PREVIEW_CHANNELS) {
+    console.log(chalk.dim(`  (${channels.length - PREVIEW_CHANNELS} more channels not shown)`));
   }
   console.log("");
   if (out) {
@@ -235,6 +243,15 @@ function failEngine(err: EngineClientError, json?: boolean): void {
   });
 }
 
+/** What a failure that is neither an engine answer nor a write error is reported as. */
+export function failUnexpected(err: unknown, json?: boolean): void {
+  failMessage(`Unexpected error: ${plain(err instanceof Error ? err.message : String(err))}`, {
+    json,
+    answered: false,
+    hint: "Run again with --debug and attach the log to an issue.",
+  });
+}
+
 export async function zarrReadAction(
   datasetArg: string,
   recording: string,
@@ -273,6 +290,16 @@ export async function zarrReadAction(
   }
   const out = options.out === undefined ? null : resolve(options.out);
 
+  // A bad setting is a configuration error to fix, not an engine that crashed: check them all
+  // before starting one (the engine checks the same ones, with the same messages).
+  try {
+    resolveEngineConfig();
+  } catch (err) {
+    if (!(err instanceof EngineConfigError)) throw err;
+    failMessage(plain(err.message), { json, answered: true, hint: CONFIG_HINT });
+    return;
+  }
+
   const client = EngineClient.start();
   try {
     await client.hello();
@@ -284,7 +311,17 @@ export async function zarrReadAction(
     const request: ReadWindowArgs = { handle: opened.handle, startS, durationS, channels, units };
     const window = await client.readWindow(request);
     await client.release(opened.handle).catch(() => undefined);
-    if (out) writeFileAtomic(out, window.payload);
+    if (out) {
+      try {
+        writeFileAtomic(out, window.payload);
+      } catch (err) {
+        failMessage(`Could not write ${out}: ${plain((err as Error).message)}`, {
+          json,
+          answered: false,
+        });
+        return;
+      }
+    }
 
     const rep = opened.representations.find(
       (r): r is ZarrRepresentation => isZarrRepresentation(r) && r.id === opened.representation,
@@ -310,12 +347,7 @@ export async function zarrReadAction(
     }
   } catch (err) {
     if (err instanceof EngineClientError) failEngine(err, json);
-    else {
-      failMessage(`Could not write ${out}: ${plain((err as Error).message)}`, {
-        json,
-        answered: false,
-      });
-    }
+    else failUnexpected(err, json);
   } finally {
     await client.close();
   }
@@ -324,7 +356,8 @@ export async function zarrReadAction(
 const READ_HELP = `
 Reads one window of a recording of a public dataset from its Zarr store, through the local
 Zarr engine. Nothing is downloaded but the chunks the window needs, and they are cached on
-disk, so reading the same window again sends no request.
+disk, so reading the same window again sends no data request (the dataset's index and records
+are read again each time the engine starts, which is how a re-conversion is noticed).
 
 The dataset must be public and have a Zarr conversion. The recording is its BIDS path (or the
 store's zarr path). Channels are numbered from 0, in the order of the recording.

@@ -295,8 +295,12 @@ export async function zarrReadAction(
   try {
     resolveEngineConfig();
   } catch (err) {
-    if (!(err instanceof EngineConfigError)) throw err;
-    failMessage(plain(err.message), { json, answered: true, hint: CONFIG_HINT });
+    if (err instanceof EngineConfigError) {
+      failMessage(plain(err.message), { json, answered: true, hint: CONFIG_HINT });
+    } else {
+      // Anything else (an unreadable config file, say) is not the user's setting to fix.
+      failUnexpected(err, json);
+    }
     return;
   }
 

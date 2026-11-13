@@ -5,6 +5,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { previewRows } from "../src/commands/zarr.js";
 import type { WindowReply } from "../src/lib/zarr-engine/client.js";
@@ -95,5 +97,36 @@ describe("failUnexpected", () => {
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("");
     expect(r.stderr).toContain("Unexpected error: boom");
+  });
+});
+
+describe("a configuration file that cannot be read", () => {
+  // The CLI entry already fails on such a file before any command runs, so the command's own
+  // preflight is exercised by calling the action in a process whose config directory holds one.
+  test("zarr read reports an unexpected error, not a crash and not a setting to fix", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nemar-bad-config-"));
+    try {
+      writeFileSync(join(dir, "config.json"), "{garbage");
+      const script = `import { zarrReadAction } from ${JSON.stringify(ZARR_COMMAND)};
+        await zarrReadAction("nm099500", "a.edf", { start: "0", duration: "1" });
+        process.exit(process.exitCode ?? 0);`;
+      const env = { ...process.env, NEMAR_CONFIG_DIR: dir, TEST_API_URL: "" };
+      const proc = Bun.spawn({
+        cmd: [process.execPath, "-e", script],
+        env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ]);
+      expect(await proc.exited).toBe(1);
+      expect(stdout).toContain("Unexpected error");
+      expect(stdout).not.toContain("Fix or unset");
+      expect(stderr).not.toContain("at ");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -40,6 +40,9 @@ const STDERR_KEEP_BYTES = 8 * 1024;
  *  keys and the rest of the parent's environment stay behind. */
 const ENGINE_ENV_NAMES = new Set([
   "PATH",
+  "PATHEXT",
+  "COMSPEC",
+  "WINDIR",
   "HOME",
   "USERPROFILE",
   "APPDATA",
@@ -74,19 +77,28 @@ const ENGINE_ENV_NAMES = new Set([
  *  and every engine setting (`NEMAR_ZARR_*`). */
 const ENGINE_ENV_PREFIXES = ["LC_", "XDG_", "BUN_", "NEMAR_ZARR_"];
 
-/** The part of `source` the engine child is started with. */
+/** The part of `source` the engine child is started with. On Windows environment names are
+ *  case-insensitive (`Path` is `PATH`), so they are matched that way there; `platform` is a
+ *  parameter so both rules can be tested anywhere. */
 export function engineEnvironment(
   source: Record<string, string | undefined> = process.env,
+  platform: string = process.platform,
 ): Record<string, string> {
+  const fold = platform === "win32";
+  const names = fold
+    ? new Set([...ENGINE_ENV_NAMES].map((n) => n.toUpperCase()))
+    : ENGINE_ENV_NAMES;
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(source)) {
     if (value === undefined) continue;
-    if (ENGINE_ENV_NAMES.has(name) || ENGINE_ENV_PREFIXES.some((p) => name.startsWith(p))) {
-      out[name] = value;
-    }
+    const key = fold ? name.toUpperCase() : name;
+    if (names.has(key) || ENGINE_ENV_PREFIXES.some((p) => key.startsWith(p))) out[name] = value;
   }
   return out;
 }
+
+/** After the child exits, how long its stdio may take to finish (so stderr is complete). */
+const STDIO_SETTLE_MS = 1000;
 
 export type ClientErrorCode = EngineErrorCode | "timeout" | "exited" | "protocol";
 
@@ -164,13 +176,30 @@ export class EngineClient {
     });
     // A write to a child that already exited is reported by the pending call, not here.
     this.child.stdin.on("error", () => undefined);
-    this.exited = new Promise((resolve) => {
-      // "close", not "exit": it comes after the stdio streams end, so stderr is complete.
-      this.child.once("close", (code) => resolve(code));
+    // The status comes from "exit"; "close" (after the stdio streams end) is then awaited for a
+    // moment so stderr is complete. A process that inherited the child's stdio can keep "close"
+    // from ever coming, so that wait is bounded and the streams are destroyed after it.
+    const exitOnly = new Promise<number | null>((resolve) => {
+      this.child.once("exit", (code) => resolve(code));
       this.child.once("error", (err) => {
         this.stderrText += `${err.message}\n`;
         resolve(null);
       });
+    });
+    const streamsClosed = new Promise<void>((resolve) => this.child.once("close", () => resolve()));
+    this.exited = exitOnly.then(async (code) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        streamsClosed,
+        new Promise<void>((r) => {
+          timer = setTimeout(r, STDIO_SETTLE_MS);
+        }),
+      ]);
+      clearTimeout(timer);
+      this.child.stdout.destroy();
+      this.child.stderr.destroy();
+      this.child.stdin.destroy();
+      return code;
     });
     this.frames = readFrames(this.child.stdout, {
       maxPayloadBytes: MAX_CLIENT_PAYLOAD_BYTES,
@@ -218,7 +247,12 @@ export class EngineClient {
       throw this.fail("exited", `the engine exited (status ${code ?? "unknown"}) before answering`);
     });
     try {
-      const next = await Promise.race([this.frames.next(), timeout, died]);
+      // A stream destroyed after the child's exit ends the iteration with an error: that is the
+      // child being gone, the same as its output closing.
+      const frame = this.frames
+        .next()
+        .catch(() => ({ done: true, value: undefined }) as IteratorReturnResult<undefined>);
+      const next = await Promise.race([frame, timeout, died]);
       if (next.done) {
         // Its output closed: it is exiting, so say with what status when it has.
         const code = await Promise.race([

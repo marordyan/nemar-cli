@@ -16,6 +16,7 @@ import {
   test,
 } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -163,7 +164,7 @@ describe("nemar engine cache clear", () => {
     await readWindow();
     const { cache } = await status();
     const first = JSON.parse((await nemar(["engine", "cache", "clear", "--json"])).stdout);
-    expect(first).toEqual({ dir: cacheDir(), freed_bytes: cache.bytes });
+    expect(first).toEqual({ dir: cacheDir(), freed_bytes: cache.bytes, failed: 0 });
     const second = JSON.parse((await nemar(["engine", "cache", "clear", "--json"])).stdout);
     expect(second.freed_bytes).toBe(0);
   });
@@ -174,6 +175,24 @@ describe("nemar engine cache clear", () => {
     expect((await nemar(["engine", "cache", "clear"])).exitCode).toBe(0);
     expect(readFileSync(join(cacheDir(), "keep-me.txt"), "utf8")).toBe("mine");
   });
+
+  test.skipIf(typeof process.getuid !== "function" || process.getuid() === 0)(
+    "an entry that cannot be removed is reported, with exit 1",
+    async () => {
+      await readWindow();
+      const sub = readdirSync(cacheDir()).find((n) => /^[0-9a-f]{2}$/.test(n)) ?? "";
+      const locked = join(cacheDir(), sub);
+      chmodSync(locked, 0o500);
+      try {
+        const r = await nemar(["engine", "cache", "clear", "--json"]);
+        expect(r.exitCode).toBe(1);
+        expect(JSON.parse(r.stdout).failed).toBeGreaterThan(0);
+        expect(r.stderr).toContain("could not be removed");
+      } finally {
+        chmodSync(locked, 0o700);
+      }
+    },
+  );
 
   test("refuses a directory the cache did not create, and removes nothing from it", async () => {
     const unrelated = join(tmp, "unrelated");

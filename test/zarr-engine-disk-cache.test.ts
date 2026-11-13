@@ -348,7 +348,7 @@ describe("stats and clear", () => {
       bytes: 114 + 214,
       limitBytes: 10_000,
     });
-    expect(a.clear()).toBe(328);
+    expect(a.clear()).toEqual({ freedBytes: 328, failed: 0 });
     expect(existsSync(dir())).toBe(false);
     expect(a.stats().entries).toBe(0);
     a.put("k0", body(100));
@@ -361,7 +361,7 @@ describe("stats and clear", () => {
     writeFileSync(join(dir(), "notes.txt"), "mine");
     mkdirSync(join(dir(), "photos"));
     writeFileSync(join(dir(), "photos", "a.jpg"), "mine");
-    expect(a.clear()).toBe(114);
+    expect(a.clear()).toEqual({ freedBytes: 114, failed: 0 });
     expect(readdirSync(dir()).sort()).toEqual([CACHE_MARKER, "notes.txt", "photos"].sort());
     expect(readFileSync(join(dir(), "notes.txt"), "utf8")).toBe("mine");
     expect(readFileSync(join(dir(), "photos", "a.jpg"), "utf8")).toBe("mine");
@@ -369,7 +369,7 @@ describe("stats and clear", () => {
 
   test("stats of a directory that does not exist is zeros", () => {
     expect(make().stats()).toMatchObject({ entries: 0, bytes: 0 });
-    expect(make().clear()).toBe(0);
+    expect(make().clear()).toEqual({ freedBytes: 0, failed: 0 });
   });
 });
 
@@ -643,4 +643,75 @@ describe("the data origin is part of the store identity (same URL, same Range)",
     await fetchRange(sourceOver(make()).fetcherFor(store("https://data-b.example")));
     expect(ranges.length).toBe(2);
   });
+});
+
+describe("a named pipe where an entry belongs", () => {
+  // A blocking open of a FIFO with no writer never returns, and a synchronous call cannot be
+  // interrupted by a test timeout, so the read runs in a child process that is killed if it hangs.
+  test.skipIf(process.platform === "win32")(
+    "get is a miss at once and the pipe is removed",
+    async () => {
+      const a = make();
+      a.put("k", body(10));
+      const file = fileFor("k");
+      rmSync(file);
+      expect(Bun.spawnSync(["mkfifo", file]).exitCode).toBe(0);
+      const script = `import { DiskCache } from ${JSON.stringify(join(import.meta.dir, "..", "src/lib/zarr-engine/disk-cache.ts"))};
+      const c = new DiskCache({ dir: ${JSON.stringify(dir())}, maxBytes: 1000000, log: () => {} });
+      console.log(c.get("k") === undefined ? "MISS" : "HIT");`;
+      const proc = Bun.spawn({
+        cmd: [process.execPath, "-e", script],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const timer = setTimeout(() => proc.kill("SIGKILL"), 4000);
+      const out = await new Response(proc.stdout).text();
+      clearTimeout(timer);
+      expect(out.trim()).toBe("MISS");
+      expect(await proc.exited).toBe(0);
+      expect(existsSync(file)).toBe(false);
+    },
+  );
+});
+
+describe("the root is remembered, and made again when another engine removed it", () => {
+  test("a put after another instance cleared the cache recreates the root and its marker", () => {
+    const a = make();
+    a.put("k0", body(10));
+    make().clear();
+    expect(existsSync(dir())).toBe(false);
+    a.put("k1", body(10));
+    expect(a.get("k1")).toEqual(body(10));
+    expect(existsSync(join(dir(), CACHE_MARKER))).toBe(true);
+    expect(logged).toEqual([]);
+  });
+});
+
+describe("clear reports what it could not remove", () => {
+  const unprivileged = typeof process.getuid === "function" && process.getuid() !== 0;
+  test.skipIf(!unprivileged || process.platform === "win32")(
+    "an entry in a read-only directory counts as failed and not as freed",
+    () => {
+      const a = make();
+      // Two entries in two different subdirectories.
+      const first = "k0";
+      let second = "";
+      for (let i = 1; i < 200 && !second; i++) {
+        const key = `k${i}`;
+        if (fileFor(key).split("/").at(-2) !== fileFor(first).split("/").at(-2)) second = key;
+      }
+      a.put(first, body(100));
+      a.put(second, body(200));
+      const lockedDir = join(fileFor(first), "..");
+      chmodSync(lockedDir, 0o500);
+      try {
+        const result = a.clear();
+        expect(result).toEqual({ freedBytes: 12 + second.length + 200, failed: 1 });
+        expect(existsSync(fileFor(first))).toBe(true);
+        expect(existsSync(fileFor(second))).toBe(false);
+      } finally {
+        chmodSync(lockedDir, 0o700);
+      }
+    },
+  );
 });

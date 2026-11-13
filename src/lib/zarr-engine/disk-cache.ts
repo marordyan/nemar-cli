@@ -156,6 +156,7 @@ export class DiskCache {
   private total: number | null = null;
   private reported = false;
   private writtenSinceScan = 0;
+  private rootReady = false;
 
   /** `top` is the highest directory `privateDir` sets to 0700 (the directory itself unless
    *  the default location under the config directory is used). */
@@ -279,6 +280,16 @@ export class DiskCache {
 
   /** The root directory, private, and marked as the cache's own when this call made it. */
   private ensureRoot(): void {
+    if (this.rootReady) {
+      // Made and marked already by this instance: one stat that it is still there (another
+      // engine's `clear` may have removed it), not a directory listing on every write.
+      try {
+        if (lstatSync(this.dir).isDirectory()) return;
+      } catch {
+        // gone: make it again below
+      }
+      this.rootReady = false;
+    }
     let existed = true;
     try {
       lstatSync(this.dir);
@@ -287,6 +298,7 @@ export class DiskCache {
     }
     privateDir(this.dir, this.top);
     if (!existed || this.isEmptyRoot()) this.writeMarker();
+    this.rootReady = true;
   }
 
   private isEmptyRoot(): boolean {
@@ -402,17 +414,18 @@ export class DiskCache {
     };
   }
 
-  /** Remove the cache's entries; the bytes they held. Refuses (DiskCacheRefusal) a directory that
-   *  does not carry the marker the cache writes when it creates its root, so a setting that names
-   *  an unrelated folder cannot cost it anything. Inside the two-hex-digit subdirectories only
-   *  files named like entries (and stale or live temporary files) are removed, then a subdirectory
-   *  that is empty; the marker and the root go last when nothing else is in them. */
-  clear(): number {
+  /** Remove the cache's entries. Refuses (DiskCacheRefusal) a directory that does not carry the
+   *  marker the cache writes when it creates its root, so a setting that names an unrelated folder
+   *  cannot cost it anything. Inside the two-hex-digit subdirectories only files named like entries
+   *  (and temporary files) are removed, then a subdirectory that is empty; the marker and the root
+   *  go last when nothing else is in them. `freedBytes` counts only entries actually removed, and
+   *  `failed` how many could not be (a permission error, say). */
+  clear(): { freedBytes: number; failed: number } {
     let root: string[];
     try {
       root = readdirSync(this.dir);
     } catch (err) {
-      if (isEnoent(err)) return 0;
+      if (isEnoent(err)) return { freedBytes: 0, failed: 0 };
       throw err;
     }
     if (!root.includes(CACHE_MARKER)) {
@@ -420,41 +433,52 @@ export class DiskCache {
         `${this.dir} has no ${CACHE_MARKER} file, so the cache did not create it and nothing was removed`,
       );
     }
-    const { bytes } = this.stats();
+    let freedBytes = 0;
+    let failed = 0;
     for (const sub of root) {
       if (!SUBDIR_RE.test(sub)) continue;
       const subPath = join(this.dir, sub);
+      let names: string[];
       try {
         if (!lstatSync(subPath).isDirectory()) continue;
-        for (const name of readdirSync(subPath)) {
-          if (!ENTRY_NAME_RE.test(name) && !name.startsWith(".tmp-")) continue;
-          const path = join(subPath, name);
-          try {
-            if (lstatSync(path).isFile()) unlinkSync(path);
-          } catch (err) {
-            if (!isEnoent(err)) throw err;
-          }
+        names = readdirSync(subPath);
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        if (!ENTRY_NAME_RE.test(name) && !name.startsWith(".tmp-")) continue;
+        const path = join(subPath, name);
+        try {
+          const st = lstatSync(path);
+          if (!st.isFile()) continue;
+          unlinkSync(path);
+          if (ENTRY_NAME_RE.test(name)) freedBytes += st.size;
+        } catch (err) {
+          if (!isEnoent(err)) failed++;
         }
+      }
+      try {
         rmdirSync(subPath);
       } catch {
-        // not empty (a foreign file), or gone
+        // not empty (a foreign file or an entry that could not be removed), or gone
       }
     }
     try {
       unlinkSync(join(this.dir, CACHE_MARKER));
       rmdirSync(this.dir);
     } catch {
-      // other files remain: the directory stays, without its marker only if it is now empty
+      // other files remain: the directory stays
     }
-    // A directory that still holds foreign files keeps working as a cache: put the marker back.
+    // A directory that still holds anything keeps working as a cache: put the marker back.
     try {
       if (readdirSync(this.dir).length > 0) this.writeMarker();
     } catch {
       // the directory is gone
     }
-    this.total = 0;
+    this.rootReady = false;
+    this.total = null;
     this.writtenSinceScan = 0;
-    return bytes;
+    return { freedBytes, failed };
   }
 
   /** Is the directory usable (created at 0700 and written to)? For `nemar doctor`. */

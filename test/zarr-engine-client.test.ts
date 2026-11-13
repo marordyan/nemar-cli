@@ -363,3 +363,61 @@ describe("the payload limit", () => {
     expect((await c.hello()).max_payload_bytes).toBe(2 ** 30);
   });
 });
+
+describe("engineEnvironment by platform", () => {
+  const env = {
+    Path: "C:\\bin",
+    comspec: "cmd.exe",
+    SystemRoot: "C:\\Windows",
+    PATHEXT: ".EXE",
+    WinDir: "C:\\Windows",
+    lc_all: "C",
+    Nemar_Zarr_Base: "http://127.0.0.1:1",
+    NEMAR_API_KEY: "secret",
+  };
+
+  test("on Windows names match case-insensitively and COMSPEC, WINDIR and PATHEXT pass", () => {
+    const out = engineEnvironment(env, "win32");
+    expect(Object.keys(out).sort()).toEqual(
+      ["Nemar_Zarr_Base", "Path", "PATHEXT", "SystemRoot", "WinDir", "comspec", "lc_all"].sort(),
+    );
+  });
+
+  test("elsewhere names are exact, so Path is not PATH", () => {
+    const out = engineEnvironment({ ...env, PATH: "/bin" }, "linux");
+    expect(Object.keys(out).sort()).toEqual(["PATH", "PATHEXT", "SystemRoot"].sort());
+  });
+});
+
+describe("a process that holds the child's stdio open", () => {
+  test("close() is bounded even though the stdio never closes", async () => {
+    // The child starts `sleep 5` with the same stdout and stderr and idles; after SIGKILL the
+    // sleeper still holds both, so "close" would not come for 5 s.
+    const c = EngineClient.start({
+      cmd: [
+        process.execPath,
+        "-e",
+        'Bun.spawn(["sleep", "5"], { stdout: "inherit", stderr: "inherit" }); setInterval(() => {}, 1000)',
+      ],
+      closeGraceMs: 200,
+    });
+    const started = Date.now();
+    await c.close();
+    expect(Date.now() - started).toBeLessThan(3000);
+  });
+
+  test("a child that exits while a grandchild holds its stdio still answers the call with its exit", async () => {
+    const c = EngineClient.start({
+      cmd: [
+        process.execPath,
+        "-e",
+        'Bun.spawn(["sleep", "5"], { stdout: "inherit", stderr: "inherit" }); process.exit(3)',
+      ],
+    });
+    clients.push(c);
+    const started = Date.now();
+    const err = await c.hello().catch((e) => e);
+    expect(err.code).toBe("exited");
+    expect(Date.now() - started).toBeLessThan(4000);
+  });
+});

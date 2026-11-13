@@ -17,6 +17,7 @@ import { EngineClient, EngineClientError } from "../lib/zarr-engine/client.js";
 import { DiskCacheRefusal, resolveDiskCache } from "../lib/zarr-engine/disk-cache.js";
 import { CONFIG_HINT, resolveEngineConfig } from "../lib/zarr-engine/engine-config.js";
 import { EngineConfigError, type resolveBases, zarrBaseSource } from "../lib/zarr-engine/http.js";
+import { failUnexpected } from "./zarr.js";
 
 /** `1.5 GiB`, `12.3 MiB`, `512 B`. */
 export function formatBytes(n: number): string {
@@ -55,7 +56,8 @@ export async function engineStatusAction(options: EngineOptions = {}): Promise<v
       });
       return;
     }
-    throw err;
+    failUnexpected(err, json);
+    return;
   }
   const baseSource = zarrBaseSource();
 
@@ -128,9 +130,9 @@ export function engineCacheClearAction(options: EngineOptions = {}): void {
     }
     throw err;
   }
-  let freed: number;
+  let result: { freedBytes: number; failed: number };
   try {
-    freed = cache.clear();
+    result = cache.clear();
   } catch (err) {
     if (err instanceof DiskCacheRefusal) {
       failMessage(plain(err.message), {
@@ -146,8 +148,27 @@ export function engineCacheClearAction(options: EngineOptions = {}): void {
     });
     return;
   }
-  if (json) console.log(JSON.stringify({ dir: cache.dir, freed_bytes: freed }, null, 2));
-  else console.log(`Cleared the Zarr cache at ${cache.dir}: ${formatBytes(freed)} freed.`);
+  if (json) {
+    console.log(
+      JSON.stringify(
+        { dir: cache.dir, freed_bytes: result.freedBytes, failed: result.failed },
+        null,
+        2,
+      ),
+    );
+  } else {
+    console.log(`Cleared the Zarr cache at ${cache.dir}: ${formatBytes(result.freedBytes)} freed.`);
+  }
+  if (result.failed > 0) {
+    failMessage(
+      `${result.failed} ${result.failed === 1 ? "entry" : "entries"} could not be removed from ${cache.dir}.`,
+      {
+        json,
+        answered: true,
+        hint: "Check the permissions of the cache directory, then run the command again.",
+      },
+    );
+  }
 }
 
 const STATUS_HELP = `

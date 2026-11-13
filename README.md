@@ -22,6 +22,7 @@ Command-line interface for [NEMAR](https://nemar.org) (Neuroelectromagnetic Data
 - **PR-Based Updates**: After DOI, all changes require pull requests
 - **Collaborative**: Any NEMAR user can contribute to any dataset
 - **BIDS Validation**: Automatic validation before upload and on PRs
+- **Zarr Reading**: Read a time window of a public recording's Zarr data (`nemar zarr read`), cached on disk
 - **DOI Integration**: Zenodo DOI creation for dataset versioning
 - **DataLad Backend**: Git-annex for large file management with S3 storage
 

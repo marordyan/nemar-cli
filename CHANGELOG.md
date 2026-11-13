@@ -18,6 +18,9 @@ earlier releases are described only by their generated notes.
 A tenant-wide ceiling on live compute jobs (#2126, phase P2 of issue #2121).
 It carries no migration and sets no Worker variable or secret, and it changes nothing in production while the compute switches are absent, because no job can exist then.
 
+The CLI can read a time window of a public dataset's Zarr recording itself, through a local engine that shares one read core with the MCP server (ADR 0120).
+It carries no migration and sets no Worker variable or secret; the MCP `read_window` answers are unchanged (its golden result and request log match byte for byte, apart from the server version stamp), the other MCP tools changed only imports and comments, and the API gains one public schema route.
+
 ### Added
 
 - **A ceiling on the live jobs of the whole tenant, checked in the statement that takes each job's hold, whoever submits it.**
@@ -28,12 +31,37 @@ It carries no migration and sets no Worker variable or secret, and it changes no
   `platform_busy` stops a pipeline run and ends the daily dispatcher's run; `pipeline run` and its dry run are clamped to the tenant room.
   `nemar admin compute status` prints the occupied slots by class and the attention count `tenant_over_ceiling`, and the live tenant sweep logs `tenant_live` and `occupied` and warns when the live count passes the ceiling.
   The ceiling is checked on both database engines in tests (bun:sqlite and Miniflare D1), with racing requests for the last slots.
+- **`nemar zarr read <dataset> <recording> --start <s> --duration <s>` reads a window of a public recording.**
+  It fetches only the chunks the window needs from the dataset's Zarr store and prints a summary (rate, channels, samples, filled ranges and the first values).
+  `--channels`, `--units physical|digital` and `--representation` choose what is read; `--out <file>` writes raw little-endian, channel-major values, and the summary prints the numpy and MATLAB lines that load them; `--json` prints the window's description.
+  Each engine error (not found, not ready, out of range, too large, upstream error) exits 1 with a hint.
+- **A disk cache, so a repeated read of a cached window sends no range request, even after a restart.**
+  A window whose entries were evicted, or a disk error (reported as one stderr line, never a failed read), sends the read to the host again.
+  It holds public data only, at `<config dir>/zarr-cache/public/v1/` (made private, mode 0700), up to 2 GiB by default and evicting the least recently used entries.
+  `NEMAR_ZARR_DISK_CACHE_DIR` moves it and `NEMAR_ZARR_DISK_CACHE_BYTES` sets the limit (`0` turns it off).
+  Entries are keyed by the store's identity (dataset, conversion commit and time), so a re-converted store is fetched again; the dataset index is never cached on disk and is read at each engine start.
+- **`nemar engine status` and `nemar engine cache clear`.**
+  `status` starts the engine and shows its version, protocol, largest window, the Zarr host and data plane in use, and the cache's size and limit.
+  `cache clear` removes only the files the cache wrote and reports the bytes freed.
+- **`nemar doctor` has a "Zarr engine" section**: the engine answers within 10 seconds and the cache directory is writable. Doctor's exit code is unchanged.
+- **The Zarr host follows the account's API host**: `api.nemar.org` reads from `zarr.nemar.org` and `api-test.nemar.org` from `zarr-test.nemar.org`; `NEMAR_ZARR_BASE` overrides it.
+- **`GET /schemas/zarr-engine-protocol-v0.json` serves the engine's protocol schema.**
+  v0 is unstable and may change in place, so a client can see the previous v0 for up to a day after a change.
+- The CLI gains one runtime dependency, `fzstd` 0.1.1, the zstd decoder the backend already uses.
+
+### Changed
+
+- **The MCP server's Zarr read path now lives in `shared/zarr/`, shared with the CLI's engine (ADR 0120).**
+  It ships with the Worker; `read_window` output is pinned by its golden test.
 
 ### Known limits
 
 - Rolling a Worker back to a build from before this change makes a stored policy that has the `tenant` key unreadable (the reader is strict and fails closed); write a policy without the key first.
 - Counting the orphaned platform jobs scans `compute_jobs` once per hold, because an index for it would need a migration.
 - The pipelines' daily cap is still read before a run and not checked in the hold's statement (see 0.10.33).
+- `nemar zarr read` reads public datasets only. Private data needs its own cache rules, which ADR 0120 leaves to a later decision.
+- A public dataset that is made private later keeps its already cached bytes on a machine until `nemar engine cache clear` or eviction removes them.
+- The engine speaks protocol v0, which may still change; only the CLI uses it, and the Python and MATLAB clients are not in this release.
 
 ## 0.10.33 - 2026-11-11
 

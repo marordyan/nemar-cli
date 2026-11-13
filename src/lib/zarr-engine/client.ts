@@ -165,24 +165,24 @@ export function defaultEngineCommand(): string[] {
   return [process.execPath, process.argv[1], ZARR_ENGINE_COMMAND];
 }
 
-/** The engine's stdout, read as soon as it is produced and handed to the frame reader on demand,
- *  so a reply the engine wrote before the client asked for it (or before the engine exited) is
- *  never lost. It ends cleanly at the end of the stream, and fails with the stream's own error. */
 /** The queue refused more output than its cap. */
 class QueueOverflow extends Error {}
 
+/** The engine's stdout, read as soon as it is produced and handed to the frame reader on demand,
+ *  so a reply the engine wrote before the client asked for it (or before the engine exited) is
+ *  never lost. It ends cleanly at the end of the stream, and fails with the stream's own error. */
 class ChunkQueue implements AsyncIterable<Uint8Array> {
   private readonly chunks: Uint8Array[] = [];
   private bytes = 0;
+  private waiting: (() => void) | null = null;
+  private ended = false;
+  private failure: Error | null = null;
 
   /** `maxBytes` is the most that may sit unread; `onOverflow` runs once when it is passed. */
   constructor(
     private readonly maxBytes: number,
     private readonly onOverflow: () => void,
   ) {}
-  private waiting: (() => void) | null = null;
-  private ended = false;
-  private failure: Error | null = null;
 
   push(chunk: Uint8Array): void {
     if (this.failure) return;
@@ -401,6 +401,16 @@ export class EngineClient {
         );
       }
       const event = next.value;
+      if (event.type === "fatal") {
+        // The reader has stopped for good, so nothing drains the output any more: stop the engine
+        // now (and this client with it) instead of letting it fill the queue.
+        this.unusable = this.fail(
+          "protocol",
+          "the engine sent a bad frame, so this client can no longer be used",
+        );
+        this.child.kill("SIGKILL");
+        throw this.fail("protocol", `the engine sent a bad frame: ${event.message}`);
+      }
       if (event.type !== "frame") {
         throw this.fail("protocol", `the engine sent a bad frame: ${event.message}`);
       }

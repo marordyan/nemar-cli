@@ -589,3 +589,27 @@ describe("the cap on unread engine output", () => {
     expect(Date.now() - started).toBeLessThan(4000);
   });
 });
+
+describe("a fatal frame", () => {
+  test("kills the engine at once, long before the output cap, and the client is unusable", async () => {
+    const flood =
+      'process.stdout.write("XXXXXXXX"); const b = Buffer.alloc(65536, 0x41); setInterval(() => process.stdout.write(b), 1); process.on("SIGTERM", () => {});';
+    const c = EngineClient.start({
+      cmd: [process.execPath, "-e", flood],
+      // Far above what the test lets the child write, so only the fatal frame can stop it.
+      maxQueuedBytes: 2 ** 31,
+      timeoutMs: 20_000,
+      closeGraceMs: 5000,
+    });
+    clients.push(c);
+    const started = Date.now();
+    const err = await c.hello().catch((e) => e);
+    expect(err.code).toBe("protocol");
+    expect(err.message).toContain("bad frame");
+    // The child ignores SIGTERM: it is gone because of SIGKILL, promptly.
+    expect(await c.close()).toBeNull();
+    expect(Date.now() - started).toBeLessThan(3000);
+    const again = await c.hello().catch((e) => e);
+    expect(again.message).toContain("can no longer be used");
+  });
+});

@@ -37,8 +37,10 @@ import type { Binding, DataSource, SourceFailure, SourceResult } from "./source.
 /** Bytes per digital (int16) sample in a store, for the decode-work check. */
 const STORE_SAMPLE_BYTES = 2;
 
-/** What compression may add to one stored chunk: a blosc2 chunk that does not compress is
- *  stored with at most 32 bytes of header (BLOSC2_MAX_OVERHEAD); doubled for margin. */
+/** What compression may add to one stored chunk. The worst case is a chunk whose data does not
+ *  shrink: the shared decoder refuses a raw (memcpyed) blosc2 frame, so such a chunk is stored
+ *  compressed, at most the raw bytes plus a 32-byte header (BLOSC2_MAX_OVERHEAD). 64 is that,
+ *  doubled for margin. */
 const CHUNK_OVERHEAD_BYTES = 64;
 
 /** The most bytes one `Range` read of a window can legitimately need: a coalesced read covers
@@ -156,8 +158,8 @@ export async function readWindow(
 
   const ceiling = rangeCeiling({ nChannels: storeChannels, chunkSamples, nInner, nSamples });
   const read = await readLevel0Window({
-    fetcher: withRangeCeiling(source.fetcher, ceiling),
-    cache: source.jsonCache,
+    fetcher: withRangeCeiling(binding.fetcher, ceiling),
+    cache: binding.jsonCache,
     key: binding.cacheKey,
     dataBase: binding.dataBase,
     zarr: binding.store.zarr,

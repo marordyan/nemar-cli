@@ -42,6 +42,7 @@ import {
 import { loadLevel0ArrayMetadata } from "../../../shared/zarr/array-metadata.js";
 import type { CacheKey, Fetcher, JsonCache } from "../../../shared/zarr/interfaces.js";
 import { nInnerForShard } from "../../../shared/zarr/sharding.js";
+import { type DiskCache, TieredJsonCache, withDiskRangeCache } from "./disk-cache.js";
 import {
   type BaseFetch,
   DEFAULT_RANGE_CACHE_BYTES,
@@ -54,6 +55,7 @@ import {
   fetchJsonDocument,
   isPlainHttpBase,
   resolveBases,
+  storeIdentity,
   withBodyCaps,
   withRangeCache,
 } from "./http.js";
@@ -130,13 +132,26 @@ export type RecordsOutcome =
   | { status: "ok"; records: unknown[] }
   | { status: "unavailable"; detail: string };
 
+/** What identifies one converted store for caching: the fields of `Binding.cacheKey` and the
+ *  data base. */
+export interface StoreRef {
+  dataBase: string;
+  datasetId: string;
+  sourceCommit: string;
+  convertedAt: string | null;
+}
+
 /** Everything the engine needs from a place that holds datasets. */
 export interface DataSource {
   readonly kind: SourceKind;
-  /** Fetches the data bytes and `zarr.json` for the read core. */
-  readonly fetcher: Fetcher;
-  /** Caches the read core's footers and array metadata. */
+  /** Fetches the data bytes and `zarr.json` for one store. Range caching is keyed by the
+   *  store's identity (see `storeIdentity`), so a re-converted store never reads old bytes. */
+  fetcherFor(store: StoreRef): Fetcher;
+  /** The in-memory tier of the read core's footer and array-metadata cache. */
   readonly jsonCache: JsonCache;
+  /** The footer and array-metadata cache for one store (memory, then disk when there is one),
+   *  keyed by the store's identity. */
+  jsonCacheFor(store: StoreRef): JsonCache;
   /** The dataset's Zarr index, parsed; the {@link MAX_CACHED_DATASETS} most recent are kept. */
   readIndex(datasetId: string): Promise<IndexOutcome>;
   /** The dataset's latest published `records.json`. */
@@ -194,6 +209,9 @@ export interface PublicSourceOptions {
   bases?: EngineBases;
   /** Bound on cached `206` bodies, in bytes. */
   rangeCacheBytes?: number;
+  /** The disk cache behind the in-memory ones; none unless given (the engine passes one). Only
+   *  this source writes it, and `index.json` never goes into it. */
+  diskCache?: DiskCache;
   /** The transport under the public fetcher; `fetch` unless a test needs another one. */
   baseFetch?: BaseFetch;
 }
@@ -206,15 +224,25 @@ export function publicSource(options: PublicSourceOptions = {}): DataSource {
   // gets every body bounded here, under the range cache.
   const publicFetcher = createPublicFetcher(options.baseFetch);
   const allowLoopbackHttp = isPlainHttpBase(bases.zarrBase);
-  const fetcher = withRangeCache(withBodyCaps(publicFetcher), rangeCache);
+  const capped = withBodyCaps(publicFetcher);
+  const disk = options.diskCache?.enabled ? options.diskCache : undefined;
   const jsonCache = new MemoryJsonCache("public");
   const indexes = new LruCache<EngineIndex>(MAX_CACHED_DATASETS);
   const records = new LruCache<unknown[]>(MAX_CACHED_DATASETS);
 
   return {
     kind: "public",
-    fetcher,
+    fetcherFor(store) {
+      const scope = storeIdentity("public", store);
+      const underneath = disk ? withDiskRangeCache(capped, disk, scope) : capped;
+      return withRangeCache(underneath, rangeCache, scope);
+    },
     jsonCache,
+    jsonCacheFor(store) {
+      return disk
+        ? new TieredJsonCache(jsonCache, disk, storeIdentity("public", store))
+        : jsonCache;
+    },
 
     async readIndex(datasetId) {
       const cached = indexes.get(datasetId);
@@ -291,6 +319,10 @@ export interface Binding {
   dataBase: string;
   /** Dataset identity for the read core's cache entries. */
   cacheKey: Omit<CacheKey, "projection">;
+  /** Fetches this store's bytes; its range cache is keyed by the store's identity. */
+  fetcher: Fetcher;
+  /** This store's footer and array-metadata cache. */
+  jsonCache: JsonCache;
 }
 
 const positive = (n: number | null | undefined): number | null =>
@@ -432,9 +464,11 @@ export async function openRecording(
     // `zarr_converted_at`, which keeps cached byte offsets from outliving the object they index.
     convertedAt: index.updated_utc,
   };
+  const fetcher = source.fetcherFor({ ...cacheKey, dataBase });
+  const jsonCache = source.jsonCacheFor({ ...cacheKey, dataBase });
   const meta = await loadLevel0ArrayMetadata({
-    fetcher: source.fetcher,
-    cache: source.jsonCache,
+    fetcher,
+    cache: jsonCache,
     ...cacheKey,
     dataBase,
     zarr: store.zarr,
@@ -508,6 +542,8 @@ export async function openRecording(
       arrayMetadata: { data_type: dataType, codecs: meta.metadata.codecs },
       dataBase,
       cacheKey,
+      fetcher,
+      jsonCache,
     },
   };
 }

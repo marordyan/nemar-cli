@@ -29,7 +29,9 @@ import {
 import { completionCommand } from "./commands/completion.js";
 import { createDownloadCommand, createUploadCommand, datasetCommand } from "./commands/dataset.js";
 import { doctorCommand } from "./commands/doctor.js";
+import { engineCommand } from "./commands/engine.js";
 import { sandboxCommand } from "./commands/sandbox.js";
+import { zarrCommand } from "./commands/zarr.js";
 import { IS_DEV_BUILD } from "./lib/api/client.js";
 import { MaintenanceError, errorDetail } from "./lib/api/errors.js";
 import {
@@ -56,6 +58,7 @@ import { fetchAndDisplayNotices } from "./lib/notices.js";
 import { installAutomaticQuiet, isAutomaticInvocation } from "./lib/repull/execute/automatic.js";
 import { initUpdateCheck, printUpdateBanner } from "./lib/update-check.js";
 import { version } from "./lib/version.js";
+import { ZARR_ENGINE_COMMAND } from "./lib/zarr-engine/client.js";
 
 /**
  * Index into `argv` (already `process.argv.slice(2)`) of the `__complete`
@@ -110,6 +113,11 @@ if (shouldEnableDebug(rawArgs)) {
 // window well before a user gets to attach one (review finding, PR #1257).
 const isCompletionRequest = findCompletionArgsStart(rawArgs) !== null;
 
+// `nemar __zarr-engine` is the Zarr engine itself, started by `nemar zarr read`, `engine status`
+// and `doctor` (lib/zarr-engine/client.ts). Its stdout is the protocol and its stderr is read by
+// the parent, so it prints no banner, no notice and no bug-report hint, and writes no debug log.
+const isEngineRun = rawArgs[0] === ZARR_ENGINE_COMMAND;
+
 /**
  * Print the standard "how to help us help you" hint on any non-zero exit --
  * unless the command asked for machine-readable output (`--json`) or the
@@ -137,10 +145,11 @@ const isCompletionRequest = findCompletionArgsStart(rawArgs) !== null;
  */
 process.on("exit", (code) => {
   const exitCode = code ?? 0;
-  const logPath = isCompletionRequest ? null : writeDebugLogSync(rawArgs, exitCode);
+  const logPath = isCompletionRequest || isEngineRun ? null : writeDebugLogSync(rawArgs, exitCode);
   if (
     exitCode === 0 ||
     exitCode === 130 ||
+    isEngineRun ||
     rawArgs.includes("--json") ||
     wasUsageExit() ||
     // A reported verdict: the exit code is the answer, so there is nothing to file.
@@ -207,6 +216,8 @@ program.addCommand(sandboxCommand);
 program.addCommand(adminCommand);
 program.addCommand(doctorCommand);
 program.addCommand(completionCommand);
+program.addCommand(zarrCommand);
+program.addCommand(engineCommand);
 
 // ============================================================================
 // Root-level shortcuts (convenience aliases)
@@ -318,7 +329,7 @@ program.hook("preAction", async () => {
 });
 
 // Warn if running a dev build (injected URL via CI)
-if (IS_DEV_BUILD && !isCredentialHelper) {
+if (IS_DEV_BUILD && !isCredentialHelper && !isEngineRun) {
   console.warn(
     chalk.yellow.bold("[DEV BUILD]") +
       chalk.yellow(" Connected to development backend. Not for production use."),
@@ -327,6 +338,13 @@ if (IS_DEV_BUILD && !isCredentialHelper) {
 
 // Initialize update check before parsing (may block up to 5s on first run)
 async function main() {
+  // The Zarr engine (see isEngineRun above): dispatched before anything that could print or
+  // fetch. The import is dynamic so a CLI run that is not the engine never loads it.
+  if (isEngineRun) {
+    const { runEngine } = await import("./lib/zarr-engine/run.js");
+    process.exit(await runEngine());
+  }
+
   // Shell completion (epic #1144 phase 5b, #1149, D1). This guard does two
   // separable things; an earlier version of this comment conflated them and
   // asserted something false (#1173 review).

@@ -287,11 +287,28 @@ describe("closing and failing", () => {
         "-e",
         'Bun.spawn(["sh", "-c", "sleep 0.4; echo LATE-LINE >&2"], { stderr: "inherit" }); process.exit(3)',
       ],
+      // Generous, so a loaded machine cannot make the 0.4 s late line miss the window; the line
+      // is still lost if `exited` resolves on the bare exit (stdioSettleMs 0 below).
+      stdioSettleMs: 5000,
     });
     clients.push(c);
     const err = await c.hello().catch((e) => e);
     expect(err.code).toBe("exited");
     expect(err.stderr).toContain("LATE-LINE");
+  });
+
+  test("without any settle the late line is lost (the settle is what captures it)", async () => {
+    const c = EngineClient.start({
+      cmd: [
+        process.execPath,
+        "-e",
+        'Bun.spawn(["sh", "-c", "sleep 0.4; echo LATE-LINE >&2"], { stderr: "inherit" }); process.exit(3)',
+      ],
+      stdioSettleMs: 0,
+    });
+    clients.push(c);
+    const err = await c.hello().catch((e) => e);
+    expect(err.stderr).not.toContain("LATE-LINE");
   });
 
   test("close() kills a child that ignores SIGTERM and never ends", async () => {
@@ -419,5 +436,91 @@ describe("a process that holds the child's stdio open", () => {
     const err = await c.hello().catch((e) => e);
     expect(err.code).toBe("exited");
     expect(Date.now() - started).toBeLessThan(4000);
+  });
+});
+
+describe("a reply the engine wrote before the client asked", () => {
+  test("a large reply written just before exiting survives a parent that reads a second late", async () => {
+    const n = 40000;
+    const reply = b64(
+      {
+        id: 1,
+        type: "window",
+        start_sample: 0,
+        n_samples: n,
+        channels: [0],
+        dtype: "float64",
+        layout: "channel-major",
+        byte_order: "little",
+        filled_ranges: [],
+        payload_bytes: n * 8,
+      },
+      new Uint8Array(n * 8).fill(7),
+    );
+    const c = EngineClient.start({
+      cmd: [
+        process.execPath,
+        "-e",
+        `process.stdout.write(Buffer.from("${reply}", "base64"), () => process.exit(0))`,
+      ],
+    });
+    clients.push(c);
+    // The child has written everything and exited long before the first request.
+    await new Promise((r) => setTimeout(r, 1500));
+    const win = await c.readWindow({ handle: "h1", startS: 0, durationS: 1 });
+    expect(win.header.n_samples).toBe(n);
+    expect(win.payload.length).toBe(n * 8);
+    expect(win.payload[0]).toBe(7);
+  });
+});
+
+describe("an engine that has already exited when its reply is read", () => {
+  test("the reply wins over the exit, even with no settle time at all", async () => {
+    const reply = b64({
+      id: 1,
+      type: "hello",
+      protocol: "0.1",
+      engine: "fast/1",
+      max_payload_bytes: 1000,
+    });
+    const c = EngineClient.start({
+      cmd: [
+        process.execPath,
+        "-e",
+        `process.stdout.write(Buffer.from("${reply}", "base64"), () => process.exit(0))`,
+      ],
+      stdioSettleMs: 0,
+    });
+    clients.push(c);
+    await new Promise((r) => setTimeout(r, 500));
+    expect((await c.hello()).engine).toBe("fast/1");
+  });
+});
+
+describe("a stream that fails is not a stream that ended", () => {
+  test("the stream's own error is in the message", async () => {
+    const c = EngineClient.start({
+      cmd: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
+      timeoutMs: 5000,
+    });
+    clients.push(c);
+    (c as unknown as { child: { stdout: { destroy(e: Error): void } } }).child.stdout.destroy(
+      new Error("EIO: input/output error"),
+    );
+    const err = await c.hello().catch((e) => e);
+    expect(err).toBeInstanceOf(EngineClientError);
+    expect(err.message).toContain("reading the engine's output failed: EIO: input/output error");
+    expect(err.message).not.toContain("closed its output");
+  });
+
+  test("a clean end of output is still reported as closed", async () => {
+    const c = EngineClient.start({
+      cmd: [process.execPath, "-e", "require('fs').closeSync(1); setInterval(() => {}, 1000)"],
+      timeoutMs: 5000,
+    });
+    clients.push(c);
+    const err = await c.hello().catch((e) => e);
+    expect(err.code).toBe("exited");
+    expect(err.message).toContain("closed its output");
   });
 });

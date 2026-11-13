@@ -442,7 +442,9 @@ export class DiskCache {
       try {
         if (!lstatSync(subPath).isDirectory()) continue;
         names = readdirSync(subPath);
-      } catch {
+      } catch (err) {
+        // A directory that cannot be listed (a permission error) may hold entries: not cleared.
+        if (!isEnoent(err)) failed++;
         continue;
       }
       for (const name of names) {
@@ -466,8 +468,11 @@ export class DiskCache {
     try {
       unlinkSync(join(this.dir, CACHE_MARKER));
       rmdirSync(this.dir);
-    } catch {
-      // other files remain: the directory stays
+    } catch (err) {
+      // ENOTEMPTY / EEXIST: other files remain, so the directory stays, by design. Anything else
+      // (a permission error) leaves the cache standing when nothing else says so.
+      const code = (err as NodeJS.ErrnoException).code;
+      if (failed === 0 && code !== "ENOTEMPTY" && code !== "EEXIST" && code !== "ENOENT") failed++;
     }
     // A directory that still holds anything keeps working as a cache: put the marker back.
     try {

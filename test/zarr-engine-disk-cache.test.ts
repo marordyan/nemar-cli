@@ -715,3 +715,26 @@ describe("clear reports what it could not remove", () => {
     },
   );
 });
+
+describe("clear counts a directory it cannot list", () => {
+  const unprivileged = typeof process.getuid === "function" && process.getuid() !== 0;
+  test.skipIf(!unprivileged || process.platform === "win32")(
+    "a subdirectory with no permissions is a failure, not a silent skip",
+    () => {
+      const a = make();
+      a.put("k0", body(100));
+      const sub = join(fileFor("k0"), "..");
+      chmodSync(sub, 0o000);
+      try {
+        const result = a.clear();
+        expect(result.failed).toBeGreaterThan(0);
+        expect(result.freedBytes).toBe(0);
+      } finally {
+        chmodSync(sub, 0o700);
+      }
+      expect(existsSync(fileFor("k0"))).toBe(true);
+      // With the permissions back, the same clear succeeds.
+      expect(a.clear()).toEqual({ freedBytes: 114, failed: 0 });
+    },
+  );
+});

@@ -123,6 +123,9 @@ export interface ClientOptions {
   /** How long {@link EngineClient.close} waits for the engine to end before SIGTERM, and then
    *  again before SIGKILL. */
   closeGraceMs?: number;
+  /** How long after the engine exits its stdout and stderr may stay quiet before they are
+   *  considered finished (default 1 s). Tests that need slack under load raise it. */
+  stdioSettleMs?: number;
 }
 
 export interface WindowReply {
@@ -150,6 +153,49 @@ export function defaultEngineCommand(): string[] {
   return [process.execPath, process.argv[1], ZARR_ENGINE_COMMAND];
 }
 
+/** The engine's stdout, read as soon as it is produced and handed to the frame reader on demand,
+ *  so a reply the engine wrote before the client asked for it (or before the engine exited) is
+ *  never lost. It ends cleanly at the end of the stream, and fails with the stream's own error. */
+class ChunkQueue implements AsyncIterable<Uint8Array> {
+  private readonly chunks: Uint8Array[] = [];
+  private waiting: (() => void) | null = null;
+  private ended = false;
+  private failure: Error | null = null;
+
+  push(chunk: Uint8Array): void {
+    this.chunks.push(chunk);
+    this.wake();
+  }
+  end(): void {
+    this.ended = true;
+    this.wake();
+  }
+  fail(err: Error): void {
+    this.failure ??= err;
+    this.wake();
+  }
+  private wake(): void {
+    const w = this.waiting;
+    this.waiting = null;
+    w?.();
+  }
+
+  async *[Symbol.asyncIterator](): AsyncGenerator<Uint8Array, void, undefined> {
+    for (;;) {
+      const next = this.chunks.shift();
+      if (next) {
+        yield next;
+        continue;
+      }
+      if (this.failure) throw this.failure;
+      if (this.ended) return;
+      await new Promise<void>((resolve) => {
+        this.waiting = resolve;
+      });
+    }
+  }
+}
+
 export class EngineClient {
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly frames: AsyncIterator<FrameEvent>;
@@ -159,6 +205,7 @@ export class EngineClient {
   private nextId = 1;
   private closed = false;
   private readonly closeGraceMs: number;
+  private readonly stdioSettleMs: number;
   /** Set once a request timed out: the engine may still answer it, so no later answer can be
    *  matched to a later request. */
   private unusable: EngineClientError | null = null;
@@ -167,18 +214,39 @@ export class EngineClient {
     const cmd = options.cmd ?? defaultEngineCommand();
     this.timeoutMs = options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
     this.closeGraceMs = options.closeGraceMs ?? 3000;
+    this.stdioSettleMs = options.stdioSettleMs ?? STDIO_SETTLE_MS;
     this.child = spawn(cmd[0], cmd.slice(1), {
       env: { ...engineEnvironment(), ...options.env } as NodeJS.ProcessEnv,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    // Both output streams are read from the start. `lastActivity` is when either last produced
+    // anything, which is what decides that a process that exited has finished writing.
+    let lastActivity = Date.now();
+    const queue = new ChunkQueue();
+    this.child.stdout.on("data", (chunk: Buffer) => {
+      lastActivity = Date.now();
+      queue.push(chunk);
+    });
+    this.child.stdout.on("end", () => queue.end());
+    // On "close" the stream's own error, when it had one (Node's `errored`), is the reason it
+    // ended; otherwise it ended cleanly.
+    this.child.stdout.on("close", () => {
+      const reason = this.child.stdout.errored;
+      if (reason) queue.fail(reason);
+      else queue.end();
+    });
+    this.child.stdout.on("error", (err) => queue.fail(err));
     this.child.stderr.on("data", (chunk: Buffer) => {
+      lastActivity = Date.now();
       this.stderrText = (this.stderrText + chunk.toString("utf8")).slice(-STDERR_KEEP_BYTES);
     });
+    this.child.stderr.on("error", () => undefined);
     // A write to a child that already exited is reported by the pending call, not here.
     this.child.stdin.on("error", () => undefined);
-    // The status comes from "exit"; "close" (after the stdio streams end) is then awaited for a
-    // moment so stderr is complete. A process that inherited the child's stdio can keep "close"
-    // from ever coming, so that wait is bounded and the streams are destroyed after it.
+    // The status comes from "exit". "close" (the stdio streams ended) is then awaited so stderr
+    // and the last reply are complete, but only while output keeps coming: once both streams have
+    // been quiet for the settle time, or after a hard bound, they are destroyed. A process that
+    // inherited the child's stdio can keep "close" from ever coming, and must not hang us.
     const exitOnly = new Promise<number | null>((resolve) => {
       this.child.once("exit", (code) => resolve(code));
       this.child.once("error", (err) => {
@@ -187,21 +255,32 @@ export class EngineClient {
       });
     });
     const streamsClosed = new Promise<void>((resolve) => this.child.once("close", () => resolve()));
+    const settle = this.stdioSettleMs;
     this.exited = exitOnly.then(async (code) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      await Promise.race([
-        streamsClosed,
-        new Promise<void>((r) => {
-          timer = setTimeout(r, STDIO_SETTLE_MS);
-        }),
-      ]);
-      clearTimeout(timer);
+      const exitedAt = Date.now();
+      lastActivity = Math.max(lastActivity, exitedAt);
+      let done = false;
+      streamsClosed.then(() => {
+        done = true;
+      });
+      while (!done && Date.now() - exitedAt < settle * 5) {
+        const quietFor = Date.now() - lastActivity;
+        if (quietFor >= settle) break;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          streamsClosed,
+          new Promise<void>((r) => {
+            timer = setTimeout(r, settle - quietFor);
+          }),
+        ]);
+        clearTimeout(timer);
+      }
       this.child.stdout.destroy();
       this.child.stderr.destroy();
       this.child.stdin.destroy();
       return code;
     });
-    this.frames = readFrames(this.child.stdout, {
+    this.frames = readFrames(queue, {
       maxPayloadBytes: MAX_CLIENT_PAYLOAD_BYTES,
     })[Symbol.asyncIterator]();
   }
@@ -243,18 +322,41 @@ export class EngineClient {
         reject(err);
       }, this.timeoutMs);
     });
-    const died = this.exited.then((code): never => {
+    // The next frame; a stream that failed (as opposed to ending) carries its own error.
+    type Next = IteratorResult<FrameEvent, undefined> | { failed: Error };
+    const frame: Promise<Next> = this.frames
+      .next()
+      .catch((err: unknown) => ({ failed: err instanceof Error ? err : new Error(String(err)) }));
+    // The engine having exited is no answer by itself: a reply it wrote just before exiting is
+    // still being read, so give the frame a moment to arrive before calling it a failed call.
+    const died = this.exited.then(async (code): Promise<Next> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = await Promise.race([
+        frame,
+        new Promise<null>((r) => {
+          timer = setTimeout(() => r(null), 1000);
+        }),
+      ]);
+      clearTimeout(timer);
+      if (late && "value" in late && !late.done) return late;
       throw this.fail("exited", `the engine exited (status ${code ?? "unknown"}) before answering`);
     });
     try {
-      // A stream destroyed after the child's exit ends the iteration with an error: that is the
-      // child being gone, the same as its output closing.
-      const frame = this.frames
-        .next()
-        .catch(() => ({ done: true, value: undefined }) as IteratorReturnResult<undefined>);
       const next = await Promise.race([frame, timeout, died]);
+      if ("failed" in next) {
+        const code = await Promise.race([
+          this.exited,
+          new Promise<"pending">((r) => setTimeout(() => r("pending"), 1000)),
+        ]);
+        throw this.fail(
+          "exited",
+          `reading the engine's output failed: ${next.failed.message}${
+            code === "pending" ? "" : ` (the engine exited with status ${code ?? "unknown"})`
+          }`,
+        );
+      }
       if (next.done) {
-        // Its output closed: it is exiting, so say with what status when it has.
+        // Its output ended: it is exiting, so say with what status when it has.
         const code = await Promise.race([
           this.exited,
           new Promise<"pending">((r) => setTimeout(() => r("pending"), 1000)),

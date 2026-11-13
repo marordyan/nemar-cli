@@ -19,7 +19,7 @@ A tenant-wide ceiling on live compute jobs (#2126, phase P2 of issue #2121).
 It carries no migration and sets no Worker variable or secret, and it changes nothing in production while the compute switches are absent, because no job can exist then.
 
 The CLI can read a time window of a public dataset's Zarr recording itself, through a local engine that shares one read core with the MCP server (ADR 0120).
-It carries no migration and sets no Worker variable or secret; the MCP tools' answers are unchanged (their golden output is byte-identical), and the API gains one public schema route.
+It carries no migration and sets no Worker variable or secret; the MCP `read_window` answers are unchanged (its golden result and request log match byte for byte, apart from the server version stamp), the other MCP tools changed only their imports, and the API gains one public schema route.
 
 ### Added
 
@@ -35,7 +35,8 @@ It carries no migration and sets no Worker variable or secret; the MCP tools' an
   It fetches only the chunks the window needs from the dataset's Zarr store and prints a summary (rate, channels, samples, filled ranges and the first values).
   `--channels`, `--units physical|digital` and `--representation` choose what is read; `--out <file>` writes raw little-endian, channel-major values, and the summary prints the numpy and MATLAB lines that load them; `--json` prints the window's description.
   Each engine error (not found, not ready, out of range, too large, upstream error) exits 1 with a hint.
-- **A disk cache, so a repeated read sends no range request, even after a restart.**
+- **A disk cache, so a repeated read of a cached window sends no range request, even after a restart.**
+  A window whose entries were evicted, or a disk error (reported as one stderr line, never a failed read), sends the read to the host again.
   It holds public data only, at `<config dir>/zarr-cache/public/v1/` (made private, mode 0700), up to 2 GiB by default and evicting the least recently used entries.
   `NEMAR_ZARR_DISK_CACHE_DIR` moves it and `NEMAR_ZARR_DISK_CACHE_BYTES` sets the limit (`0` turns it off).
   Entries are keyed by the store's identity (dataset, conversion commit and time), so a re-converted store is fetched again; the dataset index is never cached on disk and is read at each engine start.
@@ -47,6 +48,11 @@ It carries no migration and sets no Worker variable or secret; the MCP tools' an
 - **`GET /schemas/zarr-engine-protocol-v0.json` serves the engine's protocol schema.**
   v0 is unstable and may change in place, so a client can see the previous v0 for up to a day after a change.
 - The CLI gains one runtime dependency, `fzstd` 0.1.1, the zstd decoder the backend already uses.
+
+### Changed
+
+- **The MCP server's Zarr read path now lives in `shared/zarr/`, shared with the CLI's engine (ADR 0120).**
+  It ships with the Worker; `read_window` output is pinned by its golden test.
 
 ### Known limits
 

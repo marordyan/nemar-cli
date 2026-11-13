@@ -23,7 +23,11 @@ import {
   openedSchema,
   windowSchema,
 } from "../../../shared/contract/zarr-engine-protocol.js";
-import { encodeFrame } from "../../../shared/zarr/protocol-frame.js";
+import {
+  FRAME_PREFIX_BYTES,
+  MAX_HEADER_BYTES,
+  encodeFrame,
+} from "../../../shared/zarr/protocol-frame.js";
 import { type FrameEvent, MAX_CLIENT_PAYLOAD_BYTES, readFrames } from "./frame-stream.js";
 
 /** The hidden subcommand that runs the engine. */
@@ -97,6 +101,11 @@ export function engineEnvironment(
   return out;
 }
 
+/** The most output the client holds unread: the largest reply payload the client reads plus the
+ *  largest frame header and its prefix, plus a megabyte of slack. A legal reply is below it. */
+export const MAX_QUEUED_OUTPUT_BYTES =
+  MAX_CLIENT_PAYLOAD_BYTES + MAX_HEADER_BYTES + FRAME_PREFIX_BYTES + (1 << 20);
+
 /** After the child exits, how long its stdio may take to finish (so stderr is complete). */
 const STDIO_SETTLE_MS = 1000;
 
@@ -126,6 +135,9 @@ export interface ClientOptions {
   /** How long after the engine exits its stdout and stderr may stay quiet before they are
    *  considered finished (default 1 s). Tests that need slack under load raise it. */
   stdioSettleMs?: number;
+  /** The most engine output that may sit unread before the engine is killed (default
+   *  {@link MAX_QUEUED_OUTPUT_BYTES}). Tests lower it. */
+  maxQueuedBytes?: number;
 }
 
 export interface WindowReply {
@@ -156,13 +168,36 @@ export function defaultEngineCommand(): string[] {
 /** The engine's stdout, read as soon as it is produced and handed to the frame reader on demand,
  *  so a reply the engine wrote before the client asked for it (or before the engine exited) is
  *  never lost. It ends cleanly at the end of the stream, and fails with the stream's own error. */
+/** The queue refused more output than its cap. */
+class QueueOverflow extends Error {}
+
 class ChunkQueue implements AsyncIterable<Uint8Array> {
   private readonly chunks: Uint8Array[] = [];
+  private bytes = 0;
+
+  /** `maxBytes` is the most that may sit unread; `onOverflow` runs once when it is passed. */
+  constructor(
+    private readonly maxBytes: number,
+    private readonly onOverflow: () => void,
+  ) {}
   private waiting: (() => void) | null = null;
   private ended = false;
   private failure: Error | null = null;
 
   push(chunk: Uint8Array): void {
+    if (this.failure) return;
+    this.bytes += chunk.length;
+    if (this.bytes > this.maxBytes) {
+      // Output nobody reads is not buffered without bound: drop it, say so, stop the engine.
+      this.chunks.length = 0;
+      this.bytes = 0;
+      this.failure = new QueueOverflow(
+        `the engine sent more than ${this.maxBytes} bytes without being read`,
+      );
+      this.wake();
+      this.onOverflow();
+      return;
+    }
     this.chunks.push(chunk);
     this.wake();
   }
@@ -184,6 +219,7 @@ class ChunkQueue implements AsyncIterable<Uint8Array> {
     for (;;) {
       const next = this.chunks.shift();
       if (next) {
+        this.bytes -= next.length;
         yield next;
         continue;
       }
@@ -222,7 +258,9 @@ export class EngineClient {
     // Both output streams are read from the start. `lastActivity` is when either last produced
     // anything, which is what decides that a process that exited has finished writing.
     let lastActivity = Date.now();
-    const queue = new ChunkQueue();
+    const queue = new ChunkQueue(options.maxQueuedBytes ?? MAX_QUEUED_OUTPUT_BYTES, () =>
+      this.child.kill("SIGKILL"),
+    );
     this.child.stdout.on("data", (chunk: Buffer) => {
       lastActivity = Date.now();
       queue.push(chunk);
@@ -328,22 +366,16 @@ export class EngineClient {
       .next()
       .catch((err: unknown) => ({ failed: err instanceof Error ? err : new Error(String(err)) }));
     // The engine having exited is no answer by itself: a reply it wrote just before exiting is
-    // still being read, so give the frame a moment to arrive before calling it a failed call.
+    // still being read, so wait a moment (the frame wins the race below if it arrives) before
+    // calling it a failed call.
     const died = this.exited.then(async (code): Promise<Next> => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const late = await Promise.race([
-        frame,
-        new Promise<null>((r) => {
-          timer = setTimeout(() => r(null), 1000);
-        }),
-      ]);
-      clearTimeout(timer);
-      if (late && "value" in late && !late.done) return late;
+      await new Promise<void>((r) => setTimeout(r, 1000));
       throw this.fail("exited", `the engine exited (status ${code ?? "unknown"}) before answering`);
     });
     try {
       const next = await Promise.race([frame, timeout, died]);
       if ("failed" in next) {
+        if (next.failed instanceof QueueOverflow) throw this.fail("protocol", next.failed.message);
         const code = await Promise.race([
           this.exited,
           new Promise<"pending">((r) => setTimeout(() => r("pending"), 1000)),

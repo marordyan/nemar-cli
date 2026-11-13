@@ -19,12 +19,18 @@ import {
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { encodeFrame } from "../shared/zarr/protocol-frame.js";
+import {
+  FRAME_PREFIX_BYTES,
+  MAX_HEADER_BYTES,
+  encodeFrame,
+} from "../shared/zarr/protocol-frame.js";
 import {
   EngineClient,
   EngineClientError,
+  MAX_QUEUED_OUTPUT_BYTES,
   engineEnvironment,
 } from "../src/lib/zarr-engine/client.js";
+import { MAX_CLIENT_PAYLOAD_BYTES } from "../src/lib/zarr-engine/frame-stream.js";
 import {
   BIDS,
   ID,
@@ -522,5 +528,64 @@ describe("a stream that fails is not a stream that ended", () => {
     const err = await c.hello().catch((e) => e);
     expect(err.code).toBe("exited");
     expect(err.message).toContain("closed its output");
+  });
+});
+
+describe("the cap on unread engine output", () => {
+  test("is above the largest legal reply (payload, header and prefix)", () => {
+    expect(MAX_QUEUED_OUTPUT_BYTES).toBeGreaterThan(
+      MAX_CLIENT_PAYLOAD_BYTES + MAX_HEADER_BYTES + FRAME_PREFIX_BYTES,
+    );
+  });
+
+  test("a reply below the cap is accepted even when it waited unread", async () => {
+    const n = 40000;
+    const reply = b64(
+      {
+        id: 1,
+        type: "window",
+        start_sample: 0,
+        n_samples: n,
+        channels: [0],
+        dtype: "float64",
+        layout: "channel-major",
+        byte_order: "little",
+        filled_ranges: [],
+        payload_bytes: n * 8,
+      },
+      new Uint8Array(n * 8),
+    );
+    const c = EngineClient.start({ cmd: replying(reply), maxQueuedBytes: 400_000 });
+    clients.push(c);
+    await new Promise((r) => setTimeout(r, 500));
+    expect((await c.readWindow({ handle: "h1", startS: 0, durationS: 1 })).payload.length).toBe(
+      n * 8,
+    );
+  });
+
+  test("an engine that floods stdout is a protocol error, dropped and killed", async () => {
+    const c = EngineClient.start({
+      cmd: [
+        process.execPath,
+        "-e",
+        'const b = Buffer.alloc(65536, 0x41); const t = setInterval(() => process.stdout.write(b), 1); process.on("SIGTERM", () => {});',
+      ],
+      maxQueuedBytes: 200_000,
+      timeoutMs: 20_000,
+      closeGraceMs: 5000,
+    });
+    clients.push(c);
+    // Nobody reads for a moment, so the flood piles up past the cap.
+    await new Promise((r) => setTimeout(r, 800));
+    const started = Date.now();
+    const err = await c.hello().catch((e) => e);
+    expect(err).toBeInstanceOf(EngineClientError);
+    expect(err.code).toBe("protocol");
+    expect(err.message).toContain("more than 200000 bytes without being read");
+    expect(Date.now() - started).toBeLessThan(3000);
+    // SIGKILL, not SIGTERM (which the child ignores): it is gone well before the grace period.
+    const status = await c.close();
+    expect(status).toBeNull();
+    expect(Date.now() - started).toBeLessThan(4000);
   });
 });

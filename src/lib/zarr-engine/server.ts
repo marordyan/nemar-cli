@@ -23,6 +23,7 @@
 import {
   ENGINE_PROTOCOL_VERSION,
   type EngineErrorCode,
+  MAX_MESSAGE_ID,
   engineRequestSchema,
   engineResponseSchema,
 } from "../../../shared/contract/zarr-engine-protocol.js";
@@ -51,13 +52,14 @@ export interface ServerOptions {
  *  grow the engine without bound. */
 export const MAX_OPEN_HANDLES = 1024;
 
-const MAX_ID = Number.MAX_SAFE_INTEGER;
 const VERSION_RE = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 
 /** The request id when the header carries a usable one, else null. */
 function readId(header: Record<string, unknown>): number | null {
   const id = header.id;
-  return typeof id === "number" && Number.isInteger(id) && id >= 1 && id <= MAX_ID ? id : null;
+  return typeof id === "number" && Number.isInteger(id) && id >= 1 && id <= MAX_MESSAGE_ID
+    ? id
+    : null;
 }
 
 export function errorReply(id: number | null, code: EngineErrorCode, message: string): Reply {

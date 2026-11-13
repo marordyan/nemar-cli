@@ -28,10 +28,8 @@ import {
   MAX_HEADER_BYTES,
   encodeFrame,
 } from "../../../shared/zarr/protocol-frame.js";
+import { ZARR_ENGINE_COMMAND } from "./command.js";
 import { type FrameEvent, MAX_CLIENT_PAYLOAD_BYTES, readFrames } from "./frame-stream.js";
-
-/** The hidden subcommand that runs the engine. */
-export const ZARR_ENGINE_COMMAND = "__zarr-engine";
 
 /** The default time one request may take. A window read over a slow link can be long. */
 export const DEFAULT_CALL_TIMEOUT_MS = 120_000;

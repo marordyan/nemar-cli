@@ -19,7 +19,7 @@ A tenant-wide ceiling on live compute jobs (#2126, phase P2 of issue #2121).
 It carries no migration and sets no Worker variable or secret, and it changes nothing in production while the compute switches are absent, because no job can exist then.
 
 The CLI can read a time window of a public dataset's Zarr recording itself, through a local engine that shares one read core with the MCP server (ADR 0120).
-It carries no migration and sets no Worker variable or secret; the MCP `read_window` answers are unchanged (its golden result and request log match byte for byte, apart from the server version stamp), the other MCP tools changed only their imports, and the API gains one public schema route.
+It carries no migration and sets no Worker variable or secret; the MCP `read_window` answers are unchanged (its golden result and request log match byte for byte, apart from the server version stamp), the other MCP tools changed only imports and comments, and the API gains one public schema route.
 
 ### Added
 

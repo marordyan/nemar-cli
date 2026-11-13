@@ -538,6 +538,8 @@ describe("a stream that fails is not a stream that ended", () => {
     expect(Date.now() - started).toBeLessThan(3000);
   });
 
+  // The queue's own overflow callback already kills the engine; this guards the client being
+  // marked unusable after an overflow.
   test("an output overflow also leaves the client unusable", async () => {
     const c = EngineClient.start({
       cmd: [
@@ -648,5 +650,35 @@ describe("a fatal frame", () => {
     expect(Date.now() - started).toBeLessThan(3000);
     const again = await c.hello().catch((e) => e);
     expect(again.message).toContain("can no longer be used");
+  });
+});
+
+describe("a reply to the wrong request", () => {
+  test("kills the engine and leaves the client unusable", async () => {
+    const wrong = b64({
+      id: 99,
+      type: "hello",
+      protocol: "0.1",
+      engine: "wrong/1",
+      max_payload_bytes: 1000,
+    });
+    const c = EngineClient.start({
+      cmd: [
+        process.execPath,
+        "-e",
+        `process.on("SIGTERM", () => {}); process.stdout.write(Buffer.from("${wrong}", "base64")); setInterval(() => {}, 1000)`,
+      ],
+      timeoutMs: 5000,
+      closeGraceMs: 5000,
+    });
+    clients.push(c);
+    const started = Date.now();
+    const err = await c.hello().catch((e) => e);
+    expect(err.code).toBe("protocol");
+    expect(err.message).toContain("answered request 99, not 1");
+    const again = await c.hello().catch((e) => e);
+    expect(again.message).toContain("can no longer be used");
+    expect(await c.close()).toBeNull();
+    expect(Date.now() - started).toBeLessThan(3000);
   });
 });

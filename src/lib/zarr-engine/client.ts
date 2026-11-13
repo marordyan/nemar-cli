@@ -415,6 +415,12 @@ export class EngineClient {
       const parsed = engineResponseSchema.safeParse(event.header);
       if (!parsed.success) throw this.fail("protocol", "the engine sent an invalid response");
       if (event.header.id !== id && event.header.type !== "error") {
+        // Requests and replies are out of step: no later reply can be matched to its request.
+        this.unusable = this.fail(
+          "protocol",
+          "the engine answered the wrong request, so this client can no longer be used",
+        );
+        this.child.kill("SIGKILL");
         throw this.fail("protocol", `the engine answered request ${event.header.id}, not ${id}`);
       }
       if (event.header.type === "error") {
